@@ -19,15 +19,29 @@ head_() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
 code() { curl -s -o /dev/null --max-time 15 -w '%{http_code}' -u "${AUTH}" "$1"; }
 
+# AUTH_MODE=none is a legitimate deployment — behind tailscale serve, say —
+# where an unauthenticated 200 is correct rather than a hole. Ask the container
+# which mode it is in rather than guessing from the response.
+auth_mode=""
+if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1; then
+  auth_mode=$(docker exec "${CONTAINER}" sh -c \
+    'sed -n "s/^AUTH_MODE=//p" /run/agent-env/env' 2>/dev/null | tr -d "\r")
+fi
+
 head_ "Gateway routes"
 c=$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' "${BASE}/healthz")
 [[ "$c" == 200 ]] && ok "/healthz open without auth (200)" || bad "/healthz returned $c"
 
 c=$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' "${BASE}/")
-case "$c" in
-  401|302) ok "/ rejects unauthenticated requests ($c)" ;;
-  *)       bad "/ returned $c without credentials — expected 401 or 302" ;;
-esac
+if [ "${auth_mode}" = none ]; then
+  [[ "$c" == 200 ]] && ok "/ serves without credentials, as AUTH_MODE=none asks ($c)" \
+                    || bad "/ returned $c with auth disabled — expected 200"
+else
+  case "$c" in
+    401|302) ok "/ rejects unauthenticated requests ($c)" ;;
+    *)       bad "/ returned $c without credentials — expected 401 or 302" ;;
+  esac
+fi
 
 for path in / /terminal/ /desktop/vnc.html; do
   c=$(code "${BASE}${path}")
