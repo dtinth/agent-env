@@ -1,11 +1,11 @@
-# oc-env
+# agent-env
 
 [![docker](https://github.com/dtinth/agent-env/actions/workflows/docker.yml/badge.svg)](https://github.com/dtinth/agent-env/actions/workflows/docker.yml)
 
 A ready-to-use Docker image that turns OpenCode v2 into a hosted, Google-authenticated
 workstation.
 
-![The oc-env desktop over noVNC: fastfetch, btop and a user-owned pitchfork daemon](desktop.png)
+![The agent-env desktop over noVNC: fastfetch, btop and a user-owned pitchfork daemon](desktop.png)
 
 One container gives you:
 
@@ -38,17 +38,17 @@ docker pull ghcr.io/dtinth/agent-env:latest
 ### Locally, with basic auth (no Google setup needed)
 
 ```bash
-docker build -t oc-env .          # or use ghcr.io/dtinth/agent-env:latest
+docker build -t agent-env .          # or use ghcr.io/dtinth/agent-env:latest
 
-docker run -d --name oc-env --shm-size=2g \
+docker run -d --name agent-env --shm-size=2g \
   -p 8080:8080 -p 8081:8081 -p 2222:22 \
   -e AUTH_MODE=basic \
   -e GATEWAY_PASSWORD=changeme \
   -e PUBLIC_URL=http://localhost:8080 \
   -e SSH_AUTHORIZED_KEYS="$(cat ~/.ssh/id_ed25519.pub)" \
   -e ANTHROPIC_API_KEY=sk-ant-... \
-  -v oc-workspace:/workspace \
-  oc-env
+  -v agent-env-workspace:/workspace \
+  agent-env
 ```
 
 Open <http://localhost:8080> and sign in as `opencode` / `changeme`.
@@ -208,15 +208,15 @@ You can also drop a config in without rebuilding:
 ## Operating it
 
 ```bash
-docker exec -it oc-env oc-env status      # state of every service
-docker exec -it oc-env oc-env urls        # what this container serves
-docker exec -it oc-env oc-env password    # the OpenCode server password
-docker exec -it oc-env oc-env logs caddy  # follow one service
-docker exec -it oc-env oc-env top         # pitchfork's interactive dashboard
-docker exec -it oc-env oc-env config      # the rendered gateway config
-docker exec -it oc-env oc-env daemons     # the rendered daemon definitions
-docker exec -it oc-env oc-env restart opencode
-docker exec -it oc-env oc-env tui         # attach the TUI from a shell
+docker exec -it agent-env agent-env status      # state of every service
+docker exec -it agent-env agent-env urls        # what this container serves
+docker exec -it agent-env agent-env password    # the OpenCode server password
+docker exec -it agent-env agent-env logs caddy  # follow one service
+docker exec -it agent-env agent-env top         # pitchfork's interactive dashboard
+docker exec -it agent-env agent-env config      # the rendered gateway config
+docker exec -it agent-env agent-env daemons     # the rendered daemon definitions
+docker exec -it agent-env agent-env restart opencode
+docker exec -it agent-env agent-env tui         # attach the TUI from a shell
 ```
 
 ### Supervision
@@ -229,15 +229,15 @@ Daemons declare what they need rather than guessing at timing:
 
 ```toml
 [daemons.x11vnc]
-run = "/opt/oc-env/bin/run-x11vnc"
+run = "/opt/agent-env/bin/run-x11vnc"
 depends = ["xvfb"]        # start ordering, resolved topologically
 ready_port = 5900         # "up" means the port answers
 retry = true
 ```
 
 pitchfork captures each daemon's output into its own log store, which is what
-`oc-env logs` reads. A small `zz-log-forward` daemon also streams everything to
-PID 1's stdout, so `docker logs -f oc-env` and your log driver still see the lot,
+`agent-env logs` reads. A small `zz-log-forward` daemon also streams everything to
+PID 1's stdout, so `docker logs -f agent-env` and your log driver still see the lot,
 prefixed with `[global/<daemon>]`.
 
 Run `scripts/smoke-test.sh` against a live container to check the whole thing:
@@ -273,8 +273,8 @@ Project daemons are usually better off in a `pitchfork.toml` next to your code �
 `/workspace/pitchfork.toml` is on a volume, so it survives a rebuild, and
 `pitchfork start -l` starts everything in it.
 
-`oc-env status` shows both tables at once. The `oc-env` commands that touch
-system services sudo into root for you; `oc-env mine` lists just yours.
+`agent-env status` shows both tables at once. The `agent-env` commands that touch
+system services sudo into root for you; `agent-env mine` lists just yours.
 
 Set `USER_SUPERVISOR_ENABLE=false` if you don't want the user supervisor running
 at boot — you can still start one on demand.
@@ -284,7 +284,7 @@ Two details worth knowing if you go poking at this:
 - `/etc/pitchfork/config.toml` is deliberately left empty. pitchfork reads it as
   the system-wide config layer for *every* supervisor, and a root-only file
   there is fatal for an unprivileged one — so the system supervisor keeps its
-  config in `/opt/oc-env/pitchfork` instead.
+  config in `/opt/agent-env/pitchfork` instead.
 - `/tmp/fslock` is pre-created mode 1777. pitchfork locks there, and whichever
   supervisor started first would otherwise own the directory and shut everyone
   else out.
@@ -308,7 +308,7 @@ mosh -p 60000:60010 --ssh="ssh -p 2222" dev@host
 
 The image `EXPOSE`s `60000-60010/udp` and compose publishes the same range
 (`HOST_MOSH_PORTS` to change it). One port per concurrent session, so widen the
-range if you want more than ten. `oc-env urls` prints the exact command.
+range if you want more than ten. `agent-env urls` prints the exact command.
 
 ### Volumes
 
@@ -346,7 +346,7 @@ this by opening four concurrent RFB connections.
 
 Resolution is fixed for the life of the display: Xvfb has no dynamic RandR
 resizing, so noVNC's client-side scaling is what adapts to your window. Change
-`DESKTOP_RESOLUTION` and `oc-env restart xvfb` (then `desktop`, `x11vnc`) for a
+`DESKTOP_RESOLUTION` and `agent-env restart xvfb` (then `desktop`, `x11vnc`) for a
 different geometry. Set `VNC_PASSWORD` for a second factor in front of the
 desktop specifically, and `VNC_VIEW_ONLY=true` for a read-only session.
 
@@ -421,7 +421,7 @@ Chromium needs a large `/dev/shm`: keep `--shm-size=2g` (compose already sets it
 ### Building for both architectures
 
 ```bash
-docker buildx build --platform linux/amd64,linux/arm64 -t your-registry/oc-env:latest --push .
+docker buildx build --platform linux/amd64,linux/arm64 -t your-registry/agent-env:latest --push .
 ```
 
 CI does this on native runners rather than under QEMU — `.github/workflows/docker.yml`
@@ -462,8 +462,8 @@ docker-compose.yml                  ports, volumes, health check
 .env.example                        every setting, annotated
 rootfs/usr/local/bin/entrypoint.sh  validates config, renders the Caddyfile and
                                     the pitchfork daemons, then exec's PID 1
-rootfs/usr/local/bin/oc-env         operator helper
-rootfs/opt/oc-env/bin/run-*         one launcher per service, including the
+rootfs/usr/local/bin/agent-env         operator helper
+rootfs/opt/agent-env/bin/run-*         one launcher per service, including the
                                     dev user's own nested supervisor
 scripts/smoke-test.sh               end-to-end check of a running container
 ```

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end check of a running oc-env container.
+# End-to-end check of a running agent-env container.
 #
 #   scripts/smoke-test.sh [base-url] [user:password]
 #
@@ -10,7 +10,7 @@ set -uo pipefail
 
 BASE="${1:-http://localhost:8080}"
 AUTH="${2:-opencode:changeme}"
-CONTAINER="${CONTAINER:-oc-env}"
+CONTAINER="${CONTAINER:-agent-env}"
 
 pass=0; fail=0
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; pass=$((pass+1)); }

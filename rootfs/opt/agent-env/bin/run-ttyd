@@ -12,4 +12,4 @@ args=(
   --ping-interval 30
 )
 [[ "${TTYD_WRITABLE:-true}" == "true" ]] && args+=(--writable)
-exec ttyd "${args[@]}" /opt/oc-env/bin/tui
+exec ttyd "${args[@]}" /opt/agent-env/bin/tui

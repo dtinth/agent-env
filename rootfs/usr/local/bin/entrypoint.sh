@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# oc-env entrypoint: validate configuration, render the gateway and daemon
+# agent-env entrypoint: validate configuration, render the gateway and daemon
 # definitions, then hand over to pitchfork as PID 1.
 set -euo pipefail
 
-log()  { printf '\033[1;34m[oc-env]\033[0m %s\n' "$*" >&2; }
-warn() { printf '\033[1;33m[oc-env] WARN\033[0m %s\n' "$*" >&2; }
-die()  { printf '\033[1;31m[oc-env] ERROR\033[0m %s\n' "$*" >&2; exit 1; }
+log()  { printf '\033[1;34m[agent-env]\033[0m %s\n' "$*" >&2; }
+warn() { printf '\033[1;33m[agent-env] WARN\033[0m %s\n' "$*" >&2; }
+die()  { printf '\033[1;31m[agent-env] ERROR\033[0m %s\n' "$*" >&2; exit 1; }
 
 USER_NAME="${USER_NAME:-dev}"
 USER_HOME="/home/${USER_NAME}"
 # Unprivileged account for caddy and oauth2-proxy.
 GATEWAY_USER_NAME="${GATEWAY_USER_NAME:-gateway}"
 GATEWAY_GROUP="${GATEWAY_GROUP:-gateway}"
-RUN_DIR=/run/oc-env
+RUN_DIR=/run/agent-env
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -98,7 +98,7 @@ OAUTH2_PROXY_PORT="${OAUTH2_PROXY_PORT:-4180}"
 # root-only file there is fatal for an unprivileged supervisor — leaving that
 # path empty is what lets the dev user run a nested supervisor of their own.
 export PITCHFORK_STATE_DIR=/var/lib/pitchfork
-export PITCHFORK_CONFIG_DIR=/opt/oc-env/pitchfork
+export PITCHFORK_CONFIG_DIR=/opt/agent-env/pitchfork
 
 mkdir -p "${RUN_DIR}" "${PITCHFORK_CONFIG_DIR}" "${PITCHFORK_STATE_DIR}"
 chmod 755 "${RUN_DIR}"
@@ -132,9 +132,9 @@ chmod 700 "${XDG_RUNTIME_DIR}"
 
 # Volumes mounted over state directories come up empty; reseed them from the
 # image's skeleton so first boot behaves like a fresh install.
-if [[ -d /opt/oc-env/skel ]]; then
+if [[ -d /opt/agent-env/skel ]]; then
   for rel in .config/opencode .local/share/opencode .agent-browser; do
-    src="/opt/oc-env/skel/${rel}"
+    src="/opt/agent-env/skel/${rel}"
     dst="${USER_HOME}/${rel}"
     mkdir -p "${dst}"
     if [[ -d "${src}" ]] && [[ -z "$(ls -A "${dst}" 2>/dev/null)" ]]; then
@@ -142,7 +142,7 @@ if [[ -d /opt/oc-env/skel ]]; then
     fi
   done
   for f in .bashrc .profile; do
-    [[ -e "${USER_HOME}/${f}" ]] || cp -a "/opt/oc-env/skel/${f}" "${USER_HOME}/${f}" 2>/dev/null || true
+    [[ -e "${USER_HOME}/${f}" ]] || cp -a "/opt/agent-env/skel/${f}" "${USER_HOME}/${f}" 2>/dev/null || true
   done
 fi
 
@@ -176,7 +176,7 @@ if [[ ! -e "${user_pf_config}" ]]; then
 #   pitchfork logs -f <name>     follow its output
 #
 # These are entirely separate from the container's system services (run
-# `oc-env status` for those). Daemons with boot_start = true come up when the
+# `agent-env status` for those). Daemons with boot_start = true come up when the
 # container does.
 #
 # Project daemons usually belong in a pitchfork.toml next to your code instead
@@ -208,9 +208,9 @@ if [[ -z "${OPENCODE_SERVER_PASSWORD:-}" ]]; then
   fi
 fi
 export OPENCODE_SERVER_PASSWORD
-OC_BASIC_B64="$(printf 'opencode:%s' "${OPENCODE_SERVER_PASSWORD}" | base64 -w0)"
+GATEWAY_BASIC_B64="$(printf 'opencode:%s' "${OPENCODE_SERVER_PASSWORD}" | base64 -w0)"
 
-# Make the runtime configuration discoverable to shells and to `oc-env`.
+# Make the runtime configuration discoverable to shells and to `agent-env`.
 {
   echo "GATEWAY_PORT=${GATEWAY_PORT}"
   echo "PUBLIC_URL=${PUBLIC_URL}"
@@ -228,13 +228,13 @@ OC_BASIC_B64="$(printf 'opencode:%s' "${OPENCODE_SERVER_PASSWORD}" | base64 -w0)
   echo "USER_NAME=${USER_NAME}"
 } > "${RUN_DIR}/env"
 
-cat > /etc/profile.d/99-oc-env.sh <<EOF
+cat > /etc/profile.d/99-agent-env.sh <<EOF
 export OPENCODE_SERVER_PASSWORD='${OPENCODE_SERVER_PASSWORD}'
 export OPENCODE_SERVER='http://127.0.0.1:${OPENCODE_PORT}'
 export DISPLAY='${DESKTOP_DISPLAY}'
 export XDG_RUNTIME_DIR='${XDG_RUNTIME_DIR}'
 EOF
-chmod 644 /etc/profile.d/99-oc-env.sh
+chmod 644 /etc/profile.d/99-agent-env.sh
 
 # /etc/profile is only read by login shells, and Debian's ~/.bashrc bails out
 # early when non-interactive — so `ssh host <command>` would see none of this.
@@ -257,7 +257,7 @@ chmod 644 /etc/environment
 cat > /etc/profile.d/20-pitchfork.sh <<'EOF'
 if [ "$(id -u)" = 0 ]; then
   export PITCHFORK_STATE_DIR=/var/lib/pitchfork
-  export PITCHFORK_CONFIG_DIR=/opt/oc-env/pitchfork
+  export PITCHFORK_CONFIG_DIR=/opt/agent-env/pitchfork
 else
   unset PITCHFORK_STATE_DIR PITCHFORK_CONFIG_DIR
 fi
@@ -287,7 +287,7 @@ setup_ssh() {
     warn "SSH password authentication is enabled for user '${USER_NAME}'"
   fi
 
-  cat > /etc/ssh/sshd_config.d/00-oc-env.conf <<EOF
+  cat > /etc/ssh/sshd_config.d/00-agent-env.conf <<EOF
 Port ${SSH_PORT}
 PermitRootLogin no
 PasswordAuthentication ${password_auth}
@@ -570,7 +570,7 @@ EOF
 			# basic-auth credential is injected here so users never see it.
 			handle {
 				reverse_proxy 127.0.0.1:${OPENCODE_PORT} {
-					header_up Authorization "Basic ${OC_BASIC_B64}"
+					header_up Authorization "Basic ${GATEWAY_BASIC_B64}"
 				}
 			}
 		}
@@ -688,35 +688,35 @@ EOF
         "ready_port = ${SSH_PORT}"
     fi
 
-    emit_daemon opencode "/opt/oc-env/bin/run-opencode" \
+    emit_daemon opencode "/opt/agent-env/bin/run-opencode" \
       "user = \"${USER_NAME}\"" \
       "dir = \"${OPENCODE_WORKDIR}\"" \
       'retry = true' \
       "ready_port = { port = ${OPENCODE_PORT}, timeout = \"120s\" }"
 
     if is_true "${DESKTOP_ENABLE}"; then
-      emit_daemon dbus "/opt/oc-env/bin/run-dbus" \
+      emit_daemon dbus "/opt/agent-env/bin/run-dbus" \
         'retry = true' \
         'ready_cmd = "test -S /run/dbus/system_bus_socket"'
 
-      emit_daemon xvfb "/opt/oc-env/bin/run-xvfb" \
+      emit_daemon xvfb "/opt/agent-env/bin/run-xvfb" \
         "user = \"${USER_NAME}\"" \
         'retry = true' \
         "ready_cmd = { run = \"xdpyinfo -display ${DESKTOP_DISPLAY} >/dev/null 2>&1\", timeout = \"60s\" }"
 
-      emit_daemon desktop "/opt/oc-env/bin/run-desktop" \
+      emit_daemon desktop "/opt/agent-env/bin/run-desktop" \
         "user = \"${USER_NAME}\"" \
         "dir = \"${USER_HOME}\"" \
         'depends = ["xvfb", "dbus"]' \
         'retry = true'
 
-      emit_daemon x11vnc "/opt/oc-env/bin/run-x11vnc" \
+      emit_daemon x11vnc "/opt/agent-env/bin/run-x11vnc" \
         "user = \"${USER_NAME}\"" \
         'depends = ["xvfb"]' \
         'retry = true' \
         "ready_port = ${VNC_PORT}"
 
-      emit_daemon novnc "/opt/oc-env/bin/run-novnc" \
+      emit_daemon novnc "/opt/agent-env/bin/run-novnc" \
         "user = \"${USER_NAME}\"" \
         'depends = ["x11vnc"]' \
         'retry = true' \
@@ -724,7 +724,7 @@ EOF
     fi
 
     if is_true "${TTYD_ENABLE}"; then
-      emit_daemon ttyd "/opt/oc-env/bin/run-ttyd" \
+      emit_daemon ttyd "/opt/agent-env/bin/run-ttyd" \
         "user = \"${USER_NAME}\"" \
         "dir = \"${OPENCODE_WORKDIR}\"" \
         'depends = ["opencode"]' \
@@ -733,7 +733,7 @@ EOF
     fi
 
     if is_true "${AB_DASHBOARD_ENABLE}"; then
-      emit_daemon agent-browser-dashboard "/opt/oc-env/bin/run-ab-dashboard" \
+      emit_daemon agent-browser-dashboard "/opt/agent-env/bin/run-ab-dashboard" \
         "user = \"${USER_NAME}\"" \
         "dir = \"${OPENCODE_WORKDIR}\"" \
         'retry = true' \
@@ -742,7 +742,7 @@ EOF
 
     local caddy_deps='depends = ["opencode"]'
     if [[ "${AUTH_MODE,,}" == "google" ]]; then
-      emit_daemon oauth2-proxy "/opt/oc-env/bin/run-oauth2-proxy" \
+      emit_daemon oauth2-proxy "/opt/agent-env/bin/run-oauth2-proxy" \
         "user = \"${GATEWAY_USER_NAME}\"" \
         'retry = true' \
         "ready_http = { url = \"http://127.0.0.1:${OAUTH2_PROXY_PORT}/ping\", timeout = \"60s\" }"
@@ -757,7 +757,7 @@ EOF
       "ready_http = { url = \"http://127.0.0.1:${GATEWAY_PORT}/healthz\", timeout = \"60s\" }"
 
     if is_true "${USER_SUPERVISOR_ENABLE}"; then
-      emit_daemon user-supervisor "/opt/oc-env/bin/run-user-supervisor" \
+      emit_daemon user-supervisor "/opt/agent-env/bin/run-user-supervisor" \
         "user = \"${USER_NAME}\"" \
         "dir = \"${OPENCODE_WORKDIR}\"" \
         'retry = true' \

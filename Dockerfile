@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 #
-# oc-env — a ready-to-use OpenCode v2 workstation image.
+# agent-env — a ready-to-use OpenCode v2 workstation image.
 #
 #   * OpenCode v2 API + web server (`opencode2 serve`)
 #   * SSH server
@@ -170,8 +170,8 @@ USER root
 COPY rootfs/ /
 
 RUN set -eux; \
-    chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/oc-env /opt/oc-env/bin/*; \
-    mkdir -p /var/run/sshd /run/dbus /var/lib/caddy /var/lib/pitchfork /opt/oc-env/pitchfork; \
+    chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/agent-env /opt/agent-env/bin/*; \
+    mkdir -p /var/run/sshd /run/dbus /var/lib/caddy /var/lib/pitchfork /opt/agent-env/pitchfork; \
     chown -R gateway:gateway /var/lib/caddy; \
     # Lets the unprivileged gateway user bind low ports if GATEWAY_PORT is one.
     setcap cap_net_bind_service=+ep /usr/local/bin/caddy || true; \
@@ -192,12 +192,12 @@ RUN set -eux; \
     chown -R ${USER_UID}:${USER_GID} /home/${USER_NAME}; \
     # A skeleton of just the state dirs, so mounting empty volumes over them
     # still behaves like a fresh install.
-    mkdir -p /opt/oc-env/skel; \
+    mkdir -p /opt/agent-env/skel; \
     for p in .bashrc .profile .config .local .agent-browser; do \
       [ -e "/home/${USER_NAME}/$p" ] || continue; \
-      cp -a "/home/${USER_NAME}/$p" /opt/oc-env/skel/; \
+      cp -a "/home/${USER_NAME}/$p" /opt/agent-env/skel/; \
     done; \
-    du -sh /opt/oc-env/skel
+    du -sh /opt/agent-env/skel
 
 # ---------------------------------------------------------------------------
 # Default runtime configuration. Everything here is overridable with -e.

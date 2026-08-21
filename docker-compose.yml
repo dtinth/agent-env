@@ -1,13 +1,13 @@
 services:
-  oc-env:
+  agent-env:
     build:
       context: .
       args:
         # Pin these for reproducible builds.
         OPENCODE_VERSION: beta
         NODE_VERSION: "24"
-    image: oc-env:latest
-    container_name: oc-env
+    image: agent-env:latest
+    container_name: agent-env
     restart: unless-stopped
 
     env_file:
