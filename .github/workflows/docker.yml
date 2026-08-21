@@ -211,10 +211,19 @@ jobs:
           # Built as a bash array rather than interpolated into one string:
           # annotation values contain spaces, and word-splitting a command
           # substitution would tear them apart.
-          mapfile -t tags < <(
-            jq -r '.target."docker-metadata-action".tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
-          mapfile -t annotations < <(
-            jq -r '(.target."docker-metadata-action".annotations // [])[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          # metadata-action v6 emits a flat document; v5 and earlier nested it
+          # under a bake target. Accept either, so bumping the action cannot
+          # silently produce an empty tag list again.
+          mapfile -t tags < <(jq -r '
+            (.tags // .target."docker-metadata-action".tags // [])[]
+          ' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+
+          # Annotations with an empty value carry nothing and buildx has no use
+          # for them (description and licenses are empty unless set on the repo).
+          mapfile -t annotations < <(jq -r '
+            (.annotations // .target."docker-metadata-action".annotations // [])[]
+            | select(endswith("=") | not)
+          ' <<< "$DOCKER_METADATA_OUTPUT_JSON")
 
           if [ "${#tags[@]}" -eq 0 ]; then
             echo "::error::no tags were produced; refusing to publish an untagged manifest"
@@ -259,7 +268,7 @@ jobs:
             echo "### Published"
             echo
             echo '```'
-            jq -r '.target."docker-metadata-action".tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON"
+            jq -r '(.tags // .target."docker-metadata-action".tags // [])[]' <<< "$DOCKER_METADATA_OUTPUT_JSON"
             echo '```'
             echo
             echo "Digest: \`${{ steps.digest.outputs.digest }}\`"
