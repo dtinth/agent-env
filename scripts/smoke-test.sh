@@ -39,7 +39,11 @@ for path in / /terminal/ /desktop/vnc.html; do
 done
 
 head_ "VNC websocket (browser path)"
-c=$(curl -s -o /dev/null --max-time 6 -w '%{http_code}' -u "${AUTH}" \
+# --http1.1 matters over TLS: curl would otherwise negotiate HTTP/2, where
+# `Connection: Upgrade` is not a thing, and the request would arrive upstream as
+# a plain GET and 404. Browsers open wss:// over HTTP/1.1, which is what this
+# imitates.
+c=$(curl -s -o /dev/null --max-time 6 --http1.1 -w '%{http_code}' -u "${AUTH}" \
       -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
       -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
       "${BASE}/desktop/websockify")
