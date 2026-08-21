@@ -18,7 +18,8 @@ services:
       - "${HOST_GATEWAY_PORT:-8080}:8080"   # OpenCode web UI, TUI, desktop
       - "${HOST_DASHBOARD_PORT:-8081}:8081" # agent-browser dashboard
       - "${HOST_SSH_PORT:-2222}:22"         # SSH
-      # mosh (UDP). Keep the container-side range in sync with MOSH_PORTS.
+      # mosh (UDP). The client picks a port from the range, so it has to match
+      # what you pass: mosh -p 60000:60010 --ssh="ssh -p 2222" dev@host
       - "${HOST_MOSH_PORTS:-60000-60010}:60000-60010/udp"
 
     # Chromium needs more than the default 64 MB of /dev/shm.

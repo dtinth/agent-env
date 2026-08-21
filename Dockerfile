@@ -220,6 +220,9 @@ ENV TZ=UTC \
     AB_DASHBOARD_PORT=4848 \
     DASHBOARD_GATEWAY_PORT=8081 \
     USER_SUPERVISOR_ENABLE=true \
+    USER_WEB_ENABLE=true \
+    USER_WEB_PORT=4747 \
+    USER_WEB_PATH=pitchfork \
     DISPLAY=:1 \
     CHROME_BIN=/usr/bin/chromium \
     XDG_RUNTIME_DIR=/run/user/1000
@@ -227,8 +230,10 @@ ENV TZ=UTC \
 # 8080/8081 gateway, 22 ssh, 60000-60010/udp mosh
 EXPOSE 8080 8081 22 60000-60010/udp
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
-    CMD curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/healthz" >/dev/null || exit 1
+# The gateway answers /healthz itself, so that alone would not tell us whether
+# the OpenCode server — a daemon of the user's supervisor — is actually up.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD ["bash", "-c", "curl -fsS http://127.0.0.1:${GATEWAY_PORT}/healthz >/dev/null && exec 3<>/dev/tcp/127.0.0.1/${OPENCODE_PORT}"]
 
 # entrypoint.sh renders configuration and then exec's the CMD, so pitchfork
 # ends up as PID 1 with its own zombie reaper and signal forwarding.

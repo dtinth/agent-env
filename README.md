@@ -15,11 +15,12 @@ One container gives you:
 | **OpenCode v2 TUI** in the browser | `<PUBLIC_URL>/terminal` | the real TUI, over ttyd |
 | **XFCE desktop** in the browser | `<PUBLIC_URL>/desktop` | noVNC over x11vnc |
 | **agent-browser dashboard** | `<DASHBOARD_PUBLIC_URL>` | own port; live browser viewports |
+| **pitchfork dashboard** | `<PUBLIC_URL>/pitchfork` | start/stop/logs for your own daemons |
 | **SSH + mosh** | port `22`, UDP `60000-60010` | key-based by default |
 | **Google sign-in** in front of all of it | `<PUBLIC_URL>/oauth2/*` | oauth2-proxy behind Caddy |
 | **mise** | `/opt/mise` | manages node and anything else you add |
 | **a usable shell** | — | git, ripgrep, fd, jq, fastfetch, btop, ncdu, a compiler |
-| **pitchfork** | PID 1, plus one per user | supervises it all; you get your own for your own daemons |
+| **pitchfork** | PID 1, plus one per user | supervises it all; the OpenCode server is yours, not root's |
 | **agent-browser + Chromium** | on the virtual display | headed, so you can watch it over noVNC |
 
 Everything is configured with environment variables. Nothing needs to be baked
@@ -34,6 +35,10 @@ Published images are on GHCR, built for `linux/amd64` and `linux/arm64`:
 ```bash
 docker pull ghcr.io/dtinth/agent-env:latest
 ```
+
+[`compose.example.yaml`](compose.example.yaml) is a deployment example built on
+that image — it declares its ports with `expose` for an ingress controller to
+route, and documents the direct-publish and tailscale-serve variants.
 
 ### Locally, with basic auth (no Google setup needed)
 
@@ -163,6 +168,7 @@ See [`.env.example`](.env.example) for the annotated list. The essentials:
 | `AB_DASHBOARD_ENABLE` | `true` | agent-browser dashboard on its own port |
 | `MISE_TOOLS` | — | Extra global tools, e.g. `python@3.13 go@latest` |
 | `USER_SUPERVISOR_ENABLE` | `true` | Run the dev user's own pitchfork at boot |
+| `USER_WEB_ENABLE`, `USER_WEB_PATH` | `true`, `pitchfork` | pitchfork's web dashboard |
 | `TZ`, `PUID`, `PGID` | `UTC`, `1000`, `1000` | Timezone and uid/gid remapping |
 
 Every variable also accepts a `<NAME>_FILE` form pointing at a file, for Docker
@@ -246,28 +252,52 @@ Run `scripts/smoke-test.sh` against a live container to check the whole thing:
 ./scripts/smoke-test.sh http://localhost:8080 opencode:changeme
 ```
 
-### Your own daemons
+### Your own daemons — including the OpenCode server
 
 The system supervisor is root's and stays that way. You get a **second,
 unprivileged pitchfork supervisor of your own** — its own state, socket and
 logs — so `pitchfork` as `dev` means *your* daemons and can't touch the
-container's:
+container's.
+
+**The OpenCode server runs there**, not in the root supervisor. It is the thing
+you are here to use rather than part of the plumbing, so you can restart it,
+read its logs and watch its memory without sudo — from the terminal, or from
+pitchfork's web UI at `<PUBLIC_URL>/pitchfork`:
 
 ```bash
-$ cat >> ~/.config/pitchfork/config.toml <<'EOF'
+pitchfork restart opencode      # no sudo
+pitchfork logs -f opencode
+```
+
+Its definition lives in a managed block at the end of
+`~/.config/pitchfork/config.toml`, rewritten on every start so an existing
+config volume picks up changes. Anything you put above that block is yours and
+is left alone.
+
+Add your own alongside it:
+
+```bash
+$ $EDITOR ~/.config/pitchfork/config.toml   # above the managed block
 [daemons.api]
 run = "npm run dev"
 dir = "/workspace/my-app"
 ready_port = 3000
 boot_start = true      # comes up with the container
 retry = true
-EOF
 
-$ pitchfork start api          # or `pitchfork start -g` for all of them
+$ pitchfork start api
 $ pitchfork list
+global/api       running
+global/opencode  running
 $ pitchfork logs -f api
-$ pitchfork tui                # dashboard for your daemons
+$ pitchfork tui                # the same dashboard, in the terminal
 ```
+
+Set `USER_WEB_ENABLE=false` to drop the web dashboard, or `USER_WEB_PATH` to
+serve it somewhere other than `/pitchfork`. It binds loopback only; the gateway
+is what exposes it, behind the same authentication as everything else. Note that
+it can edit the config and stop daemons — no more privilege than the TUI already
+gives, but worth knowing.
 
 Project daemons are usually better off in a `pitchfork.toml` next to your code —
 `/workspace/pitchfork.toml` is on a volume, so it survives a rebuild, and
@@ -278,6 +308,12 @@ system services sudo into root for you; `agent-env mine` lists just yours.
 
 Set `USER_SUPERVISOR_ENABLE=false` if you don't want the user supervisor running
 at boot — you can still start one on demand.
+
+Because the two supervisors cannot see each other, nothing in the system set
+`depends` on the OpenCode server any more. Caddy is a proxy and does not need
+its upstream at startup; the browser terminal waits for the server before
+starting the TUI; and the container's health check tests the OpenCode port as
+well as the gateway, so "healthy" still means the server is actually up.
 
 Two details worth knowing if you go poking at this:
 
@@ -441,6 +477,7 @@ v2 beta builds.
    browser ──8080──►│ Caddy ──forward_auth──► oauth2-proxy ──► Google│
                     │   │                                            │
                     │   ├─ /            ──► opencode2 serve  :4096   │
+                    │   ├─ /pitchfork   ──► pitchfork web    :4747   │
                     │   ├─ /terminal    ──► ttyd :7681 ──► TUI       │
                     │   ├─ /desktop     ──► websockify :6080         │
                     │   │                     └─ x11vnc :5900 ──► Xvfb :1 ──► XFCE

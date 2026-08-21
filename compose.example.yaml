@@ -1,0 +1,145 @@
+# agent-env — a deployment example using the published image.
+#
+#   cp compose.example.yaml compose.yaml
+#   $EDITOR .env                  # values for the keys listed below
+#   docker compose up -d
+#   docker compose exec agent-env agent-env urls
+#
+# To build from this repository instead of pulling, use docker-compose.yml.
+#
+# The environment block below names the keys this deployment passes through,
+# without values. Compose fills each one from ./.env or from your shell, and
+# leaves out any it cannot find — so an unset key falls back to the image's own
+# default rather than being passed as empty. Anything you want that is not
+# listed has to be added here; .env.example documents the full set.
+#
+# Nothing is published to the host. The ports are declared with `expose`, which
+# documents them and makes them reachable from other containers on the same
+# network — the usual shape when an ingress controller or reverse proxy sits in
+# front. See the end of this file for publishing them directly instead.
+
+name: agent-env
+
+services:
+  agent-env:
+    image: ghcr.io/dtinth/agent-env:latest
+    # Pin the digest for reproducible deploys:
+    # image: ghcr.io/dtinth/agent-env@sha256:...
+    pull_policy: always
+    restart: unless-stopped
+
+    environment:
+      # --- Where it lives -------------------------------------------------
+      # The URL people actually type, i.e. where your ingress terminates. It
+      # must match the redirect URI you register with Google, and it decides
+      # whether session cookies are marked secure.
+      - PUBLIC_URL
+      - DASHBOARD_PUBLIC_URL
+      - TZ
+
+      # --- Who gets in ----------------------------------------------------
+      # AUTH_MODE is google (default), basic, or none. google refuses to start
+      # without ALLOWED_EMAILS or ALLOWED_EMAIL_DOMAINS — otherwise any Google
+      # account on the internet could sign in.
+      - AUTH_MODE
+      - GOOGLE_CLIENT_ID
+      - GOOGLE_CLIENT_SECRET
+      - ALLOWED_EMAILS
+      - ALLOWED_EMAIL_DOMAINS
+      # Set this to keep sessions alive across restarts; generated otherwise.
+      - OAUTH2_PROXY_COOKIE_SECRET
+      # AUTH_MODE=basic only. A password is generated and logged if omitted.
+      - GATEWAY_USER
+      - GATEWAY_PASSWORD
+
+      # --- OpenCode -------------------------------------------------------
+      # Or sign in interactively with /connect in the TUI, which persists in
+      # the opencode-state volume.
+      - ANTHROPIC_API_KEY
+      - OPENAI_API_KEY
+      - OPENCODE_CONFIG_CONTENT
+
+      # --- Shell access ---------------------------------------------------
+      # Public keys, newline- or semicolon-separated. mosh uses the same keys.
+      - SSH_AUTHORIZED_KEYS
+
+      # --- Desktop and tooling --------------------------------------------
+      - DESKTOP_RESOLUTION
+      # Extra global toolchains, e.g. "python@3.13 go@latest".
+      - MISE_TOOLS
+
+      # --- Host filesystem ------------------------------------------------
+      # Match the owner of a host directory mounted at /workspace.
+      - PUID
+      - PGID
+
+    # What the container listens on. Point your ingress at 8080; the rest are
+    # optional extras.
+    expose:
+      - "8080" # everything web: the UI, /terminal, /desktop, /pitchfork
+      - "8081" # agent-browser dashboard (needs its own origin, not a path)
+      - "22" # ssh, and mosh's setup connection
+      - "60000-60010/udp" # mosh sessions, one port each
+
+    # Chromium needs more than the default 64 MB of /dev/shm.
+    shm_size: "2gb"
+
+    volumes:
+      - workspace:/workspace # your code
+      - opencode-state:/home/dev/.local/share/opencode # sessions, provider logins
+      - opencode-config:/home/dev/.config/opencode # config, generated secrets
+      - agent-browser:/home/dev/.agent-browser # browser profiles, saved auth
+      - user-pitchfork:/home/dev/.config/pitchfork # your own daemons
+      # To work on a host directory instead of the volume, mount it here and
+      # set PUID/PGID to match its owner:
+      # - /srv/code:/workspace
+
+    # The image ships a HEALTHCHECK, so `docker compose ps` reports health
+    # without anything configured here.
+
+volumes:
+  workspace:
+  opencode-state:
+  opencode-config:
+  agent-browser:
+  user-pitchfork:
+# ---------------------------------------------------------------------------
+# Reaching it without an ingress controller
+#
+# Publish the ports on the host yourself:
+#
+#   ports:
+#     - "8080:8080"
+#     - "8081:8081"
+#     - "2222:22"
+#     - "60000-60010:60000-60010/udp"
+#
+# mosh needs the published range to match what the client asks for:
+#
+#   mosh -p 60000:60010 --ssh="ssh -p 2222" dev@host
+#
+# ---------------------------------------------------------------------------
+# Behind tailscale serve
+#
+# The tailnet is then the boundary, so publish on loopback only and let
+# tailscale be the sole route in:
+#
+#   ports:
+#     - "127.0.0.1:8080:8080"
+#     - "127.0.0.1:8081:8081"
+#     - "2222:22"
+#
+# set AUTH_MODE=none and point PUBLIC_URL at the serve port in .env:
+#
+#   AUTH_MODE=none
+#   PUBLIC_URL=https://<host>.<tailnet>.ts.net:18080
+#   DASHBOARD_PUBLIC_URL=https://<host>.<tailnet>.ts.net:18081
+#
+# then publish it to the tailnet only — serve, not funnel:
+#
+#   sudo tailscale serve --bg --https=18080 http://127.0.0.1:8080
+#   sudo tailscale serve --bg --https=18081 http://127.0.0.1:8081
+#
+# Anyone on the tailnet then has an unauthenticated, root-capable shell in the
+# container, so keep AUTH_MODE=google if that is not what you want.
+# ---------------------------------------------------------------------------

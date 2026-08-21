@@ -146,6 +146,47 @@ PY
     && ok "/tmp/fslock is shared, so any user can run a supervisor" \
     || bad "/tmp/fslock is not writable by other users"
 
+  # The OpenCode server belongs to the user, not to root.
+  sys_daemons=$(docker exec "${CONTAINER}" pitchfork list 2>/dev/null || true)
+  grep -q "opencode" <<<"${sys_daemons}" \
+    && bad "opencode is still a system daemon" \
+    || ok "opencode is not in the root supervisor"
+
+  user_daemons=$(docker exec -u dev "${CONTAINER}" bash -lc 'pitchfork list' 2>/dev/null || true)
+  grep -qE "opencode +running" <<<"${user_daemons}" \
+    && ok "opencode runs in the dev user's own supervisor" \
+    || bad "opencode is not running under dev: ${user_daemons:-none}"
+
+  # ...and its parent really is that supervisor, not PID 1.
+  parent=$(docker exec "${CONTAINER}" bash -c '
+    pid=$(pgrep -f "opencode2 serve" | head -1)
+    while [ -n "$pid" ] && [ "$pid" != 1 ]; do
+      args=$(ps -o args= -p "$pid")
+      case "$args" in *"supervisor run"*) echo "$args"; exit 0 ;; esac
+      pid=$(ps -o ppid= -p "$pid" | tr -d " ")
+    done' 2>/dev/null || true)
+  case "${parent}" in
+    *--container*) bad "opencode hangs off the root supervisor (${parent})" ;;
+    *supervisor\ run*) ok "opencode's supervisor is the unprivileged one" ;;
+    *) bad "could not trace opencode to a supervisor: ${parent:-none}" ;;
+  esac
+
+  head_ "pitchfork web UI"
+  c=$(code "${BASE}/pitchfork")
+  case "$c" in
+    200) ok "/pitchfork serves the daemon dashboard (200)" ;;
+    302) ok "/pitchfork redirects to sign-in (302)" ;;
+    *)   bad "/pitchfork returned $c" ;;
+  esac
+  c=$(code "${BASE}/img/logo.png")
+  [[ "$c" == 200 || "$c" == 302 ]] && ok "its logo resolves through the gateway ($c)" \
+                                   || bad "logo returned $c"
+  if [ "${auth_mode}" != none ]; then
+    c=$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' "${BASE}/pitchfork")
+    [[ "$c" == 401 || "$c" == 302 ]] && ok "the dashboard is behind the gateway auth ($c)" \
+                                     || bad "/pitchfork answered $c without credentials"
+  fi
+
   head_ "agent-browser"
 
   cfg=$(docker exec -u dev "${CONTAINER}" cat /home/dev/.agent-browser/config.json 2>/dev/null)

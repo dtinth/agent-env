@@ -12,4 +12,16 @@ if [[ "${TTYD_COMMAND:-tui}" == "shell" ]]; then
   exec bash -l
 fi
 
-exec opencode2 --server "http://127.0.0.1:${OPENCODE_PORT:-4096}" "${OPENCODE_WORKDIR:-/workspace}"
+port="${OPENCODE_PORT:-4096}"
+
+# The server is a daemon of the user's own supervisor now, so it may still be
+# coming up when a browser opens the terminal. Wait for it rather than showing a
+# connection error that needs a page reload.
+for _ in $(seq 1 120); do
+  (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null && break
+  printf '\rwaiting for the OpenCode server on port %s… ' "${port}"
+  sleep 1
+done
+printf '\r\033[K'
+
+exec opencode2 --server "http://127.0.0.1:${port}" "${OPENCODE_WORKDIR:-/workspace}"

@@ -79,6 +79,12 @@ TTYD_PORT="${TTYD_PORT:-7681}"
 TTYD_WRITABLE="${TTYD_WRITABLE:-true}"
 
 USER_SUPERVISOR_ENABLE="${USER_SUPERVISOR_ENABLE:-true}"
+# pitchfork's own web UI, served by the user's supervisor. It can start, stop
+# and restart daemons, stream their logs and edit the config, so it sits behind
+# the gateway's auth like everything else.
+USER_WEB_ENABLE="${USER_WEB_ENABLE:-true}"
+USER_WEB_PORT="${USER_WEB_PORT:-4747}"
+USER_WEB_PATH="${USER_WEB_PATH:-pitchfork}"
 
 AB_DASHBOARD_ENABLE="${AB_DASHBOARD_ENABLE:-true}"
 AB_DASHBOARD_PORT="${AB_DASHBOARD_PORT:-4848}"
@@ -164,23 +170,33 @@ if is_true "${CHOWN_WORKSPACE:-true}"; then
   chown "${PUID}:${PGID}" "${OPENCODE_WORKDIR}" || true
 fi
 
-# A starting point for the user's own daemons, written once and then left alone.
-user_pf_config="${USER_HOME}/.config/pitchfork/config.toml"
-if [[ ! -e "${user_pf_config}" ]]; then
-  mkdir -p "$(dirname "${user_pf_config}")"
-  cat > "${user_pf_config}" <<'EOF'
-# Your own daemons, managed by your own pitchfork supervisor.
+# The OpenCode server is the thing you are here to use, not part of the
+# plumbing, so it belongs to you rather than to root: your own supervisor runs
+# it, and you can restart it, read its logs and drive it from the pitchfork web
+# UI without sudo.
 #
-#   pitchfork start -g <name>    start one of the daemons defined here
+# Its definition lives in a managed block that is rewritten on every start, so
+# an existing config volume picks up changes to it. Everything outside the block
+# is yours and is left alone.
+user_pf_config="${USER_HOME}/.config/pitchfork/config.toml"
+mkdir -p "$(dirname "${user_pf_config}")"
+
+if [[ ! -e "${user_pf_config}" ]]; then
+  cat > "${user_pf_config}" <<'SEED'
+# Your own daemons, run by your own pitchfork supervisor.
+#
+#   pitchfork start <name>       start one of the daemons defined here
 #   pitchfork list               what you have running
 #   pitchfork logs -f <name>     follow its output
+#   pitchfork tui                a dashboard in the terminal
 #
-# These are entirely separate from the container's system services (run
-# `agent-env status` for those). Daemons with boot_start = true come up when the
+# These are separate from the container's system services — run
+# `agent-env status` for those. Daemons with boot_start = true come up when the
 # container does.
 #
-# Project daemons usually belong in a pitchfork.toml next to your code instead
-# — /workspace/pitchfork.toml is on a volume, so it survives a rebuild.
+# Add yours above the managed block at the end of this file. Project daemons are
+# often better off in a pitchfork.toml next to your code; /workspace/pitchfork.toml
+# is on a volume, so it survives a rebuild.
 #
 # [daemons.api]
 # run = "npm run dev"
@@ -188,9 +204,49 @@ if [[ ! -e "${user_pf_config}" ]]; then
 # ready_port = 3000
 # boot_start = true
 # retry = true
-EOF
-  chown -R "${PUID}:${PGID}" "$(dirname "${user_pf_config}")"
+SEED
 fi
+
+pf_begin="# >>> agent-env managed — rewritten on every start, edits here are lost >>>"
+pf_end="# <<< agent-env managed <<<"
+pf_block="${RUN_DIR}/opencode-daemon.toml"
+cat > "${pf_block}" <<BLOCK
+${pf_begin}
+# Keep your own daemons above this block: in TOML, anything following a table
+# header belongs to that table.
+[daemons.opencode]
+run = "/opt/agent-env/bin/run-opencode"
+dir = "${OPENCODE_WORKDIR}"
+ready_port = { port = ${OPENCODE_PORT}, timeout = "120s" }
+retry = true
+boot_start = true
+${pf_end}
+BLOCK
+
+python3 - "${user_pf_config}" "${pf_block}" "${pf_begin}" "${pf_end}" <<'MERGE'
+import pathlib, sys
+
+cfg, blk, begin, end = sys.argv[1:5]
+path = pathlib.Path(cfg)
+block = pathlib.Path(blk).read_text().rstrip("\n") + "\n"
+
+kept, inside = [], False
+for line in (path.read_text().splitlines(keepends=True) if path.exists() else []):
+    stripped = line.strip()
+    if stripped == begin:
+        inside = True
+        continue
+    if stripped == end:
+        inside = False
+        continue
+    if not inside:
+        kept.append(line)
+
+body = "".join(kept).rstrip("\n")
+path.write_text(f"{body}\n\n{block}" if body else block)
+MERGE
+
+chown -R "${PUID}:${PGID}" "$(dirname "${user_pf_config}")"
 
 # ---------------------------------------------------------------------------
 # OpenCode server password (also authenticates CLI/TUI clients)
@@ -564,6 +620,29 @@ EOF
 EOF
     fi
 
+    if is_true "${USER_SUPERVISOR_ENABLE}" && is_true "${USER_WEB_ENABLE}"; then
+      cat <<EOF
+
+			# pitchfork's web UI for the user's own daemons, including the
+			# OpenCode server. It is told to serve under this prefix, so pass
+			# the path through rather than stripping it. Its document lives at
+			# /${USER_WEB_PATH} with no trailing slash and carries a
+			# <base href="/${USER_WEB_PATH}/">, so a stray slash goes back to it.
+			redir /${USER_WEB_PATH}/ /${USER_WEB_PATH}
+			handle /${USER_WEB_PATH}* {
+				reverse_proxy 127.0.0.1:${USER_WEB_PORT}
+			}
+
+			# Its logo is requested from an absolute /img/logo.png, which
+			# ignores the <base href> and so escapes the prefix. Send that one
+			# path to where the file actually is.
+			handle /img/logo.png {
+				rewrite * /${USER_WEB_PATH}/img/logo.png
+				reverse_proxy 127.0.0.1:${USER_WEB_PORT}
+			}
+EOF
+    fi
+
     cat <<EOF
 
 			# Everything else: the OpenCode v2 web UI and API. The server's own
@@ -688,12 +767,6 @@ EOF
         "ready_port = ${SSH_PORT}"
     fi
 
-    emit_daemon opencode "/opt/agent-env/bin/run-opencode" \
-      "user = \"${USER_NAME}\"" \
-      "dir = \"${OPENCODE_WORKDIR}\"" \
-      'retry = true' \
-      "ready_port = { port = ${OPENCODE_PORT}, timeout = \"120s\" }"
-
     if is_true "${DESKTOP_ENABLE}"; then
       emit_daemon dbus "/opt/agent-env/bin/run-dbus" \
         'retry = true' \
@@ -727,7 +800,6 @@ EOF
       emit_daemon ttyd "/opt/agent-env/bin/run-ttyd" \
         "user = \"${USER_NAME}\"" \
         "dir = \"${OPENCODE_WORKDIR}\"" \
-        'depends = ["opencode"]' \
         'retry = true' \
         "ready_port = ${TTYD_PORT}"
     fi
@@ -740,13 +812,15 @@ EOF
         "ready_http = { url = \"http://127.0.0.1:${AB_DASHBOARD_PORT}/\", timeout = \"60s\" }"
     fi
 
-    local caddy_deps='depends = ["opencode"]'
+    # Caddy is a proxy: it does not need its upstreams to exist at startup, and
+    # opencode now lives in another supervisor entirely.
+    local caddy_deps=''
     if [[ "${AUTH_MODE,,}" == "google" ]]; then
       emit_daemon oauth2-proxy "/opt/agent-env/bin/run-oauth2-proxy" \
         "user = \"${GATEWAY_USER_NAME}\"" \
         'retry = true' \
         "ready_http = { url = \"http://127.0.0.1:${OAUTH2_PROXY_PORT}/ping\", timeout = \"60s\" }"
-      caddy_deps='depends = ["opencode", "oauth2-proxy"]'
+      caddy_deps='depends = ["oauth2-proxy"]'
     fi
 
     emit_daemon caddy "/usr/local/bin/caddy run --config /etc/caddy/Caddyfile" \
@@ -757,10 +831,15 @@ EOF
       "ready_http = { url = \"http://127.0.0.1:${GATEWAY_PORT}/healthz\", timeout = \"60s\" }"
 
     if is_true "${USER_SUPERVISOR_ENABLE}"; then
+      local user_sup_ready="ready_cmd = { run = \"true\", timeout = \"5s\" }"
+      if is_true "${USER_WEB_ENABLE}"; then
+        user_sup_ready="ready_port = { port = ${USER_WEB_PORT}, timeout = \"60s\" }"
+      fi
       emit_daemon user-supervisor "/opt/agent-env/bin/run-user-supervisor" \
         "user = \"${USER_NAME}\"" \
         "dir = \"${OPENCODE_WORKDIR}\"" \
         'retry = true' \
+        "${user_sup_ready}" \
         "env = { PITCHFORK_STATE_DIR = \"${USER_HOME}/.local/state/pitchfork\" }"
     fi
 
@@ -788,6 +867,9 @@ log " auth mode   : ${AUTH_MODE}"
 is_true "${TTYD_ENABLE}"        && log " TUI         : ${PUBLIC_URL}/terminal"
 is_true "${DESKTOP_ENABLE}"     && log " desktop     : ${PUBLIC_URL}/desktop"
 is_true "${AB_DASHBOARD_ENABLE}" && log " browser dash: ${DASHBOARD_PUBLIC_URL}"
+if is_true "${USER_SUPERVISOR_ENABLE}" && is_true "${USER_WEB_ENABLE}"; then
+  log " daemons     : ${PUBLIC_URL}/${USER_WEB_PATH}"
+fi
 is_true "${SSH_ENABLE}"         && log " ssh         : ${USER_NAME}@<host> -p ${SSH_PORT}"
 log " workspace   : ${OPENCODE_WORKDIR}"
 log "----------------------------------------------------------------"

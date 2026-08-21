@@ -12,5 +12,14 @@ unset PITCHFORK_CONFIG_DIR
 export PITCHFORK_STATE_DIR="${HOME}/.local/state/pitchfork"
 mkdir -p "${PITCHFORK_STATE_DIR}" "${HOME}/.config/pitchfork"
 
-# --boot starts any daemon marked `boot_start = true` in the user's config.
-exec pitchfork supervisor run --boot
+args=(--boot)
+
+# The web UI is told its prefix so it can be reverse-proxied under a path.
+# It binds loopback only; the gateway is what exposes it.
+if [[ "${USER_WEB_ENABLE:-true}" == "true" ]]; then
+  args+=(--web-port "${USER_WEB_PORT:-4747}" --web-path "${USER_WEB_PATH:-pitchfork}")
+fi
+
+# --boot starts any daemon marked `boot_start = true` in the user's config,
+# which is where the OpenCode server is defined.
+exec pitchfork supervisor run "${args[@]}"
