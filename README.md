@@ -1,5 +1,7 @@
 # oc-env
 
+[![docker](https://github.com/dtinth/agent-env/actions/workflows/docker.yml/badge.svg)](https://github.com/dtinth/agent-env/actions/workflows/docker.yml)
+
 A ready-to-use Docker image that turns OpenCode v2 into a hosted, Google-authenticated
 workstation.
 
@@ -27,10 +29,16 @@ into a custom image.
 
 ## Quick start
 
+Published images are on GHCR, built for `linux/amd64` and `linux/arm64`:
+
+```bash
+docker pull ghcr.io/dtinth/agent-env:latest
+```
+
 ### Locally, with basic auth (no Google setup needed)
 
 ```bash
-docker build -t oc-env .
+docker build -t oc-env .          # or use ghcr.io/dtinth/agent-env:latest
 
 docker run -d --name oc-env --shm-size=2g \
   -p 8080:8080 -p 8081:8081 -p 2222:22 \
@@ -415,6 +423,14 @@ Chromium needs a large `/dev/shm`: keep `--shm-size=2g` (compose already sets it
 ```bash
 docker buildx build --platform linux/amd64,linux/arm64 -t your-registry/oc-env:latest --push .
 ```
+
+CI does this on native runners rather than under QEMU — `.github/workflows/docker.yml`
+builds each architecture on its own runner (`ubuntu-latest` and `ubuntu-24.04-arm`),
+pushes it to GHCR *by digest and untagged*, runs `scripts/smoke-test.sh` against
+the pushed artifact, and only merges the digests into a tagged manifest list once
+both pass. A failed test therefore can't leave a broken `:latest` behind. Pull
+requests build and test without pushing, and a weekly run picks up new OpenCode
+v2 beta builds.
 
 ---
 

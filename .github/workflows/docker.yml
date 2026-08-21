@@ -1,0 +1,266 @@
+name: docker
+
+# Builds the image for amd64 and arm64 on native runners, smoke-tests each one,
+# and only then publishes a multi-arch manifest to GHCR.
+#
+# Action versions are pinned exactly and kept current by Dependabot
+# (.github/dependabot.yml).
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+  # OPENCODE_VERSION defaults to the `beta` dist-tag, so a rebuild picks up new
+  # OpenCode v2 builds even when nothing in this repo changed.
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            # Native arm64 runners are free and unlimited on public repos.
+            # QEMU emulation would take hours for an image with this much apt.
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4.3.0
+
+      - name: Log in to ${{ env.REGISTRY }}
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tags are applied later, when the per-architecture digests are merged
+      # into one manifest list. Here we only want the labels.
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      # On a push we publish the architecture image by digest, untagged, so a
+      # failed smoke test can never leave a broken `:latest` behind. On a pull
+      # request there are no registry credentials, so build into the local
+      # daemon instead.
+      - name: Build and push by digest
+        id: push
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+
+      - name: Build for testing
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          load: true
+          tags: agent-env:ci
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+
+      - name: Resolve the image to test
+        id: ref
+        run: |
+          if [ -n "${{ steps.push.outputs.digest }}" ]; then
+            # Test the exact artifact that was pushed, not a rebuild of it.
+            echo "image=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.push.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "image=agent-env:ci" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Smoke test
+        env:
+          IMAGE: ${{ steps.ref.outputs.image }}
+        run: |
+          set -euo pipefail
+          password="ci-$(openssl rand -hex 12)"
+
+          docker run -d --name agent-env --shm-size=2g \
+            -p 8080:8080 -p 8081:8081 -p 2222:22 \
+            -e AUTH_MODE=basic \
+            -e "GATEWAY_PASSWORD=${password}" \
+            -e PUBLIC_URL=http://localhost:8080 \
+            -e DASHBOARD_PUBLIC_URL=http://localhost:8081 \
+            "${IMAGE}"
+
+          # The image's own HEALTHCHECK is the readiness signal.
+          for _ in $(seq 1 60); do
+            state=$(docker inspect -f '{{.State.Health.Status}}' agent-env)
+            [ "$state" = healthy ] && break
+            if [ "$state" = unhealthy ]; then
+              echo "::error::container went unhealthy"; docker logs agent-env; exit 1
+            fi
+            sleep 5
+          done
+
+          CONTAINER=agent-env ./scripts/smoke-test.sh \
+            http://localhost:8080 "opencode:${password}"
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs agent-env 2>&1 | tail -200 || true
+
+      - name: Record the digest
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          # The sha256: prefix is stripped because artifact entries cannot
+          # contain a colon; the publish job puts it back.
+          touch "/tmp/digests/${DIGEST#sha256:}"
+
+      - name: Upload the digest
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          # One file per architecture, merged by the next job.
+          name: digest-${{ strategy.job-index }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: publish manifest
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # provenance attestation
+      attestations: write
+
+    steps:
+      - name: Download the digests
+        uses: actions/download-artifact@v8.0.1
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4.3.0
+
+      - name: Log in to ${{ env.REGISTRY }}
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags and annotations
+        id: meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=long
+
+      - name: Create and push the manifest list
+        working-directory: /tmp/digests
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+        run: |
+          set -euo pipefail
+
+          # Built as a bash array rather than interpolated into one string:
+          # annotation values contain spaces, and word-splitting a command
+          # substitution would tear them apart.
+          mapfile -t tags < <(
+            jq -r '.target."docker-metadata-action".tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          mapfile -t annotations < <(
+            jq -r '(.target."docker-metadata-action".annotations // [])[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+
+          if [ "${#tags[@]}" -eq 0 ]; then
+            echo "::error::no tags were produced; refusing to publish an untagged manifest"
+            exit 1
+          fi
+
+          args=()
+          for tag in "${tags[@]}"; do args+=(--tag "$tag"); done
+          for annotation in "${annotations[@]}"; do args+=(--annotation "$annotation"); done
+
+          sources=()
+          for digest in *; do
+            sources+=("${REGISTRY}/${IMAGE_NAME}@sha256:${digest}")
+          done
+
+          printf 'merging %d architecture image(s)\n' "${#sources[@]}"
+          docker buildx imagetools create "${args[@]}" "${sources[@]}"
+
+      - name: Inspect
+        run: |
+          docker buildx imagetools inspect \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}"
+
+      - name: Read the manifest digest
+        id: digest
+        run: |
+          digest=$(docker buildx imagetools inspect \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}" \
+            --format '{{json .Manifest}}' | jq -r .digest)
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest provenance
+        uses: actions/attest-build-provenance@v4.2.2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          push-to-registry: true
+
+      - name: Summary
+        run: |
+          {
+            echo "### Published"
+            echo
+            echo '```'
+            jq -r '.target."docker-metadata-action".tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON"
+            echo '```'
+            echo
+            echo "Digest: \`${{ steps.digest.outputs.digest }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
