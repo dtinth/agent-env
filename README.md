@@ -241,6 +241,12 @@ ready_port = 5900         # "up" means the port answers
 retry = true
 ```
 
+`agent-env` is the way in for system services: it sets the system supervisor's
+directories and sudos into it for you. A bare `pitchfork` resolves to the
+*invoking user's* supervisor, which is the point — but it means
+`docker exec <container> pitchfork list` looks at the dev user's supervisor and
+fails on permissions. Use `agent-env status` there.
+
 pitchfork captures each daemon's output into its own log store, which is what
 `agent-env logs` reads. A small `zz-log-forward` daemon also streams everything to
 PID 1's stdout, so `docker logs -f agent-env` and your log driver still see the lot,

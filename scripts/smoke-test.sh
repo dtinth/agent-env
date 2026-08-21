@@ -19,6 +19,18 @@ head_() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
 code() { curl -s -o /dev/null --max-time 15 -w '%{http_code}' -u "${AUTH}" "$1"; }
 
+# The image deliberately keeps PITCHFORK_* out of its environment so that an
+# unprivileged shell gets its own supervisor. `docker exec` therefore inherits
+# HOME=/home/dev, and root's pitchfork would resolve to the dev user's state
+# directory and fail on permissions. Point it at the system supervisor, the way
+# the agent-env helper does.
+sys_pitchfork() {
+  docker exec \
+    -e PITCHFORK_STATE_DIR=/var/lib/pitchfork \
+    -e PITCHFORK_CONFIG_DIR=/opt/agent-env/pitchfork \
+    "${CONTAINER}" pitchfork "$@"
+}
+
 # AUTH_MODE=none is a legitimate deployment — behind tailscale serve, say —
 # where an unauthenticated 200 is correct rather than a hole. Ask the container
 # which mode it is in rather than guessing from the response.
@@ -71,9 +83,14 @@ if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1
   [[ "$p1" == *pitchfork* ]] && ok "pitchfork is PID 1 (${p1})" \
                              || bad "PID 1 is not pitchfork: ${p1}"
 
-  down=$(docker exec "${CONTAINER}" pitchfork list 2>/dev/null | grep -vc running)
-  [[ "$down" == 0 ]] && ok "every daemon is running" \
-                     || { bad "$down daemon(s) not running"; docker exec "${CONTAINER}" pitchfork list; }
+  daemons=$(sys_pitchfork list 2>/dev/null || true)
+  if [[ -z "${daemons}" ]]; then
+    bad "could not list the system daemons at all"
+  else
+    down=$(grep -vc running <<<"${daemons}")
+    [[ "$down" == 0 ]] && ok "all $(grep -c . <<<"${daemons}") system daemons are running" \
+                       || { bad "$down daemon(s) not running"; printf '%s\n' "${daemons}"; }
+  fi
 
   geom=$(docker exec "${CONTAINER}" bash -lc 'xdpyinfo -display :1 2>/dev/null | grep -m1 dimensions')
   [[ -n "$geom" ]] && ok "X display up (${geom## })" || bad "no X display on :1"
@@ -146,11 +163,16 @@ PY
     && ok "/tmp/fslock is shared, so any user can run a supervisor" \
     || bad "/tmp/fslock is not writable by other users"
 
-  # The OpenCode server belongs to the user, not to root.
-  sys_daemons=$(docker exec "${CONTAINER}" pitchfork list 2>/dev/null || true)
-  grep -q "opencode" <<<"${sys_daemons}" \
-    && bad "opencode is still a system daemon" \
-    || ok "opencode is not in the root supervisor"
+  # The OpenCode server belongs to the user, not to root. Checked against a
+  # listing we know is real, so an error cannot masquerade as absence.
+  sys_daemons=$(sys_pitchfork list 2>/dev/null || true)
+  if [[ -z "${sys_daemons}" ]]; then
+    bad "could not read the root supervisor's daemons"
+  elif grep -q "opencode" <<<"${sys_daemons}"; then
+    bad "opencode is still a system daemon"
+  else
+    ok "opencode is not in the root supervisor"
+  fi
 
   user_daemons=$(docker exec -u dev "${CONTAINER}" bash -lc 'pitchfork list' 2>/dev/null || true)
   grep -qE "opencode +running" <<<"${user_daemons}" \
