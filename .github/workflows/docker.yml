@@ -191,6 +191,10 @@ jobs:
       - name: Tags and annotations
         id: meta
         uses: docker/metadata-action@v6.2.0
+        env:
+          # `imagetools create` builds an index, and it rejects the manifest:
+          # level annotations this action emits by default.
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: index
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
@@ -218,10 +222,14 @@ jobs:
             (.tags // .target."docker-metadata-action".tags // [])[]
           ' <<< "$DOCKER_METADATA_OUTPUT_JSON")
 
-          # Annotations with an empty value carry nothing and buildx has no use
-          # for them (description and licenses are empty unless set on the repo).
+          # Only index-level annotations, and only ones with a value:
+          #   - imagetools create errors on `manifest:` ("not supported yet"),
+          #     so filtering here keeps this working even if the levels env
+          #     above is ever changed;
+          #   - description and licenses come out empty unless set on the repo.
           mapfile -t annotations < <(jq -r '
             (.annotations // .target."docker-metadata-action".annotations // [])[]
+            | select(startswith("index:"))
             | select(endswith("=") | not)
           ' <<< "$DOCKER_METADATA_OUTPUT_JSON")
 
