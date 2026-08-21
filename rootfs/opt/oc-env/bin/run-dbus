@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# System D-Bus, required by the XFCE session.
+set -euo pipefail
+mkdir -p /run/dbus
+rm -f /run/dbus/pid
+dbus-uuidgen --ensure
+exec dbus-daemon --system --nofork --nopidfile --syslog-only

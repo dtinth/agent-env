@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# oauth2-proxy, configured from the argument file the entrypoint renders.
+set -euo pipefail
+argfile=/run/oc-env/oauth2-proxy.args
+[[ -r "${argfile}" ]] || { echo "missing ${argfile}" >&2; exit 1; }
+mapfile -t args < "${argfile}"
+exec /usr/local/bin/oauth2-proxy "${args[@]}"

@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# agent-browser observability dashboard.
+#
+# `dashboard start` forks a standalone background process and returns, so this
+# wrapper keeps supervisor's process alive by watching the port and exiting
+# (which triggers a restart) if the dashboard goes away.
+set -euo pipefail
+export DISPLAY="${DESKTOP_DISPLAY:-:1}"
+port="${AB_DASHBOARD_PORT:-4848}"
+
+cleanup() { agent-browser dashboard stop >/dev/null 2>&1 || true; }
+trap cleanup EXIT INT TERM
+
+agent-browser dashboard stop >/dev/null 2>&1 || true
+agent-browser dashboard start --port "${port}"
+
+# Give it a moment to bind before the watch loop starts.
+for _ in $(seq 1 30); do
+  curl -fsS -o /dev/null "http://127.0.0.1:${port}/" && break
+  sleep 1
+done
+
+while curl -fsS -o /dev/null --max-time 10 "http://127.0.0.1:${port}/"; do
+  sleep 15
+done
+
+echo "agent-browser dashboard stopped responding on port ${port}" >&2
+exit 1

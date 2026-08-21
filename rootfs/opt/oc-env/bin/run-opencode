@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# OpenCode v2 API + web server. Bound to loopback; the gateway is the only
+# public entrance.
+set -euo pipefail
+cd "${OPENCODE_WORKDIR:-/workspace}"
+exec opencode2 serve \
+  --hostname 127.0.0.1 \
+  --port "${OPENCODE_PORT:-4096}" \
+  ${OPENCODE_SERVE_ARGS:-}

@@ -1,0 +1,47 @@
+services:
+  oc-env:
+    build:
+      context: .
+      args:
+        # Pin these for reproducible builds.
+        OPENCODE_VERSION: beta
+        NODE_VERSION: "24"
+    image: oc-env:latest
+    container_name: oc-env
+    restart: unless-stopped
+
+    env_file:
+      - path: .env
+        required: false
+
+    ports:
+      - "${HOST_GATEWAY_PORT:-8080}:8080"   # OpenCode web UI, TUI, desktop
+      - "${HOST_DASHBOARD_PORT:-8081}:8081" # agent-browser dashboard
+      - "${HOST_SSH_PORT:-2222}:22"         # SSH
+      # mosh (UDP). Keep the container-side range in sync with MOSH_PORTS.
+      - "${HOST_MOSH_PORTS:-60000-60010}:60000-60010/udp"
+
+    # Chromium needs more than the default 64 MB of /dev/shm.
+    shm_size: "2gb"
+
+    volumes:
+      - workspace:/workspace
+      - opencode-state:/home/dev/.local/share/opencode
+      - opencode-config:/home/dev/.config/opencode
+      - agent-browser:/home/dev/.agent-browser
+      # The dev user's own daemon definitions.
+      - user-pitchfork:/home/dev/.config/pitchfork
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+volumes:
+  workspace:
+  opencode-state:
+  opencode-config:
+  agent-browser:
+  user-pitchfork:

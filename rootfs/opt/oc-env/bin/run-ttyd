@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# The real OpenCode v2 TUI, served over a websocket terminal.
+set -euo pipefail
+args=(
+  --port "${TTYD_PORT:-7681}"
+  --interface 127.0.0.1
+  --base-path /terminal
+  --client-option "titleFixed=OpenCode"
+  --client-option "fontSize=${TTYD_FONT_SIZE:-14}"
+  --client-option "theme={\"background\":\"#0d0d0d\"}"
+  --max-clients "${TTYD_MAX_CLIENTS:-10}"
+  --ping-interval 30
+)
+[[ "${TTYD_WRITABLE:-true}" == "true" ]] && args+=(--writable)
+exec ttyd "${args[@]}" /opt/oc-env/bin/tui

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# noVNC web client + websockify bridge, loopback only.
+set -euo pipefail
+web=/usr/share/novnc
+exec websockify \
+  --web "${web}" \
+  "127.0.0.1:${NOVNC_PORT:-6080}" \
+  "127.0.0.1:${VNC_PORT:-5900}"

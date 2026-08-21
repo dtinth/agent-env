@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# A second, unprivileged pitchfork supervisor owned by the dev user.
+#
+# The system supervisor (PID 1) manages the container's infrastructure. This one
+# manages whatever the person using the container wants running — dev servers,
+# watchers, queue workers — with its own state, its own socket and its own logs.
+# It is deliberately not privileged, and it cannot see or touch system daemons.
+set -euo pipefail
+
+# Use this user's own directories, not the system supervisor's.
+unset PITCHFORK_CONFIG_DIR
+export PITCHFORK_STATE_DIR="${HOME}/.local/state/pitchfork"
+mkdir -p "${PITCHFORK_STATE_DIR}" "${HOME}/.config/pitchfork"
+
+# --boot starts any daemon marked `boot_start = true` in the user's config.
+exec pitchfork supervisor run --boot

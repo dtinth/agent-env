@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# XFCE session on the virtual display.
+set -euo pipefail
+export DISPLAY="${DESKTOP_DISPLAY:-:1}"
+export XDG_CURRENT_DESKTOP=XFCE
+export XDG_SESSION_TYPE=x11
+export NO_AT_BRIDGE=1
+
+# pitchfork gates this on xvfb, but container mode is still marked
+# experimental, so confirm the display really is accepting connections rather
+# than trusting start ordering.
+for _ in $(seq 1 60); do
+  xdpyinfo -display "${DISPLAY}" >/dev/null 2>&1 && break
+  sleep 0.5
+done
+
+xrdb -merge /etc/X11/Xresources 2>/dev/null || true
+exec dbus-launch --exit-with-session xfce4-session

@@ -1,0 +1,7 @@
+.git
+.gitignore
+.env
+*.md
+*.png
+docker-compose*.yml
+scripts/

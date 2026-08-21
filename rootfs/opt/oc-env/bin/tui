@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Login shell wrapper that drops the user straight into the OpenCode v2 TUI,
+# attached to the same server the web UI talks to.
+set -uo pipefail
+export TERM="${TERM:-xterm-256color}"
+cd "${OPENCODE_WORKDIR:-/workspace}" || cd "${HOME}"
+
+# shellcheck disable=SC1091
+[[ -r /etc/profile ]] && . /etc/profile
+
+if [[ "${TTYD_COMMAND:-tui}" == "shell" ]]; then
+  exec bash -l
+fi
+
+exec opencode2 --server "http://127.0.0.1:${OPENCODE_PORT:-4096}" "${OPENCODE_WORKDIR:-/workspace}"

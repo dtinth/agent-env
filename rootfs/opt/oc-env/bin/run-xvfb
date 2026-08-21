@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Virtual X display that backs both the desktop and headed agent-browser runs.
+#
+# Geometry comes from the environment: either DESKTOP_RESOLUTION (WxH or WxHxD)
+# or the individual DESKTOP_WIDTH / DESKTOP_HEIGHT / DESKTOP_DEPTH.
+set -euo pipefail
+
+res="${DESKTOP_RESOLUTION:-}"
+if [[ -n "${DESKTOP_WIDTH:-}${DESKTOP_HEIGHT:-}${DESKTOP_DEPTH:-}" ]]; then
+  res="${DESKTOP_WIDTH:-1920}x${DESKTOP_HEIGHT:-1080}x${DESKTOP_DEPTH:-24}"
+fi
+res="${res:-1920x1080x24}"
+
+# Accept WxH by defaulting the colour depth.
+if [[ "${res}" =~ ^([0-9]{3,5})x([0-9]{3,5})$ ]]; then
+  res="${res}x${DESKTOP_DEPTH:-24}"
+fi
+if [[ ! "${res}" =~ ^([0-9]{3,5})x([0-9]{3,5})x(8|15|16|24|30)$ ]]; then
+  echo "invalid desktop resolution '${res}' — expected WxH or WxHxD (depth 8/15/16/24/30)," \
+       "e.g. DESKTOP_RESOLUTION=1920x1080x24" >&2
+  exit 1
+fi
+
+display="${DESKTOP_DISPLAY:-:1}"
+rm -f "/tmp/.X${display#:}-lock"
+echo "starting Xvfb on ${display} at ${res}"
+exec Xvfb "${display}" \
+  -screen 0 "${res}" \
+  -nolisten tcp -dpi "${DESKTOP_DPI:-96}" +extension GLX +extension RANDR +render -noreset

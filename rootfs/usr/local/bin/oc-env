@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# Small operator helper for the running container.
+set -euo pipefail
+
+# The system supervisor is root-only on purpose, so that the dev user's own
+# pitchfork stays theirs. These commands need it, so re-run them under sudo
+# rather than loosening the permissions on it.
+case "${1:-help}" in
+  status|logs|restart|start|stop|config|daemons|top)
+    if [[ "$(id -u)" -ne 0 ]]; then
+      if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+        exec sudo -n "$0" "$@"
+      fi
+      echo "oc-env $1 manages the container's system services and needs root." >&2
+      echo "Run it with sudo, or from a root shell (docker exec ...)." >&2
+      echo "For your own daemons, use \`pitchfork\` (see: oc-env mine)." >&2
+      exit 1
+    fi
+    ;;
+esac
+
+export PITCHFORK_STATE_DIR=/var/lib/pitchfork
+export PITCHFORK_CONFIG_DIR=/opt/oc-env/pitchfork
+
+RUN_ENV=/run/oc-env/env
+# shellcheck disable=SC1090
+[[ -r "${RUN_ENV}" ]] && . "${RUN_ENV}"
+
+usage() {
+  cat <<EOF
+oc-env — manage this OpenCode v2 workstation
+
+  oc-env status              Show the state of every service
+  oc-env urls                Print the URLs this container serves
+  oc-env password            Print the OpenCode server password
+  oc-env logs [service]      Follow logs (all services, or one)
+  oc-env restart <service>   Restart one service (e.g. opencode, desktop, caddy)
+  oc-env start <service>     Start one service
+  oc-env stop <service>      Stop one service
+  oc-env tui                 Attach the OpenCode v2 TUI to the running server
+  oc-env top                 pitchfork's interactive dashboard
+  oc-env config              Show the rendered gateway configuration
+  oc-env daemons             Show the rendered daemon definitions
+  oc-env mine                List *your* daemons, not the system's
+
+The system services above belong to the root supervisor (these commands sudo
+into it for you). Your own daemons live in a second, unprivileged supervisor:
+run \`pitchfork\` directly, and define them in ~/.config/pitchfork/config.toml
+or a pitchfork.toml beside your code.
+
+Services are supervised by pitchfork, so anything it can do is also available
+by running \`pitchfork\` directly.
+EOF
+}
+
+case "${1:-help}" in
+  status)
+    printf '\033[1mSystem services\033[0m\n'
+    pitchfork list
+    if [[ -n "${SUDO_USER:-}" ]]; then
+      printf '\n\033[1mYour daemons\033[0m (%s) — manage with `pitchfork`\n' "${SUDO_USER}"
+      sudo -u "${SUDO_USER}" -H env -u PITCHFORK_STATE_DIR -u PITCHFORK_CONFIG_DIR \
+        pitchfork list 2>/dev/null || echo "  (none)"
+    fi
+    ;;
+  mine)
+    exec env -u PITCHFORK_STATE_DIR -u PITCHFORK_CONFIG_DIR pitchfork list
+    ;;
+  urls)
+    base="${PUBLIC_URL:-http://localhost:8080}"
+    printf 'OpenCode web UI : %s/\n' "${base}"
+    [[ "${TTYD_ENABLE:-true}" == "true" ]] && \
+      printf 'OpenCode TUI    : %s/terminal\n' "${base}"
+    [[ "${DESKTOP_ENABLE:-true}" == "true" ]] && \
+      printf 'Desktop (noVNC) : %s/desktop\n' "${base}"
+    [[ "${AB_DASHBOARD_ENABLE:-true}" == "true" ]] && \
+      printf 'Browser dash    : %s/\n' "${DASHBOARD_PUBLIC_URL:-http://localhost:8081}"
+    printf 'Health          : %s/healthz\n' "${base}"
+    if [[ "${SSH_ENABLE:-true}" == "true" ]]; then
+      printf 'SSH             : ssh %s@<host> -p %s\n' "${USER_NAME:-dev}" "${SSH_PORT:-22}"
+      printf 'mosh            : mosh -p 60000:60010 --ssh="ssh -p %s" %s@<host>\n' \
+        "${SSH_PORT:-22}" "${USER_NAME:-dev}"
+    fi
+    true
+    ;;
+  password)
+    printf '%s\n' "${OPENCODE_SERVER_PASSWORD:-$(cat "/home/${USER_NAME:-dev}/.config/opencode/.server-password" 2>/dev/null)}"
+    ;;
+  logs)
+    if [[ -n "${2:-}" ]]; then exec pitchfork logs --follow "$2"; fi
+    exec pitchfork logs --follow
+    ;;
+  restart|start|stop)
+    [[ -n "${2:-}" ]] || { echo "usage: oc-env $1 <service>" >&2; exit 1; }
+    exec pitchfork "$1" "$2"
+    ;;
+  tui)
+    exec /opt/oc-env/bin/tui
+    ;;
+  top)
+    exec pitchfork tui
+    ;;
+  config)
+    cat /etc/caddy/Caddyfile
+    ;;
+  daemons)
+    cat /etc/pitchfork/config.toml
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    echo "unknown command: $1" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
