@@ -42,6 +42,7 @@ agent-env — manage this OpenCode v2 workstation
   agent-env config              Show the rendered gateway configuration
   agent-env daemons             Show the rendered daemon definitions
   agent-env mine                List *your* daemons, not the system's
+  agent-env x-cookie            Print the X cookie, to drive the display remotely
 
 The system services above belong to the root supervisor (these commands sudo
 into it for you). Your own daemons live in a second, unprivileged supervisor:
@@ -103,8 +104,15 @@ case "${1:-help}" in
   config)
     cat /etc/caddy/Caddyfile
     ;;
+  x-cookie)
+    # The hex cookie for the virtual display, for pointing a GUI application on
+    # another machine at it. See "Running a GUI app from your own machine" in
+    # the README.
+    exec xauth -f "${XAUTHORITY:-/home/${USER_NAME:-dev}/.Xauthority}" \
+      list "${DESKTOP_DISPLAY:-:1}"
+    ;;
   daemons)
-    cat /etc/pitchfork/config.toml
+    cat "${PITCHFORK_CONFIG_DIR}/config.toml"
     ;;
   -h|--help|help)
     usage

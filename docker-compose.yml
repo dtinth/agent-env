@@ -32,6 +32,9 @@ services:
       - agent-browser:/home/dev/.agent-browser
       # The dev user's own daemon definitions.
       - user-pitchfork:/home/dev/.config/pitchfork
+      # Keeps the generated SSH host keys across image updates. Without it,
+      # clients see a changed-host-key warning every time you recreate.
+      - agent-env-state:/var/lib/agent-env
 
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
@@ -46,3 +49,4 @@ volumes:
   opencode-config:
   agent-browser:
   user-pitchfork:
+  agent-env-state:

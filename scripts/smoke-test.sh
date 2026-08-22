@@ -193,6 +193,52 @@ PY
     *) bad "could not trace opencode to a supervisor: ${parent:-none}" ;;
   esac
 
+  head_ "X display access"
+
+  # The gateway account fronts the internet; if it can drive the display it can
+  # type into the dev user's terminal and inherit their sudo.
+  gw=$(docker exec -u gateway "${CONTAINER}" sh -c 'xdpyinfo -display :1 2>&1' || true)
+  grep -qiE "authorization required|unable to open display" <<<"${gw}" \
+    && ok "the gateway account cannot reach the display" \
+    || bad "gateway reached the X display: ${gw:0:60}"
+
+  dv=$(docker exec -u dev "${CONTAINER}" sh -c 'unset XAUTHORITY; xdpyinfo -display :1 2>&1' || true)
+  grep -q "name of display" <<<"${dv}" \
+    && ok "dev reaches it with no XAUTHORITY set (cookie is in \$HOME)" \
+    || bad "dev cannot reach the display: ${dv:0:60}"
+
+  docker exec -u dev "${CONTAINER}" bash -lc 'agent-env x-cookie' 2>/dev/null | grep -q MIT-MAGIC-COOKIE \
+    && ok "the cookie can be read out for a forwarded display" \
+    || bad "agent-env x-cookie produced no cookie"
+
+  head_ "Credentials"
+
+  # A secret passed with -e stays in the container config, but it must not
+  # reach the daemons — the OpenCode server runs code the agent was asked to run.
+  leak=$(docker exec -u dev "${CONTAINER}" sh -c '
+    p=$(pgrep -f "opencode2 serve" | head -1)
+    if [ -z "$p" ]; then echo no-process; exit 0; fi
+    tr "\0" "\n" < /proc/$p/environ |
+      grep -cE "^(GOOGLE_CLIENT_SECRET|GATEWAY_PASSWORD|OAUTH2_PROXY_COOKIE_SECRET)=" || true
+  ' 2>/dev/null || true)
+  case "${leak}" in
+    0)  ok "gateway credentials are absent from the OpenCode server's environment" ;;
+    no-process) bad "the OpenCode server is not running, so nothing was checked" ;;
+    "") bad "could not read the OpenCode server's environment" ;;
+    *)  bad "${leak} gateway credential(s) visible to the agent's own process" ;;
+  esac
+
+  head_ "SSH host keys"
+
+  keydir=$(docker exec "${CONTAINER}" sh -c 'ls /var/lib/agent-env/ssh/ 2>/dev/null | tr "\n" " "' || true)
+  grep -q "ssh_host_ed25519_key" <<<"${keydir}" \
+    && ok "host keys live in the state directory, not the image" \
+    || bad "no host keys in /var/lib/agent-env/ssh: ${keydir:-none}"
+
+  docker exec "${CONTAINER}" sh -c 'ls /etc/ssh/ssh_host_* >/dev/null 2>&1' \
+    && bad "the image still carries host keys in /etc/ssh" \
+    || ok "/etc/ssh has no baked-in host keys"
+
   head_ "pitchfork web UI"
   c=$(code "${BASE}/pitchfork")
   case "$c" in

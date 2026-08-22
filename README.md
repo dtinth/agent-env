@@ -99,6 +99,11 @@ balancer, Cloudflare, Caddy/nginx on the host) and point it at port 8080.
 Optionally restrict further by Google Workspace group with `GOOGLE_GROUPS`
 (needs `GOOGLE_ADMIN_EMAIL` and a delegated service-account key).
 
+`ALLOWED_EMAIL_DOMAINS=*` is accepted and means what it says: anyone with a
+Google account. It is deliberately allowed rather than blocked — the check
+exists to stop you *forgetting* an allow list, not to overrule one you wrote on
+purpose.
+
 `/healthz` is always reachable without auth, so load balancers can probe it.
 
 ### How the OpenCode server itself is protected
@@ -113,6 +118,27 @@ set `OPENCODE_SERVER_PASSWORD`, one is generated and persisted in the
 Only ports **8080**, **8081** and **22** listen on external interfaces.
 The OpenCode server, VNC, websockify, ttyd, the dashboard and oauth2-proxy are
 all bound to loopback.
+
+### SSH host keys
+
+The image ships **no** host keys — Debian's `openssh-server` generates them at
+package-install time, so leaving them in would give every deployment, and
+anyone who pulled the image, the same private key. The entrypoint generates a
+set on first start instead, under `/var/lib/agent-env/ssh`.
+
+**Mount a volume there.** Otherwise the keys live in the container's writable
+layer: fine across `restart`, gone the moment you recreate the container to pick
+up a new image, and every client then greets you with a changed-host-key
+warning. The entrypoint says so loudly if that directory is not a mount.
+
+```yaml
+volumes:
+  - agent-env-state:/var/lib/agent-env
+```
+
+With that volume the fingerprint survives both a restart and an image update;
+`agent-env` logs which it did (`generated`/`reusing`) and prints the
+fingerprint at every boot.
 
 ### Who runs as what
 
@@ -132,6 +158,21 @@ The two network-facing proxies get their own throwaway account precisely
 *because* `dev` has passwordless sudo: a hole in the edge shouldn't hand over
 root. Caddy carries `cap_net_bind_service`, so it can still bind a low
 `GATEWAY_PORT` without being root.
+
+The virtual display is protected by an MIT-MAGIC-COOKIE in
+`/home/dev/.Xauthority`. Without it, every local account — including `gateway` —
+could attach to the desktop and inject keystrokes into whatever `dev` has open,
+which would have made that account's lack of sudo worth very little. `dev` owns
+the cookie, so GUI applications started over SSH still land on the display with
+nothing to configure.
+
+Credentials for the gateway (`GOOGLE_CLIENT_SECRET`, `GATEWAY_PASSWORD`, the
+cookie secret) are unset before the supervisor is started. oauth2-proxy reads
+them from root-owned files instead, so they are absent from the environment of
+the OpenCode server — the process that runs whatever the agent was asked to run.
+Note that a secret passed with `-e` still sits in the container's *config*, where
+`docker inspect` and `docker exec` can see it; the `_FILE` form avoids that
+entirely.
 
 `dev` has passwordless sudo, so you can install things inside the container
 freely — the image prunes apt's package lists, so run `sudo apt-get update`
@@ -169,6 +210,8 @@ See [`.env.example`](.env.example) for the annotated list. The essentials:
 | `MISE_TOOLS` | — | Extra global tools, e.g. `python@3.13 go@latest` |
 | `USER_SUPERVISOR_ENABLE` | `true` | Run the dev user's own pitchfork at boot |
 | `USER_WEB_ENABLE`, `USER_WEB_PATH` | `true`, `pitchfork` | pitchfork's web dashboard |
+| `AGENT_ENV_STATE_DIR` | `/var/lib/agent-env` | Where the SSH host keys are kept |
+| `X_TCP_ENABLE` | `false` | Let the display accept TCP (still cookie-gated) |
 | `TZ`, `PUID`, `PGID` | `UTC`, `1000`, `1000` | Timezone and uid/gid remapping |
 
 Every variable also accepts a `<NAME>_FILE` form pointing at a file, for Docker
@@ -361,6 +404,7 @@ range if you want more than ten. `agent-env urls` prints the exact command.
 | `/home/dev/.config/opencode` | OpenCode config, generated secrets |
 | `/home/dev/.agent-browser` | agent-browser profiles and saved auth |
 | `/home/dev/.config/pitchfork` | your own daemon definitions |
+| `/var/lib/agent-env` | generated SSH host keys — **mount this** |
 
 The mise toolchain lives in `/opt/mise`, deliberately outside `$HOME`, so
 mounting volumes over the home directory can't hide it.
@@ -391,6 +435,32 @@ resizing, so noVNC's client-side scaling is what adapts to your window. Change
 `DESKTOP_RESOLUTION` and `agent-env restart xvfb` (then `desktop`, `x11vnc`) for a
 different geometry. Set `VNC_PASSWORD` for a second factor in front of the
 desktop specifically, and `VNC_VIEW_ONLY=true` for a read-only session.
+
+### Running a GUI app from your own machine
+
+The desktop is a real X display, and you can point an application on another
+machine at it. Forward the display socket over SSH and copy its cookie across:
+
+```bash
+# 1. forward the container's X socket to a spare local display number
+ssh -p 2222 -N -L /tmp/.X11-unix/X99:/tmp/.X11-unix/X1 dev@host &
+
+# 2. copy the cookie over, registered against that local number
+cookie=$(ssh -p 2222 dev@host 'agent-env x-cookie' | awk '{print $3}')
+xauth add :99 MIT-MAGIC-COOKIE-1 "$cookie"
+
+# 3. run something
+DISPLAY=:99 xeyes
+```
+
+It then appears on `/desktop` alongside everything else. Plain X clients work as
+they are; GTK applications generally want a session bus, so run them under
+`dbus-run-session` or just start them inside the container.
+
+`agent-env x-cookie` is there so you do not have to go digging for the cookie.
+If you would rather forward a TCP port than a socket, set `X_TCP_ENABLE=true`
+and the display listens on `600<N>` — still cookie-protected, but do not publish
+that port.
 
 ### agent-browser
 

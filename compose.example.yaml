@@ -90,6 +90,9 @@ services:
       - opencode-config:/home/dev/.config/opencode # config, generated secrets
       - agent-browser:/home/dev/.agent-browser # browser profiles, saved auth
       - user-pitchfork:/home/dev/.config/pitchfork # your own daemons
+      # Keeps the generated SSH host keys across image updates. Without it,
+      # clients see a changed-host-key warning every time you recreate.
+      - agent-env-state:/var/lib/agent-env
       # To work on a host directory instead of the volume, mount it here and
       # set PUID/PGID to match its owner:
       # - /srv/code:/workspace
@@ -103,6 +106,7 @@ volumes:
   opencode-config:
   agent-browser:
   user-pitchfork:
+  agent-env-state:
 # ---------------------------------------------------------------------------
 # Reaching it without an ingress controller
 #

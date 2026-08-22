@@ -86,6 +86,13 @@ USER_WEB_ENABLE="${USER_WEB_ENABLE:-true}"
 USER_WEB_PORT="${USER_WEB_PORT:-4747}"
 USER_WEB_PATH="${USER_WEB_PATH:-pitchfork}"
 
+# Generated identity that must outlive the container: SSH host keys today.
+AGENT_ENV_STATE_DIR="${AGENT_ENV_STATE_DIR:-/var/lib/agent-env}"
+# The X display's access cookie. Without it, every local account — including
+# the shell-less `gateway` one that fronts the internet — can drive the desktop
+# and inject keystrokes into the dev user's terminal.
+XAUTHORITY_FILE="${XAUTHORITY_FILE:-${USER_HOME}/.Xauthority}"
+
 AB_DASHBOARD_ENABLE="${AB_DASHBOARD_ENABLE:-true}"
 AB_DASHBOARD_PORT="${AB_DASHBOARD_PORT:-4848}"
 # The dashboard is a Next.js app that serves its assets from absolute paths, so
@@ -288,6 +295,7 @@ cat > /etc/profile.d/99-agent-env.sh <<EOF
 export OPENCODE_SERVER_PASSWORD='${OPENCODE_SERVER_PASSWORD}'
 export OPENCODE_SERVER='http://127.0.0.1:${OPENCODE_PORT}'
 export DISPLAY='${DESKTOP_DISPLAY}'
+export XAUTHORITY='${XAUTHORITY_FILE}'
 export XDG_RUNTIME_DIR='${XDG_RUNTIME_DIR}'
 EOF
 chmod 644 /etc/profile.d/99-agent-env.sh
@@ -302,6 +310,7 @@ MISE_CONFIG_DIR=/etc/mise
 MISE_STATE_DIR=/opt/mise/state
 MISE_CACHE_DIR=/opt/mise/cache
 DISPLAY=${DESKTOP_DISPLAY}
+XAUTHORITY=${XAUTHORITY_FILE}
 XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}
 OPENCODE_SERVER=http://127.0.0.1:${OPENCODE_PORT}
 OPENCODE_SERVER_PASSWORD=${OPENCODE_SERVER_PASSWORD}
@@ -321,10 +330,65 @@ EOF
 chmod 644 /etc/profile.d/20-pitchfork.sh
 
 # ---------------------------------------------------------------------------
+# X display access
+#
+# Xvfb with no -auth accepts every local account, so the shell-less `gateway`
+# account fronting the internet could attach to the desktop and type into the
+# dev user's terminal. A cookie limits the display to whoever can read the file:
+# the dev user, and anyone they hand it to.
+# ---------------------------------------------------------------------------
+setup_xauth() {
+  rm -f "${XAUTHORITY_FILE}" "${XAUTHORITY_FILE}-c" "${XAUTHORITY_FILE}-l"
+
+  # Run as the owning user: xauth writes lock files beside the target, and
+  # root-owned locks in the user's home would stop them managing it later —
+  # which they need to do to read the cookie out for a remote display.
+  # xauth normalises ":1" to "<host>/unix:1", the form a local client resolves
+  # the display to, so one entry covers both spellings.
+  setpriv --reuid "${PUID}" --regid "${PGID}" --init-groups --inh-caps=-all \
+    env HOME="${USER_HOME}" \
+    xauth -f "${XAUTHORITY_FILE}" add "${DESKTOP_DISPLAY}" MIT-MAGIC-COOKIE-1 "$(mcookie)"
+  chmod 600 "${XAUTHORITY_FILE}"
+  # Inherited by PID 1 and therefore by every daemon that draws on the display.
+  export XAUTHORITY="${XAUTHORITY_FILE}"
+  log "display ${DESKTOP_DISPLAY} is cookie-protected (${XAUTHORITY_FILE})"
+}
+
+if is_true "${DESKTOP_ENABLE}"; then
+  setup_xauth
+fi
+
+# ---------------------------------------------------------------------------
 # SSH
 # ---------------------------------------------------------------------------
 setup_ssh() {
-  ssh-keygen -A >/dev/null 2>&1 || true
+  # Host keys live outside the image so that pulling a new one does not change
+  # this deployment's identity, and so that no two deployments share a key.
+  local key_dir="${AGENT_ENV_STATE_DIR}/ssh"
+  install -d -m 0700 -o root -g root "${key_dir}"
+
+  local generated=0 type key
+  for type in ed25519 rsa; do
+    key="${key_dir}/ssh_host_${type}_key"
+    if [[ ! -s "${key}" ]]; then
+      ssh-keygen -q -t "${type}" -f "${key}" -N '' -C "agent-env host key" </dev/null
+      generated=1
+    fi
+  done
+  chmod 600 "${key_dir}"/ssh_host_*_key
+  chmod 644 "${key_dir}"/ssh_host_*_key.pub
+
+  if (( generated )); then
+    log "generated SSH host keys in ${key_dir}"
+    if ! mountpoint -q "${AGENT_ENV_STATE_DIR}" 2>/dev/null; then
+      warn "${AGENT_ENV_STATE_DIR} is not a mount, so these host keys die with this"
+      warn "container and clients will see a changed-key warning after any update."
+      warn "Mount a volume there to keep them:  -v agent-env-state:${AGENT_ENV_STATE_DIR}"
+    fi
+  else
+    log "reusing the SSH host keys in ${key_dir}"
+  fi
+  log "host key fingerprint: $(ssh-keygen -lf "${key_dir}/ssh_host_ed25519_key.pub" | awk '{print $2}')"
 
   local keys="${SSH_AUTHORIZED_KEYS:-}"
   if [[ -n "${keys}" ]]; then
@@ -345,6 +409,8 @@ setup_ssh() {
 
   cat > /etc/ssh/sshd_config.d/00-agent-env.conf <<EOF
 Port ${SSH_PORT}
+HostKey ${key_dir}/ssh_host_ed25519_key
+HostKey ${key_dir}/ssh_host_rsa_key
 PermitRootLogin no
 PasswordAuthentication ${password_auth}
 KbdInteractiveAuthentication no
@@ -747,6 +813,7 @@ timestamp = false
 HOME = "${USER_HOME}"
 USER = "${USER_NAME}"
 DISPLAY = "${DESKTOP_DISPLAY}"
+XAUTHORITY = "${XAUTHORITY_FILE}"
 XDG_RUNTIME_DIR = "${XDG_RUNTIME_DIR}"
 TZ = "${TZ}"
 OPENCODE_SERVER_PASSWORD = "${OPENCODE_SERVER_PASSWORD}"
@@ -873,6 +940,15 @@ fi
 is_true "${SSH_ENABLE}"         && log " ssh         : ${USER_NAME}@<host> -p ${SSH_PORT}"
 log " workspace   : ${OPENCODE_WORKDIR}"
 log "----------------------------------------------------------------"
+
+# The gateway's credentials are in root-owned files by now, and oauth2-proxy
+# reads them from there. Leaving them in the environment would hand them to every
+# daemon — including the OpenCode server, whose whole job is running code the
+# agent was asked to run. A prompt injection or a hostile postinstall could then
+# read them straight out of /proc/self/environ.
+unset GOOGLE_CLIENT_SECRET GOOGLE_CLIENT_SECRET_FILE \
+      GATEWAY_PASSWORD GATEWAY_PASSWORD_FILE \
+      OAUTH2_PROXY_COOKIE_SECRET OAUTH2_PROXY_CLIENT_SECRET
 
 # exec keeps PID 1, which is what pitchfork's container mode needs.
 exec "$@"

@@ -24,6 +24,28 @@ fi
 display="${DESKTOP_DISPLAY:-:1}"
 rm -f "/tmp/.X${display#:}-lock"
 echo "starting Xvfb on ${display} at ${res}"
-exec Xvfb "${display}" \
-  -screen 0 "${res}" \
-  -nolisten tcp -dpi "${DESKTOP_DPI:-96}" +extension GLX +extension RANDR +render -noreset
+args=(
+  "${display}"
+  -screen 0 "${res}"
+  -dpi "${DESKTOP_DPI:-96}"
+  +extension GLX +extension RANDR +render
+  -noreset
+)
+
+# Without this every local account may drive the display, including the
+# unprivileged account that fronts the internet.
+if [[ -s "${XAUTHORITY:-}" ]]; then
+  args+=(-auth "${XAUTHORITY}")
+else
+  echo "no X authority file at '${XAUTHORITY:-unset}' — refusing to run an open display" >&2
+  exit 1
+fi
+
+# X over TCP is off unless asked for; see the remote-display notes in the README.
+if [[ "${X_TCP_ENABLE:-false}" == "true" ]]; then
+  echo "X is listening on TCP port $(( 6000 + ${display#:} )) — cookie required"
+else
+  args+=(-nolisten tcp)
+fi
+
+exec Xvfb "${args[@]}"

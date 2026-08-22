@@ -172,6 +172,12 @@ COPY rootfs/ /
 RUN set -eux; \
     chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/agent-env /opt/agent-env/bin/*; \
     mkdir -p /var/run/sshd /run/dbus /var/lib/caddy /var/lib/pitchfork /opt/agent-env/pitchfork; \
+    # openssh-server's postinst generated host keys while this image was being
+    # built. Shipping them would give every deployment — and anyone who pulls
+    # the image — the same private key, so throw them away and let the
+    # entrypoint generate a persistent set per deployment instead.
+    rm -f /etc/ssh/ssh_host_*; \
+    install -d -m 0700 /var/lib/agent-env; \
     chown -R gateway:gateway /var/lib/caddy; \
     # Lets the unprivileged gateway user bind low ports if GATEWAY_PORT is one.
     setcap cap_net_bind_service=+ep /usr/local/bin/caddy || true; \
@@ -223,11 +229,17 @@ ENV TZ=UTC \
     USER_WEB_ENABLE=true \
     USER_WEB_PORT=4747 \
     USER_WEB_PATH=pitchfork \
+    AGENT_ENV_STATE_DIR=/var/lib/agent-env \
     DISPLAY=:1 \
     CHROME_BIN=/usr/bin/chromium \
     XDG_RUNTIME_DIR=/run/user/1000
 
 # 8080/8081 gateway, 22 ssh, 60000-60010/udp mosh
+# /var/lib/agent-env holds the generated SSH host keys. Deliberately NOT a
+# declared VOLUME: that would create an anonymous volume, which still dies with
+# the container on an image update, while making it impossible to tell whether
+# the operator actually persisted anything. The entrypoint warns instead.
+
 EXPOSE 8080 8081 22 60000-60010/udp
 
 # The gateway answers /healthz itself, so that alone would not tell us whether
