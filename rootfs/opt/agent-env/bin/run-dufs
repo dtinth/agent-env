@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# dufs — browse, upload and download the workspace over HTTP.
+#
+# A daemon of the *user's* supervisor, so it runs as them, writes files as them,
+# and they can restart it without sudo. Bound to loopback; the gateway is the
+# only way in, and --path-prefix makes its UI work under one.
+set -euo pipefail
+
+root="${DUFS_ROOT:-${OPENCODE_WORKDIR:-/workspace}}"
+mkdir -p "${root}"
+
+args=(
+  "${root}"
+  --bind 127.0.0.1
+  --port "${DUFS_PORT:-5000}"
+  --path-prefix "/${DUFS_PATH:-files}"
+  # Enough to actually manage files. Deliberately not --allow-all: that adds
+  # --allow-symlink, which would let a symlink walk outside the served root.
+  --allow-upload
+  --allow-delete
+  --allow-search
+  --allow-archive
+)
+
+# DUFS_ARGS overrides nothing above; it appends, so you can add --allow-symlink,
+# --hidden, --auth or anything else dufs takes.
+if [[ -n "${DUFS_ARGS:-}" ]]; then
+  read -ra extra <<<"${DUFS_ARGS}"
+  args+=("${extra[@]}")
+fi
+
+exec dufs "${args[@]}"

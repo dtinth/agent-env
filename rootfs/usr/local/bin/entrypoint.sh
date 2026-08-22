@@ -86,6 +86,12 @@ USER_WEB_ENABLE="${USER_WEB_ENABLE:-true}"
 USER_WEB_PORT="${USER_WEB_PORT:-4747}"
 USER_WEB_PATH="${USER_WEB_PATH:-pitchfork}"
 
+# dufs: a file manager for the workspace, run by the user's own supervisor.
+DUFS_ENABLE="${DUFS_ENABLE:-true}"
+DUFS_PORT="${DUFS_PORT:-5000}"
+DUFS_PATH="${DUFS_PATH:-files}"
+DUFS_ROOT="${DUFS_ROOT:-${OPENCODE_WORKDIR}}"
+
 # Generated identity that must outlive the container: SSH host keys today.
 AGENT_ENV_STATE_DIR="${AGENT_ENV_STATE_DIR:-/var/lib/agent-env}"
 # The X display's access cookie. Without it, every local account — including
@@ -222,6 +228,18 @@ fi
 
 rm -rf "${USER_HOME}/.local/state/pitchfork"
 
+pf_dufs=""
+if is_true "${DUFS_ENABLE}"; then
+  pf_dufs="
+[daemons.dufs]
+run = \"/opt/agent-env/bin/run-dufs\"
+dir = \"${DUFS_ROOT}\"
+ready_port = ${DUFS_PORT}
+retry = true
+boot_start = true
+"
+fi
+
 pf_begin="# >>> agent-env managed — rewritten on every start, edits here are lost >>>"
 pf_end="# <<< agent-env managed <<<"
 pf_block="${RUN_DIR}/opencode-daemon.toml"
@@ -235,7 +253,7 @@ dir = "${OPENCODE_WORKDIR}"
 ready_port = { port = ${OPENCODE_PORT}, timeout = "120s" }
 retry = true
 boot_start = true
-${pf_end}
+${pf_dufs}${pf_end}
 BLOCK
 
 python3 - "${user_pf_config}" "${pf_block}" "${pf_begin}" "${pf_end}" <<'MERGE'
@@ -697,6 +715,18 @@ EOF
 EOF
     fi
 
+    if is_true "${DUFS_ENABLE}"; then
+      cat <<EOF
+
+			# dufs, the workspace file manager. It is told its prefix with
+			# --path-prefix, so pass the path through rather than stripping it.
+			redir /${DUFS_PATH} /${DUFS_PATH}/
+			handle /${DUFS_PATH}/* {
+				reverse_proxy 127.0.0.1:${DUFS_PORT}
+			}
+EOF
+    fi
+
     if is_true "${USER_SUPERVISOR_ENABLE}" && is_true "${USER_WEB_ENABLE}"; then
       cat <<EOF
 
@@ -959,6 +989,7 @@ is_true "${AB_DASHBOARD_ENABLE}" && log " browser dash: ${DASHBOARD_PUBLIC_URL}"
 if is_true "${USER_SUPERVISOR_ENABLE}" && is_true "${USER_WEB_ENABLE}"; then
   log " daemons     : ${PUBLIC_URL}/${USER_WEB_PATH}"
 fi
+is_true "${DUFS_ENABLE}" && log " files       : ${PUBLIC_URL}/${DUFS_PATH}"
 is_true "${SSH_ENABLE}"         && log " ssh         : ${USER_NAME}@<host> -p ${SSH_PORT}"
 log " workspace   : ${OPENCODE_WORKDIR}"
 log "----------------------------------------------------------------"

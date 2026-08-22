@@ -9,3 +9,5 @@ lockfile = true
 
 [tools]
 node = "24"
+# File manager for the desktop and the browser; a userland daemon.
+"github:sigoden/dufs" = "0.46.0"

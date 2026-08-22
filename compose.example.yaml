@@ -76,7 +76,7 @@ services:
     # What the container listens on. Point your ingress at 8080; the rest are
     # optional extras.
     expose:
-      - "8080" # everything web: the UI, /terminal, /desktop, /pitchfork
+      - "8080" # everything web: the UI, /terminal, /desktop, /pitchfork, /files
       - "8081" # agent-browser dashboard (needs its own origin, not a path)
       - "22" # ssh, and mosh's setup connection
       - "60000-60010/udp" # mosh sessions, one port each

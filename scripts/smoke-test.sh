@@ -254,7 +254,10 @@ PY
 
   head_ "Toolchain"
 
-  locked=$(docker exec "${CONTAINER}" sh -c 'grep -m1 "^version" /etc/mise/mise.lock 2>/dev/null | tr -d "\" " | cut -d= -f2' || true)
+  locked=$(docker exec "${CONTAINER}" python3 -c '
+import tomllib
+with open("/etc/mise/mise.lock", "rb") as fh:
+    print(tomllib.load(fh)["tools"]["node"][0]["version"])' 2>/dev/null || true)
   running=$(docker exec -u dev "${CONTAINER}" bash -lc 'node --version' 2>/dev/null | tr -d 'v\r')
   if [[ -z "${locked}" ]]; then
     bad "no /etc/mise/mise.lock, so the build is not pinned or checksum-verified"
@@ -290,6 +293,46 @@ PY
   docker exec "${CONTAINER}" sh -c 'ls /etc/ssh/ssh_host_* >/dev/null 2>&1' \
     && bad "the image still carries host keys in /etc/ssh" \
     || ok "/etc/ssh has no baked-in host keys"
+
+  head_ "File manager"
+
+  grep -qE "dufs +running" <<<"${user_daemons}" \
+    && ok "dufs runs in the dev user's supervisor" \
+    || bad "dufs is not running under dev: ${user_daemons:-none}"
+
+  c=$(code "${BASE}/files/")
+  case "$c" in
+    200) ok "/files/ lists the workspace (200)" ;;
+    302) ok "/files/ redirects to sign-in (302)" ;;
+    *)   bad "/files/ returned $c" ;;
+  esac
+
+  if [ "${auth_mode}" != none ]; then
+    c=$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' "${BASE}/files/")
+    [[ "$c" == 401 || "$c" == 302 ]] && ok "the file manager is behind the gateway auth ($c)" \
+                                     || bad "/files/ answered $c without credentials"
+  fi
+
+  # Upload and delete are the point of it; check the file really lands as dev.
+  probe="smoke-upload-$$.txt"
+  put=$(curl -s -o /dev/null --max-time 20 -w '%{http_code}' -u "${AUTH}" \
+        --data-binary 'smoke' -X PUT "${BASE}/files/${probe}")
+  owner=$(docker exec "${CONTAINER}" stat -c '%U' "/workspace/${probe}" 2>/dev/null || echo none)
+  del=$(curl -s -o /dev/null --max-time 20 -w '%{http_code}' -u "${AUTH}" -X DELETE "${BASE}/files/${probe}")
+  docker exec "${CONTAINER}" rm -f "/workspace/${probe}" 2>/dev/null || true
+  if [[ "${put}" =~ ^20 ]] && [[ "${owner}" == dev ]] && [[ "${del}" =~ ^2 ]]; then
+    ok "upload and delete work, and files are written as dev"
+  else
+    bad "file round trip failed (PUT ${put}, owner ${owner}, DELETE ${del})"
+  fi
+
+  # --allow-symlink is deliberately not set, so a symlink must not escape root.
+  docker exec -u dev "${CONTAINER}" sh -c 'ln -sfn /etc /workspace/smoke-escape' 2>/dev/null || true
+  esc=$(code "${BASE}/files/smoke-escape/passwd")
+  docker exec -u dev "${CONTAINER}" rm -f /workspace/smoke-escape 2>/dev/null || true
+  [[ "${esc}" == 404 || "${esc}" == 403 || "${esc}" == 302 ]] \
+    && ok "a symlink cannot escape the served root (${esc})" \
+    || bad "symlink escaped the served root: ${esc}"
 
   head_ "pitchfork web UI"
   c=$(code "${BASE}/pitchfork")

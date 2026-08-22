@@ -16,6 +16,7 @@ One container gives you:
 | **XFCE desktop** in the browser | `<PUBLIC_URL>/desktop` | noVNC over x11vnc |
 | **agent-browser dashboard** | `<DASHBOARD_PUBLIC_URL>` | own port; live browser viewports |
 | **pitchfork dashboard** | `<PUBLIC_URL>/pitchfork` | start/stop/logs for your own daemons |
+| **file manager** | `<PUBLIC_URL>/files` | browse, upload, download the workspace |
 | **SSH + mosh** | port `22`, UDP `60000-60010` | key-based by default |
 | **Google sign-in** in front of all of it | `<PUBLIC_URL>/oauth2/*` | oauth2-proxy behind Caddy |
 | **mise** | `/opt/mise` | manages node and anything else you add |
@@ -210,6 +211,7 @@ See [`.env.example`](.env.example) for the annotated list. The essentials:
 | `MISE_TOOLS` | — | Extra global tools, e.g. `python@3.13 go@latest` |
 | `USER_SUPERVISOR_ENABLE` | `true` | Run the dev user's own pitchfork at boot |
 | `USER_WEB_ENABLE`, `USER_WEB_PATH` | `true`, `pitchfork` | pitchfork's web dashboard |
+| `DUFS_ENABLE`, `DUFS_PATH`, `DUFS_ROOT` | `true`, `files`, `/workspace` | the file manager |
 | `AGENT_ENV_STATE_DIR` | `/var/lib/agent-env` | Where the SSH host keys are kept |
 | `X_TCP_ENABLE` | `false` | Let the display accept TCP (still cookie-gated) |
 | `TZ`, `PUID`, `PGID` | `UTC`, `1000`, `1000` | Timezone and uid/gid remapping |
@@ -512,6 +514,34 @@ resizing, so noVNC's client-side scaling is what adapts to your window. Change
 different geometry. Set `VNC_PASSWORD` for a second factor in front of the
 desktop specifically, and `VNC_VIEW_ONLY=true` for a read-only session.
 
+### Files
+
+[dufs](https://github.com/sigoden/dufs) serves the workspace at
+`<PUBLIC_URL>/files` — browse it, drag files in, download a folder as an
+archive, search, rename, delete. Useful when the thing you need to move is not
+worth an `scp` invocation, and when you are working from a tablet or a machine
+without your keys.
+
+It is a daemon of *your* supervisor, not the system's: it runs as `dev`, writes
+files as `dev`, shows up in `/pitchfork` beside the OpenCode server, and
+`pitchfork restart dufs` needs no sudo. It binds loopback, so the gateway's
+authentication is what stands in front of it.
+
+Upload, delete, search and archive are on. `--allow-symlink` is deliberately
+off, so a symlink inside the workspace cannot be used to browse the rest of the
+filesystem — the smoke suite checks that. Add it back, or anything else dufs
+takes, with `DUFS_ARGS`:
+
+```bash
+DUFS_ENABLE=false        # turn it off
+DUFS_ROOT=/srv/shared    # serve something other than /workspace
+DUFS_PATH=files          # the path it lives under
+DUFS_ARGS=--allow-symlink
+```
+
+dufs is installed by mise from `mise/config.toml`, so it is pinned and
+checksum-verified in the lockfile like everything else.
+
 ### Running a GUI app from your own machine
 
 The desktop is a real X display, and you can point an application on another
@@ -630,6 +660,7 @@ v2 beta builds.
                     │   │                                            │
                     │   ├─ /            ──► opencode2 serve  :4096   │
                     │   ├─ /pitchfork   ──► pitchfork web    :4747   │
+                    │   ├─ /files       ──► dufs             :5000   │
                     │   ├─ /terminal    ──► ttyd :7681 ──► TUI       │
                     │   ├─ /desktop     ──► websockify :6080         │
                     │   │                     └─ x11vnc :5900 ──► Xvfb :1 ──► XFCE
