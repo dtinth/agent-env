@@ -234,12 +234,22 @@ Pick whichever suits your deployment:
 -e OAUTH2_PROXY_CLIENT_SECRET=GOCSPX-...        # oauth2-proxy's own variable
 ```
 
-With the first two, the entrypoint hands the value to oauth2-proxy as
-`--client-secret-file` so it never shows up in `ps`. The third is a
-passthrough: oauth2-proxy reads its own `OAUTH2_PROXY_*` variables directly, and
-the entrypoint stays out of the way rather than overriding them with a flag.
-`OAUTH2_PROXY_CLIENT_ID` and `OAUTH2_PROXY_COOKIE_SECRET` work the same way, and
-any other `OAUTH2_PROXY_*` variable is inherited by the process too.
+All three end up the same way: the entrypoint writes the value to a root-owned
+file and hands oauth2-proxy `--client-secret-file`, so it appears neither in the
+process list nor in the environment of the daemons that run your code.
+`OAUTH2_PROXY_COOKIE_SECRET` is treated identically, and any *other*
+`OAUTH2_PROXY_*` variable is passed through to the process untouched.
+
+The cookie secret has to decode to 16, 24 or 32 bytes. A wrong length is
+rejected at startup, by name, rather than left to oauth2-proxy's rather less
+helpful `missing setting: cookie-secret`:
+
+```bash
+head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '='
+```
+
+`scripts/auth-matrix.sh` boots the image once per combination of these inputs
+and checks oauth2-proxy actually starts.
 
 ### Provider credentials for OpenCode
 

@@ -482,21 +482,44 @@ case "${AUTH_MODE,,}" in
 
     # Set when the operator supplied the cookie secret through oauth2-proxy's
     # own variable; we then leave it in the environment untouched.
-    _cookie_secret_from_env=""
-    if [[ -n "${OAUTH2_PROXY_COOKIE_SECRET:-}" ]]; then
-      _cookie_secret_from_env=1
-    else
+    # Either spelling may carry these. Whichever it is, the value goes to
+    # oauth2-proxy by file — so it is out of the process list and out of every
+    # daemon's environment, and there is only one path to get wrong.
+    client_secret="${GOOGLE_CLIENT_SECRET:-${OAUTH2_PROXY_CLIENT_SECRET:-}}"
+
+    cookie_secret="${OAUTH2_PROXY_COOKIE_SECRET:-}"
+    if [[ -z "${cookie_secret}" ]]; then
       # Reused across restarts so existing sessions survive.
       secret_file="${USER_HOME}/.config/opencode/.cookie-secret"
       if [[ -s "${secret_file}" ]]; then
-        OAUTH2_PROXY_COOKIE_SECRET="$(< "${secret_file}")"
+        cookie_secret="$(< "${secret_file}")"
       else
-        OAUTH2_PROXY_COOKIE_SECRET="$(rand_secret)"
-        printf '%s' "${OAUTH2_PROXY_COOKIE_SECRET}" > "${secret_file}"
+        cookie_secret="$(rand_secret)"
+        printf '%s' "${cookie_secret}" > "${secret_file}"
         chown "${PUID}:${PGID}" "${secret_file}"; chmod 600 "${secret_file}"
         log "generated an OAuth cookie secret (persisted in ${secret_file})"
       fi
     fi
+
+    # oauth2-proxy accepts only 16, 24 or 32 bytes, and says so in a way that
+    # sends people looking in the wrong place. Check it here instead.
+    cookie_bytes="$(printf '%s' "${cookie_secret}" | python3 -c '
+import base64, sys
+raw = sys.stdin.buffer.read().strip()
+for decode in (base64.urlsafe_b64decode, base64.b64decode):
+    try:
+        pad = raw + b"=" * (-len(raw) % 4)
+        print(len(decode(pad)))
+        break
+    except Exception:
+        continue
+else:
+    print(len(raw))' 2>/dev/null || printf '%s' "${#cookie_secret}")"
+    case "${cookie_bytes}" in
+      16|24|32) ;;
+      *) die "the OAuth cookie secret decodes to ${cookie_bytes} bytes; oauth2-proxy needs 16, 24 or 32.
+       Generate one with:  head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '='" ;;
+    esac
 
     cookie_secure=false
     [[ "${PUBLIC_URL}" == https://* ]] && cookie_secure=true
@@ -560,26 +583,20 @@ case "${AUTH_MODE,,}" in
       )
     fi
 
-    # A flag beats an environment variable in oauth2-proxy, so only pass the
-    # file form for secrets we were given under the GOOGLE_* names. Anything
-    # set as OAUTH2_PROXY_CLIENT_SECRET / OAUTH2_PROXY_COOKIE_SECRET is left
-    # for oauth2-proxy to read from its own environment.
-    if [[ -n "${GOOGLE_CLIENT_SECRET:-}" ]]; then
-      printf '%s' "${GOOGLE_CLIENT_SECRET}" > "${RUN_DIR}/client-secret"
-      chmod 640 "${RUN_DIR}/client-secret"
-      chown root:"${GATEWAY_GROUP}" "${RUN_DIR}/client-secret"
-      OAUTH2_ARGS+=(--client-secret-file="${RUN_DIR}/client-secret")
-      log "client secret passed by file, so it stays out of the process list"
-    else
-      log "using OAUTH2_PROXY_CLIENT_SECRET from the environment"
-    fi
-
-    if [[ -z "${_cookie_secret_from_env}" ]]; then
-      printf '%s' "${OAUTH2_PROXY_COOKIE_SECRET}" > "${RUN_DIR}/cookie-secret"
-      chmod 640 "${RUN_DIR}/cookie-secret"
-      chown root:"${GATEWAY_GROUP}" "${RUN_DIR}/cookie-secret"
-      OAUTH2_ARGS+=(--cookie-secret-file="${RUN_DIR}/cookie-secret")
-    fi
+    # Both by file, always — see where they were resolved above.
+    write_gateway_secret() {
+      local path="${RUN_DIR}/$1"
+      printf '%s' "$2" > "${path}"
+      chmod 640 "${path}"
+      chown root:"${GATEWAY_GROUP}" "${path}"
+    }
+    write_gateway_secret client-secret "${client_secret}"
+    write_gateway_secret cookie-secret "${cookie_secret}"
+    OAUTH2_ARGS+=(
+      --client-secret-file="${RUN_DIR}/client-secret"
+      --cookie-secret-file="${RUN_DIR}/cookie-secret"
+    )
+    log "gateway secrets passed by file, so they stay out of the process list"
 
     # Written one argument per line rather than interpolated into a shell
     # string, so values containing shell metacharacters cannot break quoting.
