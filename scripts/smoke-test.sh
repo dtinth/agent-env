@@ -159,6 +159,15 @@ PY
     bad "dev's supervisor can reach system daemons: ${isolation}"
   fi
 
+  # Runtime state must not live on the home volume: a state file describing a
+  # previous container's PIDs stops the supervisor starting at all.
+  usd=$(docker exec -u dev "${CONTAINER}" bash -lc 'echo "$PITCHFORK_STATE_DIR"' 2>/dev/null | tr -d '\r')
+  case "${usd}" in
+    /home/*) bad "the user supervisor keeps runtime state on the home volume (${usd})" ;;
+    "")      bad "PITCHFORK_STATE_DIR is unset for dev" ;;
+    *)       ok "user supervisor state is outside the home volume (${usd})" ;;
+  esac
+
   docker exec "${CONTAINER}" test -w /tmp/fslock \
     && ok "/tmp/fslock is shared, so any user can run a supervisor" \
     || bad "/tmp/fslock is not writable by other users"

@@ -220,6 +220,8 @@ if [[ ! -e "${user_pf_config}" ]]; then
 SEED
 fi
 
+rm -rf "${USER_HOME}/.local/state/pitchfork"
+
 pf_begin="# >>> agent-env managed — rewritten on every start, edits here are lost >>>"
 pf_end="# <<< agent-env managed <<<"
 pf_block="${RUN_DIR}/opencode-daemon.toml"
@@ -325,12 +327,15 @@ chmod 644 /etc/environment
 
 # Root shells manage the system supervisor; everyone else gets their own, so
 # `pitchfork` as dev means "my daemons" and never touches the system ones.
-cat > /etc/profile.d/20-pitchfork.sh <<'EOF'
-if [ "$(id -u)" = 0 ]; then
+cat > /etc/profile.d/20-pitchfork.sh <<EOF
+if [ "\$(id -u)" = 0 ]; then
   export PITCHFORK_STATE_DIR=/var/lib/pitchfork
   export PITCHFORK_CONFIG_DIR=/opt/agent-env/pitchfork
 else
-  unset PITCHFORK_STATE_DIR PITCHFORK_CONFIG_DIR
+  # Your own supervisor. Its config is on the home volume; its runtime state is
+  # not, so that recreating the container cannot resurrect stale PIDs.
+  export PITCHFORK_STATE_DIR="\${XDG_RUNTIME_DIR:-/run/user/\$(id -u)}/pitchfork"
+  unset PITCHFORK_CONFIG_DIR
 fi
 EOF
 chmod 644 /etc/profile.d/20-pitchfork.sh
@@ -924,7 +929,7 @@ EOF
         "dir = \"${OPENCODE_WORKDIR}\"" \
         'retry = true' \
         "${user_sup_ready}" \
-        "env = { PITCHFORK_STATE_DIR = \"${USER_HOME}/.local/state/pitchfork\" }"
+        "env = { PITCHFORK_STATE_DIR = \"${XDG_RUNTIME_DIR}/pitchfork\" }"
     fi
 
     # pitchfork captures each daemon's output into its own log store rather than

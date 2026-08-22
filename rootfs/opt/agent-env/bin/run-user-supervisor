@@ -8,8 +8,14 @@
 set -euo pipefail
 
 # Use this user's own directories, not the system supervisor's.
+#
+# State — sockets and the PIDs of running daemons — goes under XDG_RUNTIME_DIR,
+# deliberately NOT the home volume. Home persists across container recreation,
+# and a state file describing processes from a container that no longer exists
+# makes the supervisor refuse to start ("already running with pid ..."), or
+# worse, adopt an unrelated process that happens to reuse the PID.
 unset PITCHFORK_CONFIG_DIR
-export PITCHFORK_STATE_DIR="${HOME}/.local/state/pitchfork"
+export PITCHFORK_STATE_DIR="${PITCHFORK_STATE_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/pitchfork}"
 mkdir -p "${PITCHFORK_STATE_DIR}" "${HOME}/.config/pitchfork"
 
 args=(--boot)
@@ -22,4 +28,6 @@ fi
 
 # --boot starts any daemon marked `boot_start = true` in the user's config,
 # which is where the OpenCode server is defined.
-exec pitchfork supervisor run "${args[@]}"
+# --force because only one supervisor per container is ever wanted, and a
+# restart should take over rather than bail out.
+exec pitchfork supervisor run --force "${args[@]}"
