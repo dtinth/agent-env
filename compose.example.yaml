@@ -86,10 +86,10 @@ services:
 
     volumes:
       - workspace:/workspace # your code
-      - opencode-state:/home/dev/.local/share/opencode # sessions, provider logins
-      - opencode-config:/home/dev/.config/opencode # config, generated secrets
-      - agent-browser:/home/dev/.agent-browser # browser profiles, saved auth
-      - user-pitchfork:/home/dev/.config/pitchfork # your own daemons
+      # The whole home directory, so a tool the agent installs — and its
+      # dotfiles, shell history, git and provider logins — survives being
+      # recreated on a new image. Seeded from the image on first use.
+      - home:/home/dev
       # Keeps the generated SSH host keys across image updates. Without it,
       # clients see a changed-host-key warning every time you recreate.
       - agent-env-state:/var/lib/agent-env
@@ -102,10 +102,7 @@ services:
 
 volumes:
   workspace:
-  opencode-state:
-  opencode-config:
-  agent-browser:
-  user-pitchfork:
+  home:
   agent-env-state:
 # ---------------------------------------------------------------------------
 # Reaching it without an ingress controller

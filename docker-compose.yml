@@ -27,11 +27,9 @@ services:
 
     volumes:
       - workspace:/workspace
-      - opencode-state:/home/dev/.local/share/opencode
-      - opencode-config:/home/dev/.config/opencode
-      - agent-browser:/home/dev/.agent-browser
-      # The dev user's own daemon definitions.
-      - user-pitchfork:/home/dev/.config/pitchfork
+      # The whole home directory: installed tools, dotfiles, OpenCode sessions
+      # and provider logins all live here and should outlive the container.
+      - home:/home/dev
       # Keeps the generated SSH host keys across image updates. Without it,
       # clients see a changed-host-key warning every time you recreate.
       - agent-env-state:/var/lib/agent-env
@@ -45,8 +43,5 @@ services:
 
 volumes:
   workspace:
-  opencode-state:
-  opencode-config:
-  agent-browser:
-  user-pitchfork:
+  home:
   agent-env-state:

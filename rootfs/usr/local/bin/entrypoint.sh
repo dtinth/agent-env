@@ -143,20 +143,18 @@ mkdir -p "${XDG_RUNTIME_DIR}"
 chown "${PUID}:${PGID}" "${XDG_RUNTIME_DIR}"
 chmod 700 "${XDG_RUNTIME_DIR}"
 
-# Volumes mounted over state directories come up empty; reseed them from the
-# image's skeleton so first boot behaves like a fresh install.
+# The home directory is expected to be a volume, so that a tool the agent
+# installs into it is still there after the container is recreated. Docker seeds
+# a *named* volume from the image, but a bind mount arrives empty — so copy in
+# anything missing, without touching what is already there.
 if [[ -d /opt/agent-env/skel ]]; then
-  for rel in .config/opencode .local/share/opencode .agent-browser; do
-    src="/opt/agent-env/skel/${rel}"
-    dst="${USER_HOME}/${rel}"
-    mkdir -p "${dst}"
-    if [[ -d "${src}" ]] && [[ -z "$(ls -A "${dst}" 2>/dev/null)" ]]; then
-      cp -a "${src}/." "${dst}/" 2>/dev/null || true
-    fi
+  shopt -s dotglob nullglob
+  for src in /opt/agent-env/skel/*; do
+    dst="${USER_HOME}/$(basename "${src}")"
+    [[ -e "${dst}" ]] && continue
+    cp -a "${src}" "${dst}" 2>/dev/null || true
   done
-  for f in .bashrc .profile; do
-    [[ -e "${USER_HOME}/${f}" ]] || cp -a "/opt/agent-env/skel/${f}" "${USER_HOME}/${f}" 2>/dev/null || true
-  done
+  shopt -u dotglob nullglob
 fi
 
 mkdir -p "${OPENCODE_WORKDIR}" \
@@ -175,6 +173,14 @@ for d in .ssh .config .local .cache .agent-browser Desktop; do
 done
 if is_true "${CHOWN_WORKSPACE:-true}"; then
   chown "${PUID}:${PGID}" "${OPENCODE_WORKDIR}" || true
+fi
+
+# Anything the agent installs into the home directory — a tool in ~/.local/bin,
+# a dotfile, a provider login — is only as durable as this directory.
+if ! mountpoint -q "${USER_HOME}" 2>/dev/null; then
+  warn "${USER_HOME} is not a mount, so installed tools, dotfiles and provider"
+  warn "logins are lost when this container is recreated on a new image."
+  warn "Mount a volume there to keep them:  -v agent-env-home:${USER_HOME}"
 fi
 
 # The OpenCode server is the thing you are here to use, not part of the
@@ -306,7 +312,7 @@ chmod 644 /etc/profile.d/99-agent-env.sh
 cat > /etc/environment <<EOF
 PATH=/opt/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 MISE_DATA_DIR=/opt/mise
-MISE_CONFIG_DIR=/etc/mise
+MISE_CONFIG_DIR=${USER_HOME}/.config/mise
 MISE_STATE_DIR=/opt/mise/state
 MISE_CACHE_DIR=/opt/mise/cache
 DISPLAY=${DESKTOP_DISPLAY}
@@ -765,6 +771,17 @@ render_caddyfile
 # ---------------------------------------------------------------------------
 # mise: optional extra global tools
 # ---------------------------------------------------------------------------
+# Tool *installs* live in /opt/mise, part of the image, so they do not survive
+# being recreated on a new image — but the declarations do, in the home volume.
+# Rebuild from them so a tool the agent installed is still there afterwards.
+if [[ -s "${USER_HOME}/.config/mise/config.toml" ]]; then
+  log "restoring mise tools declared in ${USER_HOME}/.config/mise/config.toml"
+  setpriv --reuid "${PUID}" --regid "${PGID}" --init-groups --inh-caps=-all \
+    env HOME="${USER_HOME}" MISE_CONFIG_DIR="${USER_HOME}/.config/mise" \
+    mise install --yes >/dev/null 2>&1 \
+    || warn "some mise tools could not be reinstalled (offline?); run 'mise install' to retry"
+fi
+
 if [[ -n "${MISE_TOOLS:-}" ]]; then
   log "installing mise tools: ${MISE_TOOLS}"
   # shellcheck disable=SC2086

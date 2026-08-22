@@ -400,16 +400,47 @@ range if you want more than ten. `agent-env urls` prints the exact command.
 | Path | Holds |
 |---|---|
 | `/workspace` | your code |
-| `/home/dev/.local/share/opencode` | sessions, provider logins, repo cache |
-| `/home/dev/.config/opencode` | OpenCode config, generated secrets |
-| `/home/dev/.agent-browser` | agent-browser profiles and saved auth |
-| `/home/dev/.config/pitchfork` | your own daemon definitions |
-| `/var/lib/agent-env` | generated SSH host keys — **mount this** |
+| `/home/dev` | **everything else you accumulate** — see below |
+| `/var/lib/agent-env` | generated SSH host keys |
 
-The mise toolchain lives in `/opt/mise`, deliberately outside `$HOME`, so
-mounting volumes over the home directory can't hide it.
+Three volumes, and you want all three. The home directory is the one that is
+easy to under-mount and regret: it holds OpenCode sessions and provider logins,
+your own daemon definitions, agent-browser profiles, git config, shell history,
+SSH client config, and any tool the agent installs into `~/.local/bin`,
+`~/.cargo`, `~/.npm-global` and so on. Without it, everything an agent set up for
+itself is gone the moment you recreate the container on a new image. The
+entrypoint warns if it or the state directory is not a mount.
 
-Mounting a host directory at `/workspace`? Set `PUID`/`PGID` to match its owner.
+A *named* volume is seeded from the image on first use, so the dotfiles the
+image ships arrive as normal. A *bind* mount arrives empty, so the entrypoint
+copies in anything missing without touching what is already there.
+
+### Toolchains
+
+The mise toolchain lives in `/opt/mise`, deliberately *outside* the home volume:
+node, `opencode2` and `agent-browser` are the image's business, so pulling a new
+image is what updates them. If they lived in the volume, the first version you
+ever ran would be frozen there.
+
+The consequence is that tool *installs* do not survive recreation — but the
+*declarations* do, because `mise use -g` writes to `~/.config/mise/config.toml`
+on the home volume, and the entrypoint reinstalls from it at boot:
+
+```bash
+$ mise use -g jq@1.7        # declared in the home volume
+$ jq --version              # jq-1.7
+# ...recreate the container on a new image...
+$ jq --version              # jq-1.7, reinstalled at boot
+```
+
+The image's own declaration stays in `/etc/mise/config.toml`, which mise reads
+as system config, so the two never fight. `MISE_TOOLS` does the same thing
+declaratively from your compose file. Either way, the first boot after a
+recreate spends time reinstalling, so heavyweight toolchains are better put in
+the image with a `FROM ghcr.io/dtinth/agent-env` of your own.
+
+Mounting host directories at `/workspace` or `/home/dev`? Set `PUID`/`PGID` to
+match their owner.
 
 ### The desktop
 

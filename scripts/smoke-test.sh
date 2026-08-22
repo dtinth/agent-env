@@ -228,6 +228,21 @@ PY
     *)  bad "${leak} gateway credential(s) visible to the agent's own process" ;;
   esac
 
+  head_ "Persistence"
+
+  # Tools the agent declares must outlive the container, so the declarations
+  # have to sit in the home directory rather than the image.
+  mcd=$(docker exec -u dev "${CONTAINER}" bash -lc 'echo "$MISE_CONFIG_DIR"' 2>/dev/null | tr -d '\r')
+  case "${mcd}" in
+    /home/dev/*) ok "mise declarations go to the home directory (${mcd})" ;;
+    *)           bad "MISE_CONFIG_DIR is '${mcd:-unset}', so 'mise use -g' would not persist" ;;
+  esac
+
+  # ...while the image keeps owning its own toolchain, so updates land.
+  docker exec "${CONTAINER}" grep -q node /etc/mise/config.toml 2>/dev/null \
+    && ok "the image still declares its own toolchain in /etc/mise" \
+    || bad "/etc/mise/config.toml no longer declares the image toolchain"
+
   head_ "SSH host keys"
 
   keydir=$(docker exec "${CONTAINER}" sh -c 'ls /var/lib/agent-env/ssh/ 2>/dev/null | tr "\n" " "' || true)

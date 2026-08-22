@@ -230,6 +230,7 @@ ENV TZ=UTC \
     USER_WEB_PORT=4747 \
     USER_WEB_PATH=pitchfork \
     AGENT_ENV_STATE_DIR=/var/lib/agent-env \
+    MISE_CONFIG_DIR=/home/dev/.config/mise \
     DISPLAY=:1 \
     CHROME_BIN=/usr/bin/chromium \
     XDG_RUNTIME_DIR=/run/user/1000
