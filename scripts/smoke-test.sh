@@ -243,6 +243,34 @@ PY
     && ok "the image still declares its own toolchain in /etc/mise" \
     || bad "/etc/mise/config.toml no longer declares the image toolchain"
 
+  head_ "Toolchain"
+
+  locked=$(docker exec "${CONTAINER}" sh -c 'grep -m1 "^version" /etc/mise/mise.lock 2>/dev/null | tr -d "\" " | cut -d= -f2' || true)
+  running=$(docker exec -u dev "${CONTAINER}" bash -lc 'node --version' 2>/dev/null | tr -d 'v\r')
+  if [[ -z "${locked}" ]]; then
+    bad "no /etc/mise/mise.lock, so the build is not pinned or checksum-verified"
+  elif [[ "${locked}" == "${running}" ]]; then
+    ok "node matches the lockfile (${running})"
+  else
+    bad "node is ${running:-unknown} but the lockfile says ${locked}"
+  fi
+
+  # Interactive shells get the full activation; non-interactive ones must not,
+  # since there is no prompt for the hook and shims already resolve versions.
+  act=$(docker exec -u dev "${CONTAINER}" bash -ic 'echo "${MISE_SHELL:-no}"' 2>/dev/null | tr -d '\r')
+  [[ "${act}" == bash ]] && ok "interactive shells activate mise (project env and hooks work)" \
+                         || bad "interactive shell did not activate mise: '${act}'"
+  noact=$(docker exec -u dev "${CONTAINER}" bash -c 'echo "${MISE_SHELL:-no}"' 2>/dev/null | tr -d '\r')
+  [[ "${noact}" == no ]] && ok "non-interactive shells use shims alone" \
+                         || bad "non-interactive shell activated mise: '${noact}'"
+
+  # An untrusted repo config must not be able to inject env into a shell.
+  docker exec -u dev "${CONTAINER}" bash -c '
+    mkdir -p /tmp/untrusted && printf "[env]\nSMOKE_INJECTED = \"yes\"\n" > /tmp/untrusted/mise.toml' 2>/dev/null
+  inj=$(docker exec -u dev -w /tmp/untrusted "${CONTAINER}" bash -ic 'echo "${SMOKE_INJECTED:-no}"' 2>/dev/null | tr -d '\r')
+  [[ "${inj}" == no ]] && ok "an untrusted mise.toml cannot set env in a shell" \
+                       || bad "untrusted mise.toml injected env: '${inj}'"
+
   head_ "SSH host keys"
 
   keydir=$(docker exec "${CONTAINER}" sh -c 'ls /var/lib/agent-env/ssh/ 2>/dev/null | tr "\n" " "' || true)

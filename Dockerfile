@@ -17,7 +17,6 @@ ARG TARGETARCH
 # Pinned versions for the components we fetch outside apt.
 ARG OPENCODE_VERSION=beta
 ARG AGENT_BROWSER_VERSION=latest
-ARG NODE_VERSION=24
 ARG TTYD_VERSION=1.7.7
 ARG PITCHFORK_VERSION=2.22.0
 ARG OAUTH2_PROXY_VERSION=7.15.4
@@ -123,6 +122,9 @@ RUN set -eux; \
     useradd --system --gid gateway --no-create-home \
             --shell /usr/sbin/nologin gateway
 
+# Declared and checksum-locked in the repo; see mise/config.toml.
+COPY mise/config.toml mise/mise.lock /etc/mise/
+
 RUN chown -R "${USER_UID}:${USER_GID}" /opt/mise /etc/mise
 
 ENV USER_NAME=${USER_NAME} \
@@ -136,7 +138,9 @@ USER ${USER_NAME}
 WORKDIR /home/${USER_NAME}
 
 RUN set -eux; \
-    mise use -g "node@${NODE_VERSION}"; \
+    # Installs the version pinned in mise.lock and verifies its checksum,
+    # rather than resolving whatever is newest at build time.
+    mise install; \
     mise x -- node --version; \
     mise x -- npm install -g "@opencode-ai/cli@${OPENCODE_VERSION}" "agent-browser@${AGENT_BROWSER_VERSION}"; \
     mise reshim; \
@@ -171,6 +175,13 @@ COPY rootfs/ /
 
 RUN set -eux; \
     chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/agent-env /opt/agent-env/bin/*; \
+    # Debian's /etc/bash.bashrc is what an interactive non-login shell reads —
+    # a terminal on the desktop, or `docker exec -it`. It does not source
+    # profile.d, so hook mise activation in from here too.
+    printf '\n%s\n%s\n' \
+      '# mise: full activation for interactive shells' \
+      '[ -r /etc/agent-env/mise-activate.sh ] && . /etc/agent-env/mise-activate.sh' \
+      >> /etc/bash.bashrc; \
     mkdir -p /var/run/sshd /run/dbus /var/lib/caddy /var/lib/pitchfork /opt/agent-env/pitchfork; \
     # openssh-server's postinst generated host keys while this image was being
     # built. Shipping them would give every deployment — and anyone who pulls

@@ -1,0 +1,11 @@
+# The image's own toolchain. mise reads this as its system config, so it is
+# independent of whatever the user declares in ~/.config/mise on the home
+# volume. Versions are resolved and checksummed in mise.lock beside this file —
+# `mise lock --global --bump --platform linux-x64,linux-arm64` to move them.
+
+[settings]
+# Pin resolved versions and verify their checksums on install.
+lockfile = true
+
+[tools]
+node = "24"

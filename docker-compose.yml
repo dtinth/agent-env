@@ -5,7 +5,6 @@ services:
       args:
         # Pin these for reproducible builds.
         OPENCODE_VERSION: beta
-        NODE_VERSION: "24"
     image: agent-env:latest
     container_name: agent-env
     restart: unless-stopped

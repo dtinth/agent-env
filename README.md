@@ -422,6 +422,19 @@ node, `opencode2` and `agent-browser` are the image's business, so pulling a new
 image is what updates them. If they lived in the volume, the first version you
 ever ran would be frozen there.
 
+The image's own tools are declared in [`mise/config.toml`](mise/config.toml) and
+pinned in [`mise/mise.lock`](mise/mise.lock), which records an exact version and
+a **SHA256 checksum per architecture**. The build installs from the lockfile, so
+it gets the same node every time and verifies it — rather than resolving whatever
+24.x happens to be newest that day. To move it:
+
+```bash
+mise lock --global --bump --platform linux-x64,linux-arm64
+```
+
+mise reads that file as its *system* config, so it never collides with what you
+declare in `~/.config/mise` on the home volume.
+
 The consequence is that tool *installs* do not survive recreation — but the
 *declarations* do, because `mise use -g` writes to `~/.config/mise/config.toml`
 on the home volume, and the entrypoint reinstalls from it at boot:
@@ -433,11 +446,43 @@ $ jq --version              # jq-1.7
 $ jq --version              # jq-1.7, reinstalled at boot
 ```
 
-The image's own declaration stays in `/etc/mise/config.toml`, which mise reads
-as system config, so the two never fight. `MISE_TOOLS` does the same thing
-declaratively from your compose file. Either way, the first boot after a
-recreate spends time reinstalling, so heavyweight toolchains are better put in
-the image with a `FROM ghcr.io/dtinth/agent-env` of your own.
+`MISE_TOOLS` does the same thing declaratively from your compose file. Either
+way, the first boot after a recreate spends time reinstalling, so heavyweight
+toolchains are better put in the image with a `FROM ghcr.io/dtinth/agent-env` of
+your own.
+
+#### Shims, and where they stop
+
+Tool resolution works through mise's shims, which is what makes `node` resolve
+correctly for a daemon, for `ssh host <command>`, and for anything the agent
+shells out to — none of which ever display a prompt. Shims cannot do everything
+`mise activate` does, so **interactive** bash additionally gets the full
+activation: a project's `mise.toml` `[env]` and the `cd` hooks work when you are
+actually sitting in a repo. Two things follow from using shims:
+
+- `which node` reports the shim, not the tool. `mise which node` gives the real
+  path.
+- If a declared tool is not installed, a shim falls back to the next
+  same-named executable on `PATH` rather than failing — so a missing `python`
+  can silently become the system one. Auto-install is on, which normally
+  prevents that, and the entrypoint pre-installs from your declarations at boot.
+
+#### Untrusted repositories
+
+A `mise.toml` in a repository can set environment variables and define tasks, so
+mise does not load one until you trust it:
+
+```
+mise WARN /workspace/some-repo/mise.toml is not trusted, run `mise trust` to enable it
+```
+
+That is the right default here, where an agent clones code it has never seen —
+and it is asserted by the smoke suite. `mise trust` accepts a config once you
+have looked at it. Two further knobs if you want more distance from repository
+content: `MISE_SAFE=1` blocks template functions, hooks and scripts while still
+resolving versions, and the `paranoid` setting requires re-trusting a config
+whenever its contents change. Neither is on by default, because an agent that
+runs a repository's build is already running its code.
 
 Mounting host directories at `/workspace` or `/home/dev`? Set `PUID`/`PGID` to
 match their owner.
