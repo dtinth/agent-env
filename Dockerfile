@@ -21,6 +21,9 @@ ARG TTYD_VERSION=1.7.7
 ARG PITCHFORK_VERSION=2.22.0
 ARG OAUTH2_PROXY_VERSION=7.15.4
 ARG CADDY_VERSION=2.11.4
+# Engine + rootless helpers + the compose plugin, for DOCKER_ROOTLESS_ENABLE=true.
+ARG DOCKER_VERSION=29.7.2
+ARG DOCKER_COMPOSE_VERSION=5.5.0
 
 ARG USER_NAME=dev
 ARG USER_UID=1000
@@ -55,6 +58,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       fonts-noto-core fonts-noto-color-emoji fonts-dejavu-core \
       # browser for agent-browser
       chromium chromium-sandbox \
+      # rootless docker: subuid mapping, its network and storage helpers.
+      # Inert unless DOCKER_ROOTLESS_ENABLE=true.
+      uidmap slirp4netns fuse-overlayfs iptables nftables \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------
@@ -89,6 +95,41 @@ RUN set -eux; \
     \
     rm -rf /tmp/oauth2-proxy* /tmp/caddy*; \
     pitchfork --version; ttyd --version; oauth2-proxy --version; caddy version
+
+# ---------------------------------------------------------------------------
+# Docker engine, rootless helpers and the compose plugin.
+#
+# Present in the image but never started unless DOCKER_ROOTLESS_ENABLE=true,
+# because a rootless daemon needs the host to relax the container's sandbox —
+# see the README. The engine runs as the dev user, under their own supervisor.
+# ---------------------------------------------------------------------------
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) DOCKER_ARCH=x86_64 ;; \
+      arm64) DOCKER_ARCH=aarch64 ;; \
+      *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    \
+    # dockerd, containerd, runc, the CLI and docker-proxy.
+    curl -fsSL -o /tmp/docker.tgz \
+      "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-${DOCKER_VERSION}.tgz"; \
+    # rootlesskit and the dockerd-rootless.sh wrapper.
+    curl -fsSL -o /tmp/docker-rootless.tgz \
+      "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-rootless-extras-${DOCKER_VERSION}.tgz"; \
+    tar -xzf /tmp/docker.tgz -C /tmp; \
+    tar -xzf /tmp/docker-rootless.tgz -C /tmp; \
+    install -m0755 /tmp/docker/* /usr/local/bin/; \
+    install -m0755 /tmp/docker-rootless-extras/* /usr/local/bin/; \
+    \
+    # The compose plugin. `docker compose` is how most people will actually
+    # bring a database up, so it ships alongside the engine.
+    install -d /usr/local/lib/docker/cli-plugins; \
+    curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+      "https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}/docker-compose-linux-${DOCKER_ARCH}"; \
+    chmod +x /usr/local/lib/docker/cli-plugins/docker-compose; \
+    \
+    rm -rf /tmp/docker.tgz /tmp/docker-rootless.tgz /tmp/docker /tmp/docker-rootless-extras; \
+    dockerd --version; rootlesskit --version; docker compose version
 
 # ---------------------------------------------------------------------------
 # mise (installed system-wide, shims exposed on PATH for every login shell).
@@ -240,6 +281,7 @@ ENV TZ=UTC \
     USER_WEB_ENABLE=true \
     USER_WEB_PORT=4747 \
     USER_WEB_PATH=pitchfork \
+    DOCKER_ROOTLESS_ENABLE=false \
     AGENT_ENV_STATE_DIR=/var/lib/agent-env \
     MISE_CONFIG_DIR=/home/dev/.config/mise \
     DISPLAY=:1 \

@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# A rootless Docker engine, owned by the dev user.
+#
+# This is the user's daemon, not the container's: it runs under their own
+# pitchfork supervisor, its state lives in their home directory, and every
+# container it starts is mapped into their subuid range. Nothing here needs
+# root inside the container.
+#
+# It does, however, need the *host* to have relaxed the sandbox around this
+# container — user namespaces, CAP_SYS_ADMIN for newuidmap, a writable
+# /proc/sys and /dev/net/tun. The entrypoint checks for those and says so if
+# any are missing; see `docker rootless` in the README.
+set -euo pipefail
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+mkdir -p "${XDG_RUNTIME_DIR}"
+
+# dockerd-rootless.sh shells out to sysctl and iptables, both of which live in
+# /usr/sbin — not on a non-root account's PATH on Debian. Without this the
+# daemon dies with a bare "exit status 127".
+case ":${PATH}:" in
+  *":/usr/sbin:"*) ;;
+  *) export PATH="${PATH}:/usr/sbin:/sbin" ;;
+esac
+
+# Image data on the home volume, so pulled images and container filesystems
+# outlive the container the way installed tools do.
+DOCKER_ROOTLESS_DATA_ROOT="${DOCKER_ROOTLESS_DATA_ROOT:-${HOME}/.local/share/docker}"
+mkdir -p "${DOCKER_ROOTLESS_DATA_ROOT}"
+
+exec dockerd-rootless.sh \
+  --data-root "${DOCKER_ROOTLESS_DATA_ROOT}" \
+  ${DOCKER_ROOTLESS_ARGS:-}

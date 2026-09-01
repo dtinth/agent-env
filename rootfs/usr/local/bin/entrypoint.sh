@@ -92,6 +92,14 @@ DUFS_PORT="${DUFS_PORT:-5000}"
 DUFS_PATH="${DUFS_PATH:-files}"
 DUFS_ROOT="${DUFS_ROOT:-${OPENCODE_WORKDIR}}"
 
+# A rootless Docker engine for the dev user, so an agent can bring up a
+# database or any other container without the host's docker socket. Off by
+# default: it only works if the host relaxed this container's sandbox, and
+# doing that weakens the isolation the rest of this image is built on.
+DOCKER_ROOTLESS_ENABLE="${DOCKER_ROOTLESS_ENABLE:-false}"
+DOCKER_ROOTLESS_DATA_ROOT="${DOCKER_ROOTLESS_DATA_ROOT:-${USER_HOME}/.local/share/docker}"
+DOCKER_ROOTLESS_HOST="unix://${XDG_RUNTIME_DIR:-/run/user/${USER_UID:-1000}}/docker.sock"
+
 # Generated identity that must outlive the container: SSH host keys today.
 AGENT_ENV_STATE_DIR="${AGENT_ENV_STATE_DIR:-/var/lib/agent-env}"
 # The X display's access cookie. Without it, every local account — including
@@ -228,6 +236,82 @@ fi
 
 rm -rf "${USER_HOME}/.local/state/pitchfork"
 
+# ---------------------------------------------------------------------------
+# Rootless Docker preflight.
+#
+# A rootless daemon needs things a default container does not get. Each of
+# these failed for us with an error that named none of them — a bare "exit
+# status 127", or newuidmap reporting EPERM — so check up front and say
+# exactly which docker run flag is missing rather than crash-looping a daemon.
+# ---------------------------------------------------------------------------
+docker_rootless_preflight() {
+  local missing=()
+
+  if ! grep -q "^${USER_NAME}:" /etc/subuid 2>/dev/null; then
+    warn "no /etc/subuid range for ${USER_NAME}; containers could not map their own users"
+    return 1
+  fi
+
+  # newuidmap is setuid-root, so its euid stops matching the owner of the user
+  # namespace it is mapping. That loses the kernel's "namespace owner holds all
+  # capabilities in it" shortcut, and the check falls through to CAP_SYS_ADMIN
+  # in the initial user namespace, which docker drops by default.
+  local capbnd
+  capbnd="$(sed -n 's/^CapBnd:\s*//p' /proc/self/status)"
+  (( (0x${capbnd:-0} >> 21) & 1 )) || missing+=("--cap-add SYS_ADMIN")
+
+  # runc joins a session keyring for every container it starts, and keyctl is
+  # not in docker's default seccomp allow list. The daemon comes up fine
+  # without this; it is the containers it runs that fail, with "unable to join
+  # session keyring", so it is worth catching here rather than at first use.
+  [[ "$(sed -n 's/^Seccomp:\s*//p' /proc/self/status)" == 0 ]] \
+    || missing+=("--security-opt seccomp=unconfined")
+
+  # slirp4netns gives the daemon its own network namespace, and builds a tap
+  # device to do it.
+  [[ -c /dev/net/tun ]] || missing+=("--device /dev/net/tun")
+
+  # dockerd-rootless.sh turns on IP forwarding inside its network namespace.
+  # /proc/sys is read-only in a stock container, so that write fails.
+  [[ -w /proc/sys/net/ipv4/ip_forward ]] || missing+=("--security-opt systempaths=unconfined")
+
+  if (( ${#missing[@]} )); then
+    warn "DOCKER_ROOTLESS_ENABLE is set, but this container was not started with:"
+    local flag
+    for flag in "${missing[@]}"; do warn "    ${flag}"; done
+    warn "Rootless Docker is disabled. Add those to your docker run / compose"
+    warn "service and recreate the container. See 'Docker inside the container'"
+    warn "in the README for what each one is for."
+    return 1
+  fi
+  return 0
+}
+
+if is_true "${DOCKER_ROOTLESS_ENABLE}"; then
+  if docker_rootless_preflight; then
+    log "rootless Docker enabled for ${USER_NAME} (data root ${DOCKER_ROOTLESS_DATA_ROOT})"
+  else
+    DOCKER_ROOTLESS_ENABLE=false
+  fi
+fi
+
+# The readiness probe addresses the socket explicitly instead of relying on
+# DOCKER_HOST reaching it. The CLI does *not* fall back to
+# $XDG_RUNTIME_DIR/docker.sock, so a probe that depends on the environment is
+# one that can silently never pass — and pitchfork answers a probe that never
+# passes by restarting the daemon, which stops every container it was running.
+pf_docker=""
+if is_true "${DOCKER_ROOTLESS_ENABLE}"; then
+  pf_docker="
+[daemons.dockerd]
+run = \"/opt/agent-env/bin/run-dockerd-rootless\"
+dir = \"${USER_HOME}\"
+ready_cmd = { run = \"docker -H ${DOCKER_ROOTLESS_HOST} version >/dev/null 2>&1\", timeout = \"120s\" }
+retry = true
+boot_start = true
+"
+fi
+
 pf_dufs=""
 if is_true "${DUFS_ENABLE}"; then
   pf_dufs="
@@ -253,7 +337,7 @@ dir = "${OPENCODE_WORKDIR}"
 ready_port = { port = ${OPENCODE_PORT}, timeout = "120s" }
 retry = true
 boot_start = true
-${pf_dufs}${pf_end}
+${pf_dufs}${pf_docker}${pf_end}
 BLOCK
 
 python3 - "${user_pf_config}" "${pf_block}" "${pf_begin}" "${pf_end}" <<'MERGE'
@@ -315,6 +399,7 @@ GATEWAY_BASIC_B64="$(printf 'opencode:%s' "${OPENCODE_SERVER_PASSWORD}" | base64
   echo "TTYD_ENABLE=${TTYD_ENABLE}"
   echo "SSH_ENABLE=${SSH_ENABLE}"
   echo "USER_NAME=${USER_NAME}"
+  echo "DOCKER_ROOTLESS_ENABLE=${DOCKER_ROOTLESS_ENABLE}"
 } > "${RUN_DIR}/env"
 
 cat > /etc/profile.d/99-agent-env.sh <<EOF
@@ -324,6 +409,11 @@ export DISPLAY='${DESKTOP_DISPLAY}'
 export XAUTHORITY='${XAUTHORITY_FILE}'
 export XDG_RUNTIME_DIR='${XDG_RUNTIME_DIR}'
 EOF
+if is_true "${DOCKER_ROOTLESS_ENABLE}"; then
+  # Point the CLI at the user's own daemon. Without this `docker` looks for
+  # /var/run/docker.sock, which is root's and is not there.
+  echo "export DOCKER_HOST='${DOCKER_ROOTLESS_HOST}'" >> /etc/profile.d/99-agent-env.sh
+fi
 chmod 644 /etc/profile.d/99-agent-env.sh
 
 # /etc/profile is only read by login shells, and Debian's ~/.bashrc bails out
@@ -341,6 +431,9 @@ XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}
 OPENCODE_SERVER=http://127.0.0.1:${OPENCODE_PORT}
 OPENCODE_SERVER_PASSWORD=${OPENCODE_SERVER_PASSWORD}
 EOF
+if is_true "${DOCKER_ROOTLESS_ENABLE}"; then
+  echo "DOCKER_HOST=${DOCKER_ROOTLESS_HOST}" >> /etc/environment
+fi
 chmod 644 /etc/environment
 
 # Root shells manage the system supervisor; everyone else gets their own, so
@@ -897,6 +990,16 @@ TTYD_WRITABLE = "${TTYD_WRITABLE}"
 AB_DASHBOARD_PORT = "${AB_DASHBOARD_PORT}"
 EOF
 
+    # Must stay directly under [env]: in TOML everything after a table header
+    # belongs to that table, and emit_daemon opens [daemons.*] below.
+    if is_true "${DOCKER_ROOTLESS_ENABLE}"; then
+      printf 'DOCKER_HOST = "%s"\n' "${DOCKER_ROOTLESS_HOST}"
+      printf 'DOCKER_ROOTLESS_DATA_ROOT = "%s"\n' "${DOCKER_ROOTLESS_DATA_ROOT}"
+      if [[ -n "${DOCKER_ROOTLESS_ARGS:-}" ]]; then
+        printf 'DOCKER_ROOTLESS_ARGS = "%s"\n' "${DOCKER_ROOTLESS_ARGS}"
+      fi
+    fi
+
     if is_true "${SSH_ENABLE}"; then
       emit_daemon sshd "/usr/sbin/sshd -D -e" \
         'retry = true' \
@@ -1007,6 +1110,7 @@ if is_true "${USER_SUPERVISOR_ENABLE}" && is_true "${USER_WEB_ENABLE}"; then
   log " daemons     : ${PUBLIC_URL}/${USER_WEB_PATH}"
 fi
 is_true "${DUFS_ENABLE}" && log " files       : ${PUBLIC_URL}/${DUFS_PATH}"
+is_true "${DOCKER_ROOTLESS_ENABLE}" && log " docker      : rootless, as ${USER_NAME} (docker compose available)"
 is_true "${SSH_ENABLE}"         && log " ssh         : ${USER_NAME}@<host> -p ${SSH_PORT}"
 log " workspace   : ${OPENCODE_WORKDIR}"
 log "----------------------------------------------------------------"
