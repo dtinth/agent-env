@@ -84,6 +84,22 @@ services:
     # Chromium needs more than the default 64 MB of /dev/shm.
     shm_size: "2gb"
 
+    # Uncomment together with DOCKER_ROOTLESS_ENABLE=true to let the dev user
+    # run their own rootless Docker engine — a database, a queue, anything the
+    # agent wants a container for. Each line is load-bearing; the entrypoint
+    # names any that are missing and leaves the daemon down.
+    #
+    # This widens what code in the container can do. It stops well short of
+    # privileged: no device access beyond the tap, and root inside is still
+    # mapped to the unprivileged dev user outside.
+    # cap_add:
+    #   - SYS_ADMIN # setuid newuidmap, to map the subuid range
+    # security_opt:
+    #   - seccomp=unconfined # runc's per-container session keyring (keyctl)
+    #   - systempaths=unconfined # writable /proc/sys, for net.ipv4.ip_forward
+    # devices:
+    #   - /dev/net/tun # slirp4netns' tap device
+
     volumes:
       - workspace:/workspace # your code
       # The whole home directory, so a tool the agent installs — and its

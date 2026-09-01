@@ -23,6 +23,7 @@ One container gives you:
 | **a usable shell** | — | git, ripgrep, fd, jq, fastfetch, btop, ncdu, a compiler |
 | **pitchfork** | PID 1, plus one per user | supervises it all; the OpenCode server is yours, not root's |
 | **agent-browser + Chromium** | on the virtual display | headed, so you can watch it over noVNC |
+| **rootless Docker** *(opt-in)* | the dev user's own daemon | `docker` + `docker compose` for databases and the like; needs host flags |
 
 Everything is configured with environment variables. Nothing needs to be baked
 into a custom image.
@@ -392,6 +393,70 @@ sessions:
 ```bash
 ssh -p 2222 dev@host
 ssh -p 2222 dev@host 'opencode2 run "summarise this repo"'
+```
+
+### Docker inside the container
+
+Off by default. Set `DOCKER_ROOTLESS_ENABLE=true` and the dev user gets their
+own **rootless Docker engine**, supervised alongside their other daemons — so
+an agent can bring up Postgres, Redis or anything else in a container without
+being handed the host's docker socket:
+
+```bash
+docker compose up -d          # the plugin is in the image
+docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=secret postgres:17
+pitchfork logs -f dockerd     # it is your daemon; no sudo
+```
+
+`DOCKER_HOST` is set for you, images land on the home volume so they survive a
+recreate, and root inside those containers is your unprivileged `dev` uid
+outside — a container's own users map into `dev`'s subuid range, which is what
+lets stock images like `postgres` drop privileges normally.
+
+**The host has to relax this container's sandbox for it.** A rootless daemon
+needs four things a stock container does not get, and all four are required:
+
+| Flag | Why |
+|---|---|
+| `--cap-add SYS_ADMIN` | `newuidmap` is setuid-root, so its euid stops matching the owner of the user namespace it is mapping. That loses the kernel's "namespace owner holds all capabilities in it" shortcut and falls through to `CAP_SYS_ADMIN`, which docker drops. |
+| `--security-opt seccomp=unconfined` | `runc` joins a session keyring per container and `keyctl` is not in the default profile. The daemon starts fine without this; the containers it runs fail with `unable to join session keyring`. |
+| `--security-opt systempaths=unconfined` | `dockerd-rootless.sh` sets `net.ipv4.ip_forward` inside its own network namespace, and `/proc/sys` is read-only in a stock container. |
+| `--device /dev/net/tun` | slirp4netns builds a tap device to give the daemon its network namespace. |
+
+The entrypoint checks for all four at startup. If any is missing it names it,
+leaves the daemon down and carries on, rather than crash-looping something that
+cannot work.
+
+```bash
+docker run -d --name agent-env --shm-size=2g \
+  --cap-add SYS_ADMIN \
+  --security-opt seccomp=unconfined \
+  --security-opt systempaths=unconfined \
+  --device /dev/net/tun \
+  -e DOCKER_ROOTLESS_ENABLE=true \
+  ...
+```
+
+Weigh that against the isolation the rest of this image is built on: it is a
+real widening of what code in the container can do, and this is a container
+that runs code an agent was asked to run. It is still well short of
+`--privileged` — no blanket device access, and no path from container-root to
+host-root. Two limits worth knowing:
+
+- **No cgroup delegation**, so `--memory` and `--cpus` on inner containers are
+  ignored. Nothing stops a runaway container from taking the whole workstation's
+  memory.
+- **Nested storage.** The engine keeps its own overlay tree on the home volume;
+  a few large images will show up in that volume's size, not the image's.
+
+If all you want is a database to develop against, installing it as a normal
+daemon under your own supervisor needs none of this and no host flags at all:
+
+```toml
+[daemons.postgres]
+run = "postgres -D /workspace/.pgdata"
+ready_port = 5432
+boot_start = true
 ```
 
 ### mosh

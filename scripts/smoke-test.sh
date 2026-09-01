@@ -378,6 +378,81 @@ with open("/etc/mise/mise.lock", "rb") as fh:
       && ok "${tool} installed" || bad "${tool} missing"
   done
 
+  head_ "Rootless Docker"
+
+  # Opt-in, and the checks differ completely between the two states: enabled it
+  # must actually work, disabled it must be genuinely absent rather than
+  # half-started.
+  docker_rootless=$(docker exec "${CONTAINER}" sh -c \
+    'sed -n "s/^DOCKER_ROOTLESS_ENABLE=//p" /run/agent-env/env' 2>/dev/null | tr -d "\r")
+
+  # The binaries ship either way; only the daemon is conditional.
+  for bin in dockerd rootlesskit dockerd-rootless.sh; do
+    docker exec "${CONTAINER}" sh -c "command -v ${bin} >/dev/null" \
+      && ok "${bin} present in the image" || bad "${bin} missing"
+  done
+  docker exec -u dev "${CONTAINER}" bash -lc 'docker compose version' >/dev/null 2>&1 \
+    && ok "the compose plugin resolves ($(docker exec -u dev "${CONTAINER}" bash -lc 'docker compose version --short' 2>/dev/null | tr -d '\r'))" \
+    || bad "docker compose is not available"
+
+  if [ "${docker_rootless}" = true ]; then
+    grep -qE "dockerd +running" <<<"${user_daemons}" \
+      && ok "dockerd runs in the dev user's supervisor" \
+      || bad "dockerd is not running under dev: ${user_daemons:-none}"
+
+    # It must be the user's daemon, not a second root one.
+    grep -q "dockerd" <<<"${sys_daemons}" \
+      && bad "dockerd is a system daemon — it should belong to dev" \
+      || ok "dockerd is not in the root supervisor"
+
+    info=$(docker exec -u dev "${CONTAINER}" bash -lc 'docker info 2>/dev/null')
+    grep -q "rootless" <<<"${info}" \
+      && ok "the daemon reports itself rootless" \
+      || bad "docker info does not report rootless mode"
+
+    # The whole point of the subuid range: a container's own users must map to
+    # distinct host uids, or images like postgres cannot drop privileges.
+    dockerd_pid=$(docker exec "${CONTAINER}" pgrep -f "dockerd --data-root" | head -1)
+    if [[ -n "${dockerd_pid}" ]]; then
+      ranges=$(docker exec "${CONTAINER}" sh -c "wc -l < /proc/${dockerd_pid}/uid_map" 2>/dev/null | tr -d '\r')
+      [[ "${ranges:-0}" -ge 2 ]] \
+        && ok "the daemon's userns maps a subuid range (${ranges} ranges)" \
+        || bad "the daemon's userns has only ${ranges:-0} uid range — newuidmap did not run"
+    else
+      bad "could not find the rootless dockerd process"
+    fi
+
+    # Image data belongs on the home volume, not the container filesystem.
+    root=$(docker exec -u dev "${CONTAINER}" bash -lc \
+      'docker info --format "{{.DockerRootDir}}" 2>/dev/null' | tr -d '\r')
+    case "${root}" in
+      /home/dev/*) ok "image storage is on the home volume (${root})" ;;
+      *)           bad "docker root dir is '${root:-unknown}', so pulled images are lost on recreate" ;;
+    esac
+
+    # The daemon's own readiness probe must be satisfiable from a bare
+    # environment. It is not if it leans on DOCKER_HOST: the CLI does not fall
+    # back to $XDG_RUNTIME_DIR/docker.sock, so the probe would never pass and
+    # pitchfork would restart the daemon every couple of minutes, stopping
+    # whatever it was running. That failure looks exactly like "my database
+    # keeps dying", so check the probe rather than the symptom.
+    sock=$(docker exec -u dev "${CONTAINER}" bash -lc 'echo "${DOCKER_HOST}"' | tr -d '\r')
+    docker exec -u dev "${CONTAINER}" env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/dev \
+      sh -c "docker -H ${sock} version >/dev/null 2>&1" \
+      && ok "the readiness probe passes with no environment to lean on" \
+      || bad "the readiness probe needs env that pitchfork will not give it — the daemon will restart-loop"
+
+    # A shell must find the daemon without being told where it is.
+    dh=$(docker exec -u dev "${CONTAINER}" bash -lc 'echo "${DOCKER_HOST:-unset}"' | tr -d '\r')
+    [[ "${dh}" == unix://* ]] && ok "DOCKER_HOST points at the user's socket (${dh})" \
+                              || bad "DOCKER_HOST is '${dh}'"
+  else
+    ok "rootless Docker is off by default (DOCKER_ROOTLESS_ENABLE=${docker_rootless:-unset})"
+    grep -qE "dockerd" <<<"${user_daemons}" \
+      && bad "dockerd is defined even though the feature is disabled" \
+      || ok "no dockerd daemon is defined while disabled"
+  fi
+
   head_ "mosh"
   docker exec "${CONTAINER}" sh -c 'command -v mosh-server >/dev/null' \
     && ok "mosh-server present ($(docker exec "${CONTAINER}" sh -c 'mosh-server --version 2>&1 | head -1'))" \
