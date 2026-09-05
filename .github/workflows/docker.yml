@@ -134,9 +134,48 @@ jobs:
           CONTAINER=agent-env ./scripts/smoke-test.sh \
             http://localhost:8080 "opencode:${password}"
 
+      # OPENCODE_ENABLE=false is a supported deployment, and it is the one the
+      # default run cannot reach: a different handler at /, no credential
+      # injection, a login shell instead of the TUI, and a healthcheck that has
+      # to stop probing a port that is deliberately not there. Untested, it
+      # would only break for whoever turned it off first.
+      - name: Smoke test with OpenCode off
+        env:
+          IMAGE: ${{ steps.ref.outputs.image }}
+        run: |
+          set -euo pipefail
+          password="ci-$(openssl rand -hex 12)"
+
+          docker rm -f agent-env-noc >/dev/null 2>&1 || true
+          docker run -d --name agent-env-noc --shm-size=2g \
+            -p 8082:8080 \
+            -e AUTH_MODE=basic \
+            -e "GATEWAY_PASSWORD=${password}" \
+            -e OPENCODE_ENABLE=false \
+            -e AB_DASHBOARD_ENABLE=false \
+            -e PUBLIC_URL=http://localhost:8082 \
+            "${IMAGE}"
+
+          # The healthcheck must go healthy with no OpenCode server at all —
+          # that is the regression this run exists to catch.
+          for _ in $(seq 1 60); do
+            state=$(docker inspect -f '{{.State.Health.Status}}' agent-env-noc)
+            [ "$state" = healthy ] && break
+            if [ "$state" = unhealthy ]; then
+              echo "::error::OpenCode-off container went unhealthy"
+              docker logs agent-env-noc; exit 1
+            fi
+            sleep 5
+          done
+
+          CONTAINER=agent-env-noc ./scripts/smoke-test.sh \
+            http://localhost:8082 "opencode:${password}"
+
       - name: Container logs on failure
         if: failure()
-        run: docker logs agent-env 2>&1 | tail -200 || true
+        run: |
+          docker logs agent-env 2>&1 | tail -200 || true
+          docker logs agent-env-noc 2>&1 | tail -200 || true
 
       - name: Record the digest
         if: github.event_name != 'pull_request'

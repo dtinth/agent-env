@@ -52,6 +52,11 @@ services:
       - GATEWAY_USER
       - GATEWAY_PASSWORD
 
+      # --- What lives at / ------------------------------------------------
+      # OPENCODE_ENABLE=false hands / to whatever is on PRIMARY_PORT instead.
+      - OPENCODE_ENABLE
+      - PRIMARY_PORT
+
       # --- OpenCode -------------------------------------------------------
       # Or sign in interactively with /connect in the TUI, which persists in
       # the opencode-state volume.

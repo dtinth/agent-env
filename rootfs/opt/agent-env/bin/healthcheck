@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# The image's HEALTHCHECK.
+#
+# This has to follow the configuration, not assume it. It used to be a fixed
+# `curl /healthz && probe OPENCODE_PORT`, which was fine only while OpenCode was
+# mandatory: the moment it can be turned off, an unconditional probe of its port
+# marks a perfectly good container unhealthy forever — and an orchestrator then
+# restarts it in a loop. So read what the entrypoint actually decided.
+set -euo pipefail
+
+env_file=/run/agent-env/env
+value() { sed -n "s/^$1=//p" "${env_file}" 2>/dev/null | head -1; }
+
+gateway_port="$(value GATEWAY_PORT)"; gateway_port="${gateway_port:-${GATEWAY_PORT:-8080}}"
+health_path="$(value HEALTH_PATH)";   health_path="${health_path:-~env/healthz}"
+
+# The gateway is the one thing that is always true of a healthy container.
+curl -fsS --max-time 4 "http://127.0.0.1:${gateway_port}/${health_path}" >/dev/null
+
+# And OpenCode, only when it is supposed to be there. Deliberately not the
+# primary-service port when OpenCode is off: nothing is required to be listening
+# there, and the gateway already answers with the environment index if it isn't.
+if [[ "$(value OPENCODE_ENABLE)" == true ]]; then
+  opencode_port="$(value OPENCODE_PORT)"; opencode_port="${opencode_port:-4096}"
+  exec 3<>"/dev/tcp/127.0.0.1/${opencode_port}"
+fi
