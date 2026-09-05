@@ -40,9 +40,32 @@ if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1
     'sed -n "s/^AUTH_MODE=//p" /run/agent-env/env' 2>/dev/null | tr -d "\r")
 fi
 
+# The reserved prefix and the paths under it are a contract the entrypoint
+# publishes; read them rather than hardcoding, so this test fails for the right
+# reason if one of them moves.
+runtime_var() {
+  docker exec "${CONTAINER}" sh -c "sed -n 's/^$1=//p' /run/agent-env/env" 2>/dev/null | tr -d '\r'
+}
+ENV_PREFIX=""; TTYD_PATH=""; DESKTOP_PATH=""; DUFS_PATH=""; HEALTH_PATH=""; USER_WEB_PATH=""
+if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1; then
+  ENV_PREFIX=$(runtime_var ENV_PREFIX)
+  TTYD_PATH=$(runtime_var TTYD_PATH)
+  DESKTOP_PATH=$(runtime_var DESKTOP_PATH)
+  DUFS_PATH=$(runtime_var DUFS_PATH)
+  HEALTH_PATH=$(runtime_var HEALTH_PATH)
+  USER_WEB_PATH=$(runtime_var USER_WEB_PATH)
+fi
+ENV_PREFIX="${ENV_PREFIX:-~env}"
+TTYD_PATH="${TTYD_PATH:-${ENV_PREFIX}/terminal}"
+DESKTOP_PATH="${DESKTOP_PATH:-${ENV_PREFIX}/desktop}"
+DUFS_PATH="${DUFS_PATH:-${ENV_PREFIX}/files}"
+HEALTH_PATH="${HEALTH_PATH:-${ENV_PREFIX}/healthz}"
+USER_WEB_PATH="${USER_WEB_PATH:-pitchfork}"
+
 head_ "Gateway routes"
-c=$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' "${BASE}/healthz")
-[[ "$c" == 200 ]] && ok "/healthz open without auth (200)" || bad "/healthz returned $c"
+c=$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' "${BASE}/${HEALTH_PATH}")
+[[ "$c" == 200 ]] && ok "/${HEALTH_PATH} open without auth (200)" \
+                  || bad "/${HEALTH_PATH} returned $c"
 
 c=$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' "${BASE}/")
 if [ "${auth_mode}" = none ]; then
@@ -55,7 +78,7 @@ else
   esac
 fi
 
-for path in / /terminal/ /desktop/vnc.html; do
+for path in / "/${ENV_PREFIX}/" "/${TTYD_PATH}/" "/${DESKTOP_PATH}/vnc.html"; do
   c=$(code "${BASE}${path}")
   case "$c" in
     200) ok "${path} serves (200)" ;;
@@ -64,17 +87,101 @@ for path in / /terminal/ /desktop/vnc.html; do
   esac
 done
 
+head_ "Reserved prefix"
+# The point of /${ENV_PREFIX}/: the environment answers for everything under it
+# and for nothing above it, so whatever is at / owns its whole path space.
+
+c=$(code "${BASE}/${ENV_PREFIX}/no-such-service")
+case "$c" in
+  404) ok "an unknown path under /${ENV_PREFIX}/ is answered here, not proxied (404)" ;;
+  302) ok "an unknown path under /${ENV_PREFIX}/ hits the sign-in gate first (302)" ;;
+  *)   bad "/${ENV_PREFIX}/no-such-service returned $c — it fell through to the primary service" ;;
+esac
+
+# Old squatted paths must now belong to whatever answers at /. Comparing bodies
+# rather than status codes keeps this honest in every auth mode: under google
+# both are the same 302, under basic both are the same app shell.
+root_body=$(curl -s --max-time 15 -u "${AUTH}" "${BASE}/" | md5sum | cut -d' ' -f1)
+for path in /terminal /desktop /files /img/logo.png; do
+  body=$(curl -s --max-time 15 -u "${AUTH}" "${BASE}${path}" | md5sum | cut -d' ' -f1)
+  [[ "${body}" == "${root_body}" ]] \
+    && ok "${path} reaches the primary service, no longer squatted" \
+    || bad "${path} does not match / — something still owns it"
+done
+
+# The daemons UI cannot be nested (pitchfork validates its web path as one
+# segment), so the prefix redirects to it instead. That redirect is the only
+# reason /${ENV_PREFIX}/ is a complete index of the environment.
+if [ "${auth_mode}" != google ]; then
+  loc=$(curl -s -o /dev/null --max-time 15 -u "${AUTH}" -w '%{redirect_url}' \
+        "${BASE}/${ENV_PREFIX}/daemons")
+  [[ "${loc}" == *"/${USER_WEB_PATH}" ]] \
+    && ok "/${ENV_PREFIX}/daemons redirects to /${USER_WEB_PATH}" \
+    || bad "/${ENV_PREFIX}/daemons redirected to '${loc}', expected /${USER_WEB_PATH}"
+fi
+
+# /img/logo.png is hardcoded absolute in pitchfork's bundle. It is scoped by
+# Referer so it cannot shadow the same path in a user's own app — the loop above
+# proves the fallthrough, this proves the UI still gets its logo.
+if [ "${auth_mode}" != google ]; then
+  ctype=$(curl -s -o /dev/null --max-time 15 -u "${AUTH}" -w '%{content_type}' \
+          -H "Referer: ${BASE}/${USER_WEB_PATH}" "${BASE}/img/logo.png")
+  [[ "${ctype}" == image/* ]] \
+    && ok "/img/logo.png serves pitchfork's logo when the daemons UI asks (${ctype})" \
+    || bad "/img/logo.png returned ${ctype:-nothing} for the daemons UI"
+fi
+
+if [ "${auth_mode}" != none ]; then
+  c=$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' "${BASE}/${ENV_PREFIX}/")
+  [[ "$c" == 401 || "$c" == 302 ]] \
+    && ok "the environment index is behind the gateway auth ($c)" \
+    || bad "/${ENV_PREFIX}/ answered $c without credentials"
+fi
+
+head_ "Readiness probes"
+# A ready_http that never passes is invisible for one probe window and then
+# restarts the daemon forever. Moving /healthz under the reserved prefix broke
+# exactly this once already, so check every probe on its own terms: the URL the
+# supervisor will actually fetch, with no credentials, since it has none.
+if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1; then
+  probes=$(docker exec "${CONTAINER}" sh -c \
+    "grep -o 'ready_http = { url = \"[^\"]*\"' /opt/agent-env/pitchfork/config.toml \
+     | sed 's/.*url = \"//; s/\"$//'" 2>/dev/null | tr -d '\r')
+  if [[ -z "${probes}" ]]; then
+    bad "no ready_http probes found in the generated config — did the format change?"
+  else
+    while read -r url; do
+      [[ -n "${url}" ]] || continue
+      c=$(docker exec "${CONTAINER}" curl -s -o /dev/null --max-time 10 -w '%{http_code}' "${url}")
+      [[ "$c" == 200 ]] \
+        && ok "readiness probe ${url} passes unauthenticated (200)" \
+        || bad "readiness probe ${url} answered $c — that daemon will restart-loop"
+    done <<<"${probes}"
+  fi
+
+  # And prove it stayed up: a daemon caught in the loop shows as errored or
+  # flips back to running a moment later.
+  state=$(docker exec -e PITCHFORK_STATE_DIR=/var/lib/pitchfork \
+            -e PITCHFORK_CONFIG_DIR=/opt/agent-env/pitchfork \
+            "${CONTAINER}" pitchfork list 2>/dev/null | grep -E '^global/caddy' || true)
+  grep -q running <<<"${state}" \
+    && ok "caddy is running, not cycling (${state//  */})" \
+    || bad "caddy is not running: ${state:-not listed}"
+fi
+
 head_ "VNC websocket (browser path)"
 # --http1.1 matters over TLS: curl would otherwise negotiate HTTP/2, where
 # `Connection: Upgrade` is not a thing, and the request would arrive upstream as
 # a plain GET and 404. Browsers open wss:// over HTTP/1.1, which is what this
 # imitates.
-c=$(curl -s -o /dev/null --max-time 6 --http1.1 -w '%{http_code}' -u "${AUTH}" \
-      -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
-      -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
-      "${BASE}/desktop/websockify")
-[[ "$c" == 101 ]] && ok "websockify upgrade (101 Switching Protocols)" \
-                  || bad "websockify upgrade returned $c"
+if [ "${auth_mode}" != google ]; then
+  c=$(curl -s -o /dev/null --max-time 6 --http1.1 -w '%{http_code}' -u "${AUTH}" \
+        -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+        -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+        "${BASE}/${DESKTOP_PATH}/websockify")
+  [[ "$c" == 101 ]] && ok "websockify upgrade (101 Switching Protocols)" \
+                    || bad "websockify upgrade returned $c"
+fi
 
 if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1; then
   head_ "Inside the container (${CONTAINER})"
@@ -300,54 +407,59 @@ with open("/etc/mise/mise.lock", "rb") as fh:
     && ok "dufs runs in the dev user's supervisor" \
     || bad "dufs is not running under dev: ${user_daemons:-none}"
 
-  c=$(code "${BASE}/files/")
+  c=$(code "${BASE}/${DUFS_PATH}/")
   case "$c" in
-    200) ok "/files/ lists the workspace (200)" ;;
-    302) ok "/files/ redirects to sign-in (302)" ;;
-    *)   bad "/files/ returned $c" ;;
+    200) ok "/${DUFS_PATH}/ lists the workspace (200)" ;;
+    302) ok "/${DUFS_PATH}/ redirects to sign-in (302)" ;;
+    *)   bad "/${DUFS_PATH}/ returned $c" ;;
   esac
 
   if [ "${auth_mode}" != none ]; then
-    c=$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' "${BASE}/files/")
+    c=$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' "${BASE}/${DUFS_PATH}/")
     [[ "$c" == 401 || "$c" == 302 ]] && ok "the file manager is behind the gateway auth ($c)" \
-                                     || bad "/files/ answered $c without credentials"
+                                     || bad "/${DUFS_PATH}/ answered $c without credentials"
   fi
 
   # Upload and delete are the point of it; check the file really lands as dev.
+  if [ "${auth_mode}" != google ]; then
   probe="smoke-upload-$$.txt"
   put=$(curl -s -o /dev/null --max-time 20 -w '%{http_code}' -u "${AUTH}" \
-        --data-binary 'smoke' -X PUT "${BASE}/files/${probe}")
+        --data-binary 'smoke' -X PUT "${BASE}/${DUFS_PATH}/${probe}")
   owner=$(docker exec "${CONTAINER}" stat -c '%U' "/workspace/${probe}" 2>/dev/null || echo none)
-  del=$(curl -s -o /dev/null --max-time 20 -w '%{http_code}' -u "${AUTH}" -X DELETE "${BASE}/files/${probe}")
+  del=$(curl -s -o /dev/null --max-time 20 -w '%{http_code}' -u "${AUTH}" -X DELETE "${BASE}/${DUFS_PATH}/${probe}")
   docker exec "${CONTAINER}" rm -f "/workspace/${probe}" 2>/dev/null || true
   if [[ "${put}" =~ ^20 ]] && [[ "${owner}" == dev ]] && [[ "${del}" =~ ^2 ]]; then
     ok "upload and delete work, and files are written as dev"
   else
     bad "file round trip failed (PUT ${put}, owner ${owner}, DELETE ${del})"
   fi
+  fi
 
   # --allow-symlink is deliberately not set, so a symlink must not escape root.
   docker exec -u dev "${CONTAINER}" sh -c 'ln -sfn /etc /workspace/smoke-escape' 2>/dev/null || true
-  esc=$(code "${BASE}/files/smoke-escape/passwd")
+  esc=$(code "${BASE}/${DUFS_PATH}/smoke-escape/passwd")
   docker exec -u dev "${CONTAINER}" rm -f /workspace/smoke-escape 2>/dev/null || true
   [[ "${esc}" == 404 || "${esc}" == 403 || "${esc}" == 302 ]] \
     && ok "a symlink cannot escape the served root (${esc})" \
     || bad "symlink escaped the served root: ${esc}"
 
   head_ "pitchfork web UI"
-  c=$(code "${BASE}/pitchfork")
+  c=$(code "${BASE}/${USER_WEB_PATH}")
   case "$c" in
-    200) ok "/pitchfork serves the daemon dashboard (200)" ;;
-    302) ok "/pitchfork redirects to sign-in (302)" ;;
-    *)   bad "/pitchfork returned $c" ;;
+    200) ok "/${USER_WEB_PATH} serves the daemon dashboard (200)" ;;
+    302) ok "/${USER_WEB_PATH} redirects to sign-in (302)" ;;
+    *)   bad "/${USER_WEB_PATH} returned $c" ;;
   esac
-  c=$(code "${BASE}/img/logo.png")
+  # The Referer is load-bearing: without it this path belongs to whatever is at
+  # /, which answers 200 for anything and would make this pass for free.
+  c=$(curl -s -o /dev/null --max-time 15 -u "${AUTH}" -w '%{http_code}' \
+      -H "Referer: ${BASE}/${USER_WEB_PATH}" "${BASE}/img/logo.png")
   [[ "$c" == 200 || "$c" == 302 ]] && ok "its logo resolves through the gateway ($c)" \
                                    || bad "logo returned $c"
   if [ "${auth_mode}" != none ]; then
-    c=$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' "${BASE}/pitchfork")
+    c=$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' "${BASE}/${USER_WEB_PATH}")
     [[ "$c" == 401 || "$c" == 302 ]] && ok "the dashboard is behind the gateway auth ($c)" \
-                                     || bad "/pitchfork answered $c without credentials"
+                                     || bad "/${USER_WEB_PATH} answered $c without credentials"
   fi
 
   head_ "agent-browser"

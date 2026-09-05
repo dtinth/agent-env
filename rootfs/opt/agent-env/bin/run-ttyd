@@ -4,7 +4,7 @@ set -euo pipefail
 args=(
   --port "${TTYD_PORT:-7681}"
   --interface 127.0.0.1
-  --base-path /terminal
+  --base-path "/${TTYD_PATH:-~env/terminal}"
   --client-option "titleFixed=OpenCode"
   --client-option "fontSize=${TTYD_FONT_SIZE:-14}"
   --client-option "theme={\"background\":\"#0d0d0d\"}"

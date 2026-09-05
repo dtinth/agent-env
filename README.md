@@ -12,11 +12,12 @@ One container gives you:
 | What | Where | Notes |
 |---|---|---|
 | **OpenCode v2 web UI + API** | `<PUBLIC_URL>/` | `opencode2 serve` |
-| **OpenCode v2 TUI** in the browser | `<PUBLIC_URL>/terminal` | the real TUI, over ttyd |
-| **XFCE desktop** in the browser | `<PUBLIC_URL>/desktop` | noVNC over x11vnc |
+| **OpenCode v2 TUI** in the browser | `<PUBLIC_URL>/~env/terminal` | the real TUI, over ttyd |
+| **XFCE desktop** in the browser | `<PUBLIC_URL>/~env/desktop` | noVNC over x11vnc |
 | **agent-browser dashboard** | `<DASHBOARD_PUBLIC_URL>` | own port; live browser viewports |
 | **pitchfork dashboard** | `<PUBLIC_URL>/pitchfork` | start/stop/logs for your own daemons |
-| **file manager** | `<PUBLIC_URL>/files` | browse, upload, download the workspace |
+| **an index of all of it** | `<PUBLIC_URL>/~env/` | everything the environment serves |
+| **file manager** | `<PUBLIC_URL>/~env/files` | browse, upload, download the workspace |
 | **SSH + mosh** | port `22`, UDP `60000-60010` | key-based by default |
 | **Google sign-in** in front of all of it | `<PUBLIC_URL>/oauth2/*` | oauth2-proxy behind Caddy |
 | **mise** | `/opt/mise` | manages node and anything else you add |
@@ -59,8 +60,8 @@ docker run -d --name agent-env --shm-size=2g \
 ```
 
 Open <http://localhost:8080> and sign in as `opencode` / `changeme`.
-Then <http://localhost:8080/terminal> for the TUI, and
-<http://localhost:8080/desktop> for the desktop.
+Then <http://localhost:8080/~env/> for an index of everything the environment
+serves — the TUI, the desktop, the files, the daemons.
 
 ### For real, with Google sign-in
 
@@ -106,7 +107,44 @@ Google account. It is deliberately allowed rather than blocked — the check
 exists to stop you *forgetting* an allow list, not to overrule one you wrote on
 purpose.
 
-`/healthz` is always reachable without auth, so load balancers can probe it.
+`/~env/healthz` is always reachable without auth, so load balancers can probe it.
+
+### The reserved `/~env/` prefix
+
+Everything this image serves for *itself* lives under `/~env/`. Nothing else
+does, so whatever answers at `/` owns its entire path space:
+
+| Path | What |
+|---|---|
+| `/~env/` | index of what this environment is running |
+| `/~env/healthz` | health probe, never behind auth |
+| `/~env/terminal` | the OpenCode TUI, over ttyd |
+| `/~env/desktop` | XFCE over noVNC |
+| `/~env/files` | the workspace file manager |
+| `/~env/daemons` | redirects to `/pitchfork` (see below) |
+
+An unknown path under the prefix is answered with a 404 by the gateway rather
+than being passed through, so a request addressed to the environment never
+reaches your application by accident.
+
+Two things sit outside the prefix on purpose:
+
+- **`/oauth2/*`** — oauth2-proxy's own endpoints. This is where the redirect URI
+  you registered with Google already points, and moving it would invalidate
+  every existing OAuth client for no gain.
+- **`/pitchfork`** — pitchfork validates `PITCHFORK_WEB_PATH` as a single
+  `[A-Za-z0-9_-]` segment and bakes it into a `<base href>`, so its dashboard
+  cannot be nested. It keeps a top-level path, and `/~env/daemons` redirects
+  there so the prefix is still a complete index. Its logo is a hard-coded
+  absolute `/img/logo.png` in its JS bundle; the gateway serves that path from
+  pitchfork **only** when the `Referer` says the request came from the dashboard,
+  so it cannot shadow the same path in your own app. If a referrer policy strips
+  the path, the dashboard loses its logo and nothing else.
+
+`~` is in RFC 3986's unreserved set, so it needs no encoding, and no framework
+generates it — which is the whole reason for choosing it. The prefix is fixed
+rather than configurable: it is a documented contract, and a knob would only
+make this table wrong.
 
 ### How the OpenCode server itself is protected
 
@@ -207,12 +245,12 @@ See [`.env.example`](.env.example) for the annotated list. The essentials:
 | `SSH_PASSWORD` | — | Enables password auth (prefer keys) |
 | `DESKTOP_ENABLE` | `true` | XFCE + noVNC |
 | `DESKTOP_RESOLUTION` | `1920x1080x24` | Virtual display geometry, `WxH` or `WxHxD` |
-| `TTYD_ENABLE` | `true` | Browser TUI at `/terminal` |
+| `TTYD_ENABLE` | `true` | Browser TUI at `/~env/terminal` |
 | `AB_DASHBOARD_ENABLE` | `true` | agent-browser dashboard on its own port |
 | `MISE_TOOLS` | — | Extra global tools, e.g. `python@3.13 go@latest` |
 | `USER_SUPERVISOR_ENABLE` | `true` | Run the dev user's own pitchfork at boot |
 | `USER_WEB_ENABLE`, `USER_WEB_PATH` | `true`, `pitchfork` | pitchfork's web dashboard |
-| `DUFS_ENABLE`, `DUFS_PATH`, `DUFS_ROOT` | `true`, `files`, `/workspace` | the file manager |
+| `DUFS_ENABLE`, `DUFS_PATH`, `DUFS_ROOT` | `true`, `~env/files`, `/workspace` | the file manager |
 | `AGENT_ENV_STATE_DIR` | `/var/lib/agent-env` | Where the SSH host keys are kept |
 | `X_TCP_ENABLE` | `false` | Let the display accept TCP (still cookie-gated) |
 | `TZ`, `PUID`, `PGID` | `UTC`, `1000`, `1000` | Timezone and uid/gid remapping |
@@ -356,7 +394,9 @@ $ pitchfork tui                # the same dashboard, in the terminal
 ```
 
 Set `USER_WEB_ENABLE=false` to drop the web dashboard, or `USER_WEB_PATH` to
-serve it somewhere other than `/pitchfork`. It binds loopback only; the gateway
+serve it somewhere other than `/pitchfork`. It has to stay a single path segment
+of `[A-Za-z0-9_-]` — pitchfork rejects anything else, which is why this one
+service sits outside `/~env/`. It binds loopback only; the gateway
 is what exposes it, behind the same authentication as everything else. Note that
 it can edit the config and stop daemons — no more privilege than the TUI already
 gives, but worth knowing.
@@ -592,7 +632,7 @@ desktop specifically, and `VNC_VIEW_ONLY=true` for a read-only session.
 ### Files
 
 [dufs](https://github.com/sigoden/dufs) serves the workspace at
-`<PUBLIC_URL>/files` — browse it, drag files in, download a folder as an
+`<PUBLIC_URL>/~env/files` — browse it, drag files in, download a folder as an
 archive, search, rename, delete. Useful when the thing you need to move is not
 worth an `scp` invocation, and when you are working from a tablet or a machine
 without your keys.
@@ -610,7 +650,7 @@ takes, with `DUFS_ARGS`:
 ```bash
 DUFS_ENABLE=false        # turn it off
 DUFS_ROOT=/srv/shared    # serve something other than /workspace
-DUFS_PATH=files          # the path it lives under
+DUFS_PATH=~env/files     # the path it lives under
 DUFS_ARGS=--allow-symlink
 ```
 
@@ -634,7 +674,7 @@ xauth add :99 MIT-MAGIC-COOKIE-1 "$cookie"
 DISPLAY=:99 xeyes
 ```
 
-It then appears on `/desktop` alongside everything else. Plain X clients work as
+It then appears on `/~env/desktop` alongside everything else. Plain X clients work as
 they are; GTK applications generally want a session bus, so run them under
 `dbus-run-session` or just start them inside the container.
 
@@ -674,7 +714,7 @@ echo '{"headed": false}' > ./agent-browser.json # one project
 docker run -e AGENT_BROWSER_HEADED=false ...    # whole container
 ```
 
-Because it runs headed on display `:1`, you can open `/desktop` and *watch* the
+Because it runs headed on display `:1`, you can open `/~env/desktop` and *watch* the
 browser work. The dashboard on port 8081 shows live viewports and the command
 feed.
 
@@ -693,7 +733,7 @@ Chromium needs a large `/dev/shm`: keep `--shm-size=2g` (compose already sets it
   `OPENCODE_VERSION` build arg to pin an exact one, and `OPENCODE_DISABLE_AUTOUPDATE=1`
   is already set so the container never self-updates under you.
 - **The dashboard needs its own port.** It's a Next.js app that serves assets
-  from absolute paths, so it can't live under a path prefix like `/desktop` does.
+  from absolute paths, so it can't live under a path prefix like `/~env/desktop` does.
   It gets port 8081 with the same authentication. Set `DASHBOARD_PUBLIC_URL` if
   your host port differs from the container's, or `AB_DASHBOARD_ENABLE=false` to
   turn it off.
@@ -735,11 +775,12 @@ v2 beta builds.
                     │   │                                            │
                     │   ├─ /            ──► opencode2 serve  :4096   │
                     │   ├─ /pitchfork   ──► pitchfork web    :4747   │
-                    │   ├─ /files       ──► dufs             :5000   │
-                    │   ├─ /terminal    ──► ttyd :7681 ──► TUI       │
-                    │   ├─ /desktop     ──► websockify :6080         │
+                    │   ├─ /~env/files    ──► dufs           :5000   │
+                    │   ├─ /~env/terminal ──► ttyd :7681 ──► TUI     │
+                    │   ├─ /~env/desktop  ──► websockify :6080       │
                     │   │                     └─ x11vnc :5900 ──► Xvfb :1 ──► XFCE
-                    │   └─ /healthz                                  │
+                    │   ├─ /~env/         ──► index                  │
+                    │   └─ /~env/healthz                             │
                     │                                                │
    browser ──8081──►│ Caddy (same auth) ──► agent-browser dash :4848 │
    ssh    ────22───►│ sshd ──► dev                                   │

@@ -296,10 +296,10 @@ ENV TZ=UTC \
 
 EXPOSE 8080 8081 22 60000-60010/udp
 
-# The gateway answers /healthz itself, so that alone would not tell us whether
+# The gateway answers /~env/healthz itself, so that alone would not tell us whether
 # the OpenCode server — a daemon of the user's supervisor — is actually up.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
-    CMD ["bash", "-c", "curl -fsS http://127.0.0.1:${GATEWAY_PORT}/healthz >/dev/null && exec 3<>/dev/tcp/127.0.0.1/${OPENCODE_PORT}"]
+    CMD ["bash", "-c", "curl -fsS http://127.0.0.1:${GATEWAY_PORT}/~env/healthz >/dev/null && exec 3<>/dev/tcp/127.0.0.1/${OPENCODE_PORT}"]
 
 # entrypoint.sh renders configuration and then exec's the CMD, so pitchfork
 # ends up as PID 1 with its own zombie reaper and signal forwarding.

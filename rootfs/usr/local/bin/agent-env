@@ -69,14 +69,20 @@ case "${1:-help}" in
     ;;
   urls)
     base="${PUBLIC_URL:-http://localhost:8080}"
+    prefix="${ENV_PREFIX:-~env}"
     printf 'OpenCode web UI : %s/\n' "${base}"
+    printf 'Environment     : %s/%s/\n' "${base}" "${prefix}"
     [[ "${TTYD_ENABLE:-true}" == "true" ]] && \
-      printf 'OpenCode TUI    : %s/terminal\n' "${base}"
+      printf 'OpenCode TUI    : %s/%s/\n' "${base}" "${TTYD_PATH:-${prefix}/terminal}"
     [[ "${DESKTOP_ENABLE:-true}" == "true" ]] && \
-      printf 'Desktop (noVNC) : %s/desktop\n' "${base}"
+      printf 'Desktop (noVNC) : %s/%s/\n' "${base}" "${DESKTOP_PATH:-${prefix}/desktop}"
+    [[ "${DUFS_ENABLE:-true}" == "true" ]] && \
+      printf 'Files           : %s/%s/\n' "${base}" "${DUFS_PATH:-${prefix}/files}"
+    [[ "${USER_WEB_ENABLE:-true}" == "true" ]] && \
+      printf 'Daemons         : %s/%s\n' "${base}" "${USER_WEB_PATH:-pitchfork}"
     [[ "${AB_DASHBOARD_ENABLE:-true}" == "true" ]] && \
       printf 'Browser dash    : %s/\n' "${DASHBOARD_PUBLIC_URL:-http://localhost:8081}"
-    printf 'Health          : %s/healthz\n' "${base}"
+    printf 'Health          : %s/%s\n' "${base}" "${HEALTH_PATH:-${prefix}/healthz}"
     if [[ "${SSH_ENABLE:-true}" == "true" ]]; then
       printf 'SSH             : ssh %s@<host> -p %s\n' "${USER_NAME:-dev}" "${SSH_PORT:-22}"
       printf 'mosh            : mosh -p 60000:60010 --ssh="ssh -p %s" %s@<host>\n' \
