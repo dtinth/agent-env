@@ -70,10 +70,16 @@ case "${1:-help}" in
   urls)
     base="${PUBLIC_URL:-http://localhost:8080}"
     prefix="${ENV_PREFIX:-~env}"
-    printf 'OpenCode web UI : %s/\n' "${base}"
+    if [[ "${OPENCODE_ENABLE:-true}" == "true" ]]; then
+      printf 'OpenCode web UI : %s/\n' "${base}"
+    else
+      printf 'Primary service : %s/  (proxies to 127.0.0.1:%s)\n' "${base}" "${PRIMARY_PORT:-3000}"
+    fi
     printf 'Environment     : %s/%s/\n' "${base}" "${prefix}"
     [[ "${TTYD_ENABLE:-true}" == "true" ]] && \
-      printf 'OpenCode TUI    : %s/%s/\n' "${base}" "${TTYD_PATH:-${prefix}/terminal}"
+      printf '%-15s : %s/%s/\n' \
+        "$([[ "${OPENCODE_ENABLE:-true}" == "true" ]] && echo 'OpenCode TUI' || echo 'Terminal')" \
+        "${base}" "${TTYD_PATH:-${prefix}/terminal}"
     [[ "${DESKTOP_ENABLE:-true}" == "true" ]] && \
       printf 'Desktop (noVNC) : %s/%s/\n' "${base}" "${DESKTOP_PATH:-${prefix}/desktop}"
     [[ "${DUFS_ENABLE:-true}" == "true" ]] && \

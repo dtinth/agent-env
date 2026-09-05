@@ -62,8 +62,15 @@ AUTH_MODE="${AUTH_MODE:-google}"
 PUBLIC_URL="${PUBLIC_URL:-http://localhost:${GATEWAY_PORT}}"
 PUBLIC_URL="${PUBLIC_URL%/}"
 
+# OpenCode is the default occupant of /, not a requirement of the image. With it
+# off, / proxies to PRIMARY_PORT instead — whatever the workspace is running —
+# and falls back to the environment index when nothing is listening there.
+OPENCODE_ENABLE="${OPENCODE_ENABLE:-true}"
 OPENCODE_PORT="${OPENCODE_PORT:-4096}"
 OPENCODE_WORKDIR="${OPENCODE_WORKDIR:-/workspace}"
+# Where / points when OpenCode is off. 3000 is what Next, Rails, Vite preview and
+# most `npm start` templates pick, so the default is right more often than not.
+PRIMARY_PORT="${PRIMARY_PORT:-3000}"
 
 SSH_ENABLE="${SSH_ENABLE:-true}"
 SSH_PORT="${SSH_PORT:-22}"
@@ -344,17 +351,23 @@ fi
 pf_begin="# >>> agent-env managed — rewritten on every start, edits here are lost >>>"
 pf_end="# <<< agent-env managed <<<"
 pf_block="${RUN_DIR}/opencode-daemon.toml"
+pf_opencode=""
+if is_true "${OPENCODE_ENABLE}"; then
+  pf_opencode="
+[daemons.opencode]
+run = \"/opt/agent-env/bin/run-opencode\"
+dir = \"${OPENCODE_WORKDIR}\"
+ready_port = { port = ${OPENCODE_PORT}, timeout = \"120s\" }
+retry = true
+boot_start = true
+"
+fi
+
 cat > "${pf_block}" <<BLOCK
 ${pf_begin}
 # Keep your own daemons above this block: in TOML, anything following a table
 # header belongs to that table.
-[daemons.opencode]
-run = "/opt/agent-env/bin/run-opencode"
-dir = "${OPENCODE_WORKDIR}"
-ready_port = { port = ${OPENCODE_PORT}, timeout = "120s" }
-retry = true
-boot_start = true
-${pf_dufs}${pf_docker}${pf_end}
+${pf_opencode}${pf_dufs}${pf_docker}${pf_end}
 BLOCK
 
 python3 - "${user_pf_config}" "${pf_block}" "${pf_begin}" "${pf_end}" <<'MERGE'
@@ -385,20 +398,24 @@ chown -R "${PUID}:${PGID}" "$(dirname "${user_pf_config}")"
 # ---------------------------------------------------------------------------
 # OpenCode server password (also authenticates CLI/TUI clients)
 # ---------------------------------------------------------------------------
-if [[ -z "${OPENCODE_SERVER_PASSWORD:-}" ]]; then
-  pw_file="${USER_HOME}/.config/opencode/.server-password"
-  if [[ -s "${pw_file}" ]]; then
-    OPENCODE_SERVER_PASSWORD="$(< "${pw_file}")"
-  else
-    OPENCODE_SERVER_PASSWORD="$(rand_secret)"
-    printf '%s' "${OPENCODE_SERVER_PASSWORD}" > "${pw_file}"
-    chown "${PUID}:${PGID}" "${pw_file}"
-    chmod 600 "${pw_file}"
-    log "generated an OpenCode server password (persisted in ${pw_file})"
+GATEWAY_BASIC_B64=""
+OPENCODE_SERVER_PASSWORD="${OPENCODE_SERVER_PASSWORD:-}"
+if is_true "${OPENCODE_ENABLE}"; then
+  if [[ -z "${OPENCODE_SERVER_PASSWORD:-}" ]]; then
+    pw_file="${USER_HOME}/.config/opencode/.server-password"
+    if [[ -s "${pw_file}" ]]; then
+      OPENCODE_SERVER_PASSWORD="$(< "${pw_file}")"
+    else
+      OPENCODE_SERVER_PASSWORD="$(rand_secret)"
+      printf '%s' "${OPENCODE_SERVER_PASSWORD}" > "${pw_file}"
+      chown "${PUID}:${PGID}" "${pw_file}"
+      chmod 600 "${pw_file}"
+      log "generated an OpenCode server password (persisted in ${pw_file})"
+    fi
   fi
+  export OPENCODE_SERVER_PASSWORD
+  GATEWAY_BASIC_B64="$(printf 'opencode:%s' "${OPENCODE_SERVER_PASSWORD}" | base64 -w0)"
 fi
-export OPENCODE_SERVER_PASSWORD
-GATEWAY_BASIC_B64="$(printf 'opencode:%s' "${OPENCODE_SERVER_PASSWORD}" | base64 -w0)"
 
 # Make the runtime configuration discoverable to shells and to `agent-env`.
 {
@@ -411,7 +428,9 @@ GATEWAY_BASIC_B64="$(printf 'opencode:%s' "${OPENCODE_SERVER_PASSWORD}" | base64
   echo "DUFS_PATH=${DUFS_PATH}"
   echo "HEALTH_PATH=${HEALTH_PATH}"
   echo "USER_WEB_PATH=${USER_WEB_PATH}"
+  echo "OPENCODE_ENABLE=${OPENCODE_ENABLE}"
   echo "OPENCODE_PORT=${OPENCODE_PORT}"
+  echo "PRIMARY_PORT=${PRIMARY_PORT}"
   echo "OPENCODE_WORKDIR=${OPENCODE_WORKDIR}"
   echo "SSH_PORT=${SSH_PORT}"
   echo "DESKTOP_DISPLAY=${DESKTOP_DISPLAY}"
@@ -781,15 +800,38 @@ render_env_index() {
   footer { margin-top:2rem; color:var(--muted); font-size:.8rem; }
   code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.925em; }
 </style>
-<main>
-  <h1>agent-env</h1>
-  <p class="sub">Everything this environment serves for itself is under <code>/~env/</code>.
-    Whatever is at <code>/</code> belongs to the workspace.</p>
-  <ul>
 HTMLHEAD
 
-    is_true "${TTYD_ENABLE}" \
-      && svc "/${TTYD_PATH}/" "Terminal" "The OpenCode TUI, over a websocket"
+    # This page is also what / falls back to when nothing is listening on
+    # PRIMARY_PORT, so it has to make sense read from either address.
+    if is_true "${OPENCODE_ENABLE}"; then
+      cat <<EOF
+<main>
+  <h1>agent-env</h1>
+  <p class="sub">Everything this environment serves for itself is under
+    <code>/${ENV_PREFIX}/</code>. <code>/</code> is OpenCode.</p>
+  <ul>
+      <li><a class="svc" href="/"><b>OpenCode</b><span>The v2 web UI and API, at /</span></a></li>
+EOF
+    else
+      cat <<EOF
+<main>
+  <h1>agent-env</h1>
+  <p class="sub">Everything this environment serves for itself is under
+    <code>/${ENV_PREFIX}/</code>. <code>/</code> proxies to port
+    <code>${PRIMARY_PORT}</code> — start something there and it shows up at
+    <code>/</code>. With nothing listening, you land here.</p>
+  <ul>
+EOF
+    fi
+
+    if is_true "${TTYD_ENABLE}"; then
+      if is_true "${OPENCODE_ENABLE}"; then
+        svc "/${TTYD_PATH}/" "Terminal" "The OpenCode TUI, over a websocket"
+      else
+        svc "/${TTYD_PATH}/" "Terminal" "A login shell, over a websocket"
+      fi
+    fi
     is_true "${DESKTOP_ENABLE}" \
       && svc "/${DESKTOP_PATH}/" "Desktop" "XFCE on a virtual display, over noVNC"
     is_true "${DUFS_ENABLE}" \
@@ -992,9 +1034,15 @@ EOF
 			handle /${ENV_PREFIX}/* {
 				respond "no such service — see /${ENV_PREFIX}/ for what this environment serves" 404
 			}
+EOF
+    if is_true "${OPENCODE_ENABLE}"; then
+      cat <<EOF
 
 			# Everything else: the OpenCode v2 web UI and API. The server's own
 			# basic-auth credential is injected here so users never see it.
+			# The injection is bound to OpenCode and must never follow / to anything
+			# else: it would hand a credential to someone's own application, and
+			# break anything that does its own Authorization.
 			handle {
 				reverse_proxy 127.0.0.1:${OPENCODE_PORT} {
 					header_up Authorization "Basic ${GATEWAY_BASIC_B64}"
@@ -1004,6 +1052,40 @@ EOF
 	}
 }
 EOF
+    else
+      cat <<EOF
+
+			# / belongs to the workspace. Nothing is injected here — the OpenCode
+			# credential exists to reach the OpenCode server, and sending it
+			# anywhere else would leak it into someone else's application.
+			handle {
+				reverse_proxy 127.0.0.1:${PRIMARY_PORT}
+			}
+		}
+	}
+
+	# Nothing listening on ${PRIMARY_PORT} yet? Show the index instead of a bare
+	# 502, so an empty workstation explains itself. Caddy comes here only for
+	# errors it generates — a refused connection — so an app that is up and
+	# answering 502 itself still shows its own error, which is what you want
+	# while debugging it.
+	#
+	# Scoped away from the reserved prefix deliberately: a dufs or ttyd that is
+	# genuinely down has to surface as 502, not be papered over with an index.
+	handle_errors 502 {
+		@primary not path /${ENV_PREFIX}/* /${USER_WEB_PATH}*
+		handle @primary {
+			root * /opt/agent-env/web
+			rewrite * /index.html
+			file_server
+		}
+		handle {
+			respond "{err.status_code} {err.status_text}" {err.status_code}
+		}
+	}
+}
+EOF
+    fi
 
     if is_true "${AB_DASHBOARD_ENABLE}"; then
       cat <<EOF
@@ -1130,6 +1212,9 @@ EOF
 
     # Must stay directly under [env]: in TOML everything after a table header
     # belongs to that table, and emit_daemon opens [daemons.*] below.
+    if ! is_true "${OPENCODE_ENABLE}"; then
+      printf 'TTYD_COMMAND = "shell"\n'
+    fi
     if is_true "${DOCKER_ROOTLESS_ENABLE}"; then
       printf 'DOCKER_HOST = "%s"\n' "${DOCKER_ROOTLESS_HOST}"
       printf 'DOCKER_ROOTLESS_DATA_ROOT = "%s"\n' "${DOCKER_ROOTLESS_DATA_ROOT}"
@@ -1238,11 +1323,21 @@ render_pitchfork
 # Summary
 # ---------------------------------------------------------------------------
 log "----------------------------------------------------------------"
-log " OpenCode v2 : $(su -s /bin/bash -c 'opencode2 --version' "${USER_NAME}" 2>/dev/null || echo unknown)"
+if is_true "${OPENCODE_ENABLE}"; then
+  log " OpenCode v2 : $(su -s /bin/bash -c 'opencode2 --version' "${USER_NAME}" 2>/dev/null || echo unknown)"
+else
+  log " primary     : / proxies to 127.0.0.1:${PRIMARY_PORT} (OpenCode is off)"
+fi
 log " gateway     : ${PUBLIC_URL}  (listening on ${GATEWAY_BIND:-0.0.0.0}:${GATEWAY_PORT})"
 log " auth mode   : ${AUTH_MODE}"
 log " index       : ${PUBLIC_URL}/${ENV_PREFIX}/"
-is_true "${TTYD_ENABLE}"        && log " TUI         : ${PUBLIC_URL}/${TTYD_PATH}/"
+if is_true "${TTYD_ENABLE}"; then
+  if is_true "${OPENCODE_ENABLE}"; then
+    log " TUI         : ${PUBLIC_URL}/${TTYD_PATH}/"
+  else
+    log " terminal    : ${PUBLIC_URL}/${TTYD_PATH}/  (login shell)"
+  fi
+fi
 is_true "${DESKTOP_ENABLE}"     && log " desktop     : ${PUBLIC_URL}/${DESKTOP_PATH}/"
 is_true "${AB_DASHBOARD_ENABLE}" && log " browser dash: ${DASHBOARD_PUBLIC_URL}"
 if is_true "${USER_SUPERVISOR_ENABLE}" && is_true "${USER_WEB_ENABLE}"; then

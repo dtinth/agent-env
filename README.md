@@ -11,7 +11,7 @@ One container gives you:
 
 | What | Where | Notes |
 |---|---|---|
-| **OpenCode v2 web UI + API** | `<PUBLIC_URL>/` | `opencode2 serve` |
+| **OpenCode v2 web UI + API** | `<PUBLIC_URL>/` | `opencode2 serve`; optional — see below |
 | **OpenCode v2 TUI** in the browser | `<PUBLIC_URL>/~env/terminal` | the real TUI, over ttyd |
 | **XFCE desktop** in the browser | `<PUBLIC_URL>/~env/desktop` | noVNC over x11vnc |
 | **agent-browser dashboard** | `<DASHBOARD_PUBLIC_URL>` | own port; live browser viewports |
@@ -146,6 +146,44 @@ generates it — which is the whole reason for choosing it. The prefix is fixed
 rather than configurable: it is a documented contract, and a knob would only
 make this table wrong.
 
+### What lives at `/`
+
+OpenCode is the default occupant of `/`, not a requirement of the image. Set
+`OPENCODE_ENABLE=false` and `/` proxies to `PRIMARY_PORT` (default `3000`)
+instead — whatever the workspace is running:
+
+```
+OPENCODE_ENABLE=false
+PRIMARY_PORT=3000
+```
+
+With nothing listening there yet, `/` serves the `/~env/` index instead of a
+bare 502, so an empty workstation explains itself. The status code stays `502` —
+the page renders, but nothing is pretending there is an application when there
+isn't, so an ingress health check pointed at `/` still reports the truth. Start
+your dev server and it takes over `/` and everything below it immediately; no
+gateway restart, and the reserved prefix is untouched.
+
+Caddy falls back only for errors *it* generates — a refused connection. An app
+that is up and answering its own 502 shows its own error, which is what you want
+while debugging it. A genuinely broken `/~env/` service is likewise never
+papered over.
+
+Two other things follow `OPENCODE_ENABLE`:
+
+- **The browser terminal becomes a login shell.** `/~env/terminal` exists to run
+  the OpenCode TUI; with no server to attach to it would sit on a connect loop,
+  so it gives you a shell instead.
+- **No credential is injected at `/`.** The gateway normally adds the OpenCode
+  server's own basic-auth header on the way through. That credential exists to
+  reach OpenCode and nothing else — it is never sent to a primary service that
+  isn't OpenCode, and the smoke suite asserts the injection is absent.
+
+The container's `HEALTHCHECK` follows the same setting: it always probes the
+gateway, and probes the OpenCode port only when OpenCode is supposed to be
+there. It deliberately does *not* probe `PRIMARY_PORT` — nothing is required to
+be listening on it.
+
 ### How the OpenCode server itself is protected
 
 `opencode2 serve` has its own HTTP basic auth (user `opencode`, password from
@@ -240,7 +278,9 @@ See [`.env.example`](.env.example) for the annotated list. The essentials:
 | `ALLOWED_EMAILS`, `ALLOWED_EMAIL_DOMAINS` | — | Who may sign in |
 | `OAUTH2_PROXY_COOKIE_SECRET` | generated | Set it to survive restarts cleanly |
 | `OPENCODE_SERVER_PASSWORD` | generated | OpenCode server credential |
+| `OPENCODE_ENABLE` | `true` | Whether OpenCode occupies `/` at all |
 | `OPENCODE_WORKDIR` | `/workspace` | Where the server and TUI start |
+| `PRIMARY_PORT` | `3000` | What `/` proxies to when OpenCode is off |
 | `SSH_AUTHORIZED_KEYS` | — | Newline- or `;`-separated public keys |
 | `SSH_PASSWORD` | — | Enables password auth (prefer keys) |
 | `DESKTOP_ENABLE` | `true` | XFCE + noVNC |
