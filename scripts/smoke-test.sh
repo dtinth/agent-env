@@ -50,6 +50,7 @@ ENV_PREFIX=""; TTYD_PATH=""; DESKTOP_PATH=""; DUFS_PATH=""; HEALTH_PATH=""; USER
 OPENCODE_ENABLE=""; PRIMARY_PORT=""
 if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1; then
   OPENCODE_ENABLE=$(runtime_var OPENCODE_ENABLE)
+  USER_WEB_ENABLE=$(runtime_var USER_WEB_ENABLE)
   PRIMARY_PORT=$(runtime_var PRIMARY_PORT)
   ENV_PREFIX=$(runtime_var ENV_PREFIX)
   TTYD_PATH=$(runtime_var TTYD_PATH)
@@ -64,6 +65,7 @@ DESKTOP_PATH="${DESKTOP_PATH:-${ENV_PREFIX}/desktop}"
 DUFS_PATH="${DUFS_PATH:-${ENV_PREFIX}/files}"
 HEALTH_PATH="${HEALTH_PATH:-${ENV_PREFIX}/healthz}"
 USER_WEB_PATH="${USER_WEB_PATH:-pitchfork}"
+USER_WEB_ENABLE="${USER_WEB_ENABLE:-true}"
 OPENCODE_ENABLE="${OPENCODE_ENABLE:-true}"
 PRIMARY_PORT="${PRIMARY_PORT:-3000}"
 
@@ -122,7 +124,7 @@ done
 # The daemons UI cannot be nested (pitchfork validates its web path as one
 # segment), so the prefix redirects to it instead. That redirect is the only
 # reason /${ENV_PREFIX}/ is a complete index of the environment.
-if [ "${auth_mode}" != google ]; then
+if [ "${auth_mode}" != google ] && [ "${USER_WEB_ENABLE}" = true ]; then
   loc=$(curl -s -o /dev/null --max-time 15 -u "${AUTH}" -w '%{redirect_url}' \
         "${BASE}/${ENV_PREFIX}/daemons")
   [[ "${loc}" == *"/${USER_WEB_PATH}" ]] \
@@ -133,7 +135,7 @@ fi
 # /img/logo.png is hardcoded absolute in pitchfork's bundle. It is scoped by
 # Referer so it cannot shadow the same path in a user's own app — the loop above
 # proves the fallthrough, this proves the UI still gets its logo.
-if [ "${auth_mode}" != google ]; then
+if [ "${auth_mode}" != google ] && [ "${USER_WEB_ENABLE}" = true ]; then
   ctype=$(curl -s -o /dev/null --max-time 15 -u "${AUTH}" -w '%{content_type}' \
           -H "Referer: ${BASE}/${USER_WEB_PATH}" "${BASE}/img/logo.png")
   [[ "${ctype}" == image/* ]] \
@@ -215,6 +217,15 @@ PY' 2>/dev/null
       || bad "/${ENV_PREFIX}/ was captured by the primary service"
 
     docker exec "${CONTAINER}" sh -c 'pkill -f "[s]moke-primary.py"; rm -f /tmp/smoke-primary.py' 2>/dev/null || true
+
+    # /${USER_WEB_PATH} is reserved only while the daemons dashboard is actually
+    # rendered. With it off that path is the primary service's like any other,
+    # so it has to fall back the same way instead of showing a bare 502.
+    if [ "${USER_WEB_ENABLE}" != true ]; then
+      grep -q 'proxies to port' <<<"$(curl -s --max-time 15 -u "${AUTH}" "${BASE}/${USER_WEB_PATH}")" \
+        && ok "/${USER_WEB_PATH} falls back like any primary path while the dashboard is off" \
+        || bad "/${USER_WEB_PATH} is still excluded from the fallback though nothing routes it"
+    fi
   fi
 fi
 
@@ -228,6 +239,21 @@ if [ "${OPENCODE_ENABLE}" != true ] \
   [[ "${ttyd_cmd}" == shell ]] \
     && ok "the browser terminal falls back to a login shell" \
     || bad "TTYD_COMMAND is '${ttyd_cmd:-unset}', expected shell"
+fi
+
+head_ "Published configuration"
+# Everything downstream of /run/agent-env/env compares against literal true or
+# false: the healthcheck, the `agent-env` helper, this suite. The entrypoint
+# accepts 1/yes/on/enabled as well, so publishing the raw value desynchronises
+# every reader from what it actually decided — OPENCODE_ENABLE=1 starts the
+# server and injects its credential while a reader concludes it is off and
+# stops probing it.
+if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1; then
+  noncanon=$(docker exec "${CONTAINER}" sh -c \
+    "grep -E '^[A-Z_]+_ENABLE=' /run/agent-env/env | grep -vE '=(true|false)$'" 2>/dev/null || true)
+  [[ -z "${noncanon}" ]] \
+    && ok "every published *_ENABLE flag is a literal true or false" \
+    || bad "non-canonical flags would desync the healthcheck and helper: ${noncanon//$'\n'/, }"
 fi
 
 head_ "Readiness probes"
@@ -545,6 +571,14 @@ with open("/etc/mise/mise.lock", "rb") as fh:
     || bad "symlink escaped the served root: ${esc}"
 
   head_ "pitchfork web UI"
+  if [ "${USER_WEB_ENABLE}" != true ]; then
+    c=$(code "${BASE}/${USER_WEB_PATH}")
+    # Not routed, so the path is the primary service's — 200/502 both mean it
+    # fell through, which is the point. It must not be serving a dashboard.
+    grep -q 'pitchfork' <<<"$(curl -s --max-time 15 -u "${AUTH}" "${BASE}/${USER_WEB_PATH}")" \
+      && bad "/${USER_WEB_PATH} still serves a dashboard though USER_WEB_ENABLE=false" \
+      || ok "/${USER_WEB_PATH} is not routed while the dashboard is off ($c)"
+  else
   c=$(code "${BASE}/${USER_WEB_PATH}")
   case "$c" in
     200) ok "/${USER_WEB_PATH} serves the daemon dashboard (200)" ;;
@@ -561,6 +595,7 @@ with open("/etc/mise/mise.lock", "rb") as fh:
     c=$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' "${BASE}/${USER_WEB_PATH}")
     [[ "$c" == 401 || "$c" == 302 ]] && ok "the dashboard is behind the gateway auth ($c)" \
                                      || bad "/${USER_WEB_PATH} answered $c without credentials"
+  fi
   fi
 
   head_ "agent-browser"

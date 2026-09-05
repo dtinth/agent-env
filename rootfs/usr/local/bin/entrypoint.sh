@@ -39,6 +39,14 @@ is_true() {
   esac
 }
 
+# /run/agent-env/env is read by programs that cannot reasonably reimplement
+# is_true — the healthcheck, the `agent-env` helper, the test suite. Publishing
+# the raw value silently desynchronises them from what the entrypoint actually
+# decided: OPENCODE_ENABLE=1 starts the server and injects its credential, while
+# a reader comparing against "true" concludes it is off and stops probing it.
+# Write what the flag resolved to, never what was typed.
+canon() { if is_true "${1:-}"; then echo true; else echo false; fi; }
+
 rand_secret() { head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n'; }
 
 url_host() { sed -E 's#^[a-zA-Z]+://##; s#/.*$##' <<<"$1"; }
@@ -428,20 +436,21 @@ fi
   echo "DUFS_PATH=${DUFS_PATH}"
   echo "HEALTH_PATH=${HEALTH_PATH}"
   echo "USER_WEB_PATH=${USER_WEB_PATH}"
-  echo "OPENCODE_ENABLE=${OPENCODE_ENABLE}"
+  echo "USER_WEB_ENABLE=$(canon "${USER_WEB_ENABLE}")"
+  echo "OPENCODE_ENABLE=$(canon "${OPENCODE_ENABLE}")"
   echo "OPENCODE_PORT=${OPENCODE_PORT}"
   echo "PRIMARY_PORT=${PRIMARY_PORT}"
   echo "OPENCODE_WORKDIR=${OPENCODE_WORKDIR}"
   echo "SSH_PORT=${SSH_PORT}"
   echo "DESKTOP_DISPLAY=${DESKTOP_DISPLAY}"
   echo "AB_DASHBOARD_PORT=${AB_DASHBOARD_PORT}"
-  echo "AB_DASHBOARD_ENABLE=${AB_DASHBOARD_ENABLE}"
+  echo "AB_DASHBOARD_ENABLE=$(canon "${AB_DASHBOARD_ENABLE}")"
   echo "DASHBOARD_PUBLIC_URL=${DASHBOARD_PUBLIC_URL}"
-  echo "DESKTOP_ENABLE=${DESKTOP_ENABLE}"
-  echo "TTYD_ENABLE=${TTYD_ENABLE}"
-  echo "SSH_ENABLE=${SSH_ENABLE}"
+  echo "DESKTOP_ENABLE=$(canon "${DESKTOP_ENABLE}")"
+  echo "TTYD_ENABLE=$(canon "${TTYD_ENABLE}")"
+  echo "SSH_ENABLE=$(canon "${SSH_ENABLE}")"
   echo "USER_NAME=${USER_NAME}"
-  echo "DOCKER_ROOTLESS_ENABLE=${DOCKER_ROOTLESS_ENABLE}"
+  echo "DOCKER_ROOTLESS_ENABLE=$(canon "${DOCKER_ROOTLESS_ENABLE}")"
 } > "${RUN_DIR}/env"
 
 cat > /etc/profile.d/99-agent-env.sh <<EOF
@@ -1053,6 +1062,13 @@ EOF
 }
 EOF
     else
+      # Reserved paths are excluded from the fallback so a genuinely dead
+      # service surfaces as 502. /${USER_WEB_PATH} is only reserved when the
+      # dashboard is actually rendered; otherwise it is the primary service's.
+      local err_exclude="/${ENV_PREFIX}/*"
+      if is_true "${USER_SUPERVISOR_ENABLE}" && is_true "${USER_WEB_ENABLE}"; then
+        err_exclude="${err_exclude} /${USER_WEB_PATH}*"
+      fi
       cat <<EOF
 
 			# / belongs to the workspace. Nothing is injected here — the OpenCode
@@ -1073,7 +1089,7 @@ EOF
 	# Scoped away from the reserved prefix deliberately: a dufs or ttyd that is
 	# genuinely down has to surface as 502, not be papered over with an index.
 	handle_errors 502 {
-		@primary not path /${ENV_PREFIX}/* /${USER_WEB_PATH}*
+		@primary not path ${err_exclude}
 		handle @primary {
 			root * /opt/agent-env/web
 			rewrite * /index.html
