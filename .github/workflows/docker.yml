@@ -27,6 +27,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The setup wizard is what most people meet first, and it is the only part of
+  # this repository that can be wrong without the image being wrong. It runs on
+  # its own, before anything is pulled, so it gets its own job.
+  setup:
+    name: setup wizard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2.0.3
+        with:
+          deno-version: v2.x
+
+      - name: Typecheck, lint and format
+        run: deno task check
+
+      - name: Test
+        run: deno task test
+
+      # The generated compose file has to be something Docker will actually
+      # accept, which the unit tests cannot tell us.
+      - name: The generated compose files are valid
+        run: |
+          set -euo pipefail
+          for mode in local caddy tailscale; do
+            dir="$(mktemp -d)"
+            case "${mode}" in
+              local) answers='{"mode":"local","behindProxy":false,"authMode":"basic","gatewayUser":"opencode"}' ;;
+              caddy) answers='{"mode":"caddy","domain":"agent.example.com","httpsPort":8443,"authMode":"google","googleClientId":"1.apps.googleusercontent.com","allowedEmails":"me@example.com"}' ;;
+              tailscale) answers='{"mode":"tailscale","tsHostname":"work.tail1234.ts.net","authMode":"none"}' ;;
+            esac
+            common='"opencodeEnable":true,"dashboard":true,"rootlessDocker":true,"sshKeys":"ssh-ed25519 AAAA t@h","sshPort":2222,"workspaceKind":"volume","timezone":"UTC"'
+            echo "${answers%\}}, ${common}}" > "${dir}/a.json"
+            deno run -A setup.ts --answers "${dir}/a.json" --out "${dir}"
+            ( cd "${dir}" && docker compose config -q )
+            echo "::notice::${mode} compose is valid"
+          done
+
   build:
     name: build ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}

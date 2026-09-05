@@ -1,1 +1,8 @@
 .env
+
+# What setup.ts generates for a real deployment. compose.example.yaml is the
+# documented example; these are somebody's actual configuration and secrets.
+/compose.yaml
+/agent-env.setup.json
+/Caddyfile
+/ts-serve.json

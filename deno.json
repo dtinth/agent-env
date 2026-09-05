@@ -1,0 +1,23 @@
+{
+  "name": "@dtinth/agent-env-setup",
+  "exports": "./setup.ts",
+  "tasks": {
+    "check": "deno check setup.ts setup_test.ts && deno lint && deno fmt --check",
+    "test": "deno test -A"
+  },
+  "fmt": {
+    "include": [
+      "setup.ts",
+      "setup_test.ts"
+    ]
+  },
+  "lint": {
+    "include": [
+      "setup.ts",
+      "setup_test.ts"
+    ]
+  },
+  "imports": {
+    "@std/assert": "jsr:@std/assert@^1"
+  }
+}

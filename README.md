@@ -43,6 +43,46 @@ docker pull ghcr.io/dtinth/agent-env:latest
 that image — it declares its ports with `expose` for an ingress controller to
 route, and documents the direct-publish and tailscale-serve variants.
 
+### The quickest way: let setup.ts write it
+
+```bash
+deno run -A https://raw.githubusercontent.com/dtinth/agent-env/main/setup.ts
+```
+
+It asks about eight things and writes `compose.yaml` and `.env` for you. The
+first question decides the rest:
+
+| Where it runs | What you get |
+|---|---|
+| **This machine only** | Ports bound to `127.0.0.1`. Put your own proxy in front if you want it reachable. |
+| **A public domain** | A Caddy sidecar that gets a certificate from Let's Encrypt. |
+| **A tailnet** | A Tailscale sidecar. The tailnet is the boundary, and SSH and mosh work with nothing published. |
+
+That choice sets `PUBLIC_URL`, the port layout, which sidecars exist, and the
+sensible default for authentication — which is most of what there is to get
+wrong. It also does the things that are tedious by hand and easy to forget:
+
+- Generates and **persists** `OAUTH2_PROXY_COOKIE_SECRET`, so sessions survive a
+  restart instead of silently rotating.
+- **Refuses** to write a public-domain deployment with `AUTH_MODE=none`, or a
+  Google one with no allow list. Everything in this container is root-capable.
+- Emits all four rootless-Docker host flags together, or none — three out of
+  four leaves the daemon down.
+- Reads `PUID`/`PGID` off a host directory you mount, so files stay yours.
+- Publishes `:80` alongside `:8443` in domain mode, because ACME only ever
+  validates on 80 or 443 and never on the port you serve from.
+
+**Re-running it is the point.** It reads back what it wrote, offers those as the
+defaults, and keeps the secrets already in `.env` — so it upgrades a deployment
+as well as creating one.
+
+```bash
+deno run -A .../setup.ts   # again, later: answers pre-filled, secrets kept
+```
+
+`.env.example` stays the reference for the fifty-odd keys it does not ask about;
+a test asserts the wizard never emits one that is missing from it.
+
 ### Locally, with basic auth (no Google setup needed)
 
 ```bash
