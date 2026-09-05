@@ -1,0 +1,340 @@
+/**
+ * Tests for setup.ts.
+ *
+ *   deno test -A
+ *
+ * These run the wizard the way a person does — as a subprocess, writing real
+ * files — rather than importing its internals. What matters is the generated
+ * output, and output is the only thing a user ever sees.
+ */
+
+import {
+  assert,
+  assertEquals,
+  assertMatch,
+  assertStringIncludes,
+} from "@std/assert";
+
+const SETUP = new URL("./setup.ts", import.meta.url).pathname;
+const ENV_EXAMPLE = new URL("./.env.example", import.meta.url).pathname;
+
+/**
+ * Keys that belong to a sidecar rather than to the image, so they are correctly
+ * absent from .env.example. Anything else the wizard emits has to be documented
+ * there, or the two drift and .env.example stops being the reference.
+ */
+const SIDECAR_KEYS = new Set(["TS_AUTHKEY"]);
+
+interface Run {
+  code: number;
+  stdout: string;
+  dir: string;
+}
+
+function run(
+  answers: Record<string, unknown>,
+  dir: string,
+  extra: string[] = [],
+): Run {
+  const file = `${dir}/answers.json`;
+  Deno.writeTextFileSync(file, JSON.stringify(answers));
+  const cmd = new Deno.Command(Deno.execPath(), {
+    args: ["run", "-A", SETUP, "--answers", file, "--out", dir, ...extra],
+    stdout: "piped",
+    stderr: "piped",
+  });
+  const out = cmd.outputSync();
+  return { code: out.code, stdout: new TextDecoder().decode(out.stdout), dir };
+}
+
+function tmp(): string {
+  return Deno.makeTempDirSync({ prefix: "agent-env-setup-" });
+}
+
+function envOf(dir: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of Deno.readTextFileSync(`${dir}/.env`).split("\n")) {
+    const m = /^([A-Z][A-Z0-9_]*)=(.*)$/.exec(line);
+    if (m) out[m[1]] = m[2];
+  }
+  return out;
+}
+
+const BASE = {
+  opencodeEnable: true,
+  dashboard: true,
+  rootlessDocker: false,
+  sshKeys: "ssh-ed25519 AAAA test@host",
+  sshPort: 2222,
+  workspaceKind: "volume",
+  timezone: "UTC",
+};
+
+const LOCAL = {
+  ...BASE,
+  mode: "local",
+  behindProxy: false,
+  authMode: "basic",
+  gatewayUser: "opencode",
+};
+const CADDY = {
+  ...BASE,
+  mode: "caddy",
+  domain: "agent.example.com",
+  httpsPort: 8443,
+  acmeEmail: "me@example.com",
+  authMode: "google",
+  googleClientId: "1.apps.googleusercontent.com",
+  allowedEmails: "me@example.com",
+};
+const TS = {
+  ...BASE,
+  mode: "tailscale",
+  tsHostname: "work.tail1234.ts.net",
+  authMode: "none",
+};
+
+// ---------------------------------------------------------------------------
+
+Deno.test("each mode generates a complete, self-consistent set of files", () => {
+  for (
+    const [name, answers, extra] of [
+      ["local", LOCAL, []],
+      ["caddy", CADDY, ["Caddyfile"]],
+      ["tailscale", TS, ["ts-serve.json"]],
+    ] as const
+  ) {
+    const dir = tmp();
+    const r = run(answers, dir);
+    assertEquals(r.code, 0, `${name} exited ${r.code}`);
+    for (
+      const f of [".env", "compose.yaml", "agent-env.setup.json", ...extra]
+    ) {
+      assert(Deno.statSync(`${dir}/${f}`).isFile, `${name} did not write ${f}`);
+    }
+  }
+});
+
+Deno.test("every emitted key is documented in .env.example", () => {
+  const documented = new Set(
+    [
+      ...Deno.readTextFileSync(ENV_EXAMPLE).matchAll(
+        /^#?\s*([A-Z][A-Z0-9_]*)=/gm,
+      ),
+    ].map((m) => m[1]),
+  );
+  const undocumented = new Set<string>();
+  for (const answers of [LOCAL, CADDY, TS]) {
+    const dir = tmp();
+    run(answers, dir);
+    for (
+      const [, k] of Deno.readTextFileSync(`${dir}/.env`).matchAll(
+        /^#?\s*([A-Z][A-Z0-9_]*)=/gm,
+      )
+    ) {
+      if (!documented.has(k) && !SIDECAR_KEYS.has(k)) undocumented.add(k);
+    }
+  }
+  assertEquals(
+    [...undocumented],
+    [],
+    ".env.example is the reference for every key; these would be undocumented",
+  );
+});
+
+Deno.test("booleans are emitted canonically", () => {
+  // The image accepts 1/yes/on/enabled too, but the healthcheck, the agent-env
+  // helper and the smoke suite all compare against a literal. A non-canonical
+  // value here would desynchronise them from what the entrypoint decided.
+  const dir = tmp();
+  run({
+    ...LOCAL,
+    opencodeEnable: false,
+    primaryPort: 3000,
+    rootlessDocker: true,
+  }, dir);
+  const env = envOf(dir);
+  for (
+    const k of [
+      "OPENCODE_ENABLE",
+      "AB_DASHBOARD_ENABLE",
+      "DOCKER_ROOTLESS_ENABLE",
+    ]
+  ) {
+    assertMatch(env[k], /^(true|false)$/, `${k}=${env[k]} is not canonical`);
+  }
+});
+
+Deno.test("a public domain with no authentication is refused", () => {
+  const dir = tmp();
+  const r = run({ ...CADDY, authMode: "none" }, dir);
+  assertEquals(r.code, 1);
+  assertStringIncludes(r.stdout, "Refusing");
+  // Nothing half-written: a refusal must not leave a deployable-looking file.
+  assert(
+    !existsSync(`${dir}/compose.yaml`),
+    "compose.yaml written despite refusing",
+  );
+  assert(!existsSync(`${dir}/.env`), ".env written despite refusing");
+});
+
+Deno.test("google sign-in without an allow list is refused", () => {
+  const dir = tmp();
+  const r = run({ ...CADDY, allowedEmails: "", allowedEmailDomains: "" }, dir);
+  assertEquals(r.code, 1);
+  assertStringIncludes(r.stdout, "allow list");
+  assert(!existsSync(`${dir}/compose.yaml`));
+});
+
+Deno.test("re-running keeps the secrets and the hand edits in .env", () => {
+  const dir = tmp();
+  run(LOCAL, dir);
+  const first = envOf(dir).GATEWAY_PASSWORD;
+  assert(first && first.length > 12, "no password generated");
+
+  Deno.writeTextFileSync(`${dir}/.env`, "\nANTHROPIC_API_KEY=sk-ant-kept\n", {
+    append: true,
+  });
+  run(LOCAL, dir, ["--force"]);
+
+  const second = envOf(dir);
+  assertEquals(second.GATEWAY_PASSWORD, first, "password rotated on re-run");
+  assertEquals(
+    second.ANTHROPIC_API_KEY,
+    "sk-ant-kept",
+    "hand-added key lost on re-run",
+  );
+});
+
+Deno.test("the cookie secret is persisted, so sessions survive a restart", () => {
+  const dir = tmp();
+  run(CADDY, dir);
+  const s = envOf(dir).OAUTH2_PROXY_COOKIE_SECRET;
+  // oauth2-proxy needs a decoded length of 16, 24 or 32 bytes.
+  assertEquals(atob(s.replaceAll("-", "+").replaceAll("_", "/")).length, 32);
+  run(CADDY, dir, ["--force"]);
+  assertEquals(
+    envOf(dir).OAUTH2_PROXY_COOKIE_SECRET,
+    s,
+    "cookie secret rotated",
+  );
+});
+
+Deno.test("the rootless-Docker flags are all present, or none are", () => {
+  const off = tmp(), on = tmp();
+  run(LOCAL, off);
+  run({ ...LOCAL, rootlessDocker: true }, on);
+
+  const offCompose = Deno.readTextFileSync(`${off}/compose.yaml`);
+  for (
+    const flag of [
+      "SYS_ADMIN",
+      "seccomp=unconfined",
+      "systempaths=unconfined",
+      "/dev/net/tun",
+    ]
+  ) {
+    assert(
+      !offCompose.includes(flag),
+      `${flag} present while rootless Docker is off`,
+    );
+  }
+
+  const onCompose = Deno.readTextFileSync(`${on}/compose.yaml`);
+  // Each one is load-bearing; three out of four leaves the daemon down with a
+  // message, which is a worse failure than not offering it at all.
+  for (
+    const flag of [
+      "SYS_ADMIN",
+      "seccomp=unconfined",
+      "systempaths=unconfined",
+      "/dev/net/tun",
+    ]
+  ) {
+    assertStringIncludes(onCompose, flag);
+  }
+  assertEquals(envOf(on).DOCKER_ROOTLESS_ENABLE, "true");
+});
+
+Deno.test("mode decides the network shape", () => {
+  const local = tmp(), caddy = tmp(), ts = tmp();
+  run(LOCAL, local);
+  run(CADDY, caddy);
+  run(TS, ts);
+
+  // Local binds loopback only: nothing is reachable off this machine by accident.
+  const l = Deno.readTextFileSync(`${local}/compose.yaml`);
+  for (
+    const line of l.split("\n").filter((x) => /^\s+- "\d|^\s+- "127/.test(x))
+  ) {
+    assertMatch(
+      line,
+      /127\.0\.0\.1:/,
+      `local mode published ${line.trim()} on all interfaces`,
+    );
+  }
+
+  // ACME only ever validates on 80 or 443, so a site on 8443 still needs 80.
+  const c = Deno.readTextFileSync(`${caddy}/compose.yaml`);
+  assertStringIncludes(c, '- "80:80"');
+  assertStringIncludes(c, '- "8443:8443"');
+  // Caddy cannot proxy raw TCP here, so SSH has to be published directly or
+  // there is no way in but the browser.
+  assertStringIncludes(c, ':22"');
+
+  // Sharing the sidecar's namespace means this service cannot declare ports.
+  const t = Deno.readTextFileSync(`${ts}/compose.yaml`);
+  assertStringIncludes(t, "network_mode: service:tailscale");
+  const agentBlock = t.slice(t.indexOf("agent-env:"), t.indexOf("tailscale:"));
+  assert(
+    !/^\s+ports:/m.test(agentBlock),
+    "ports declared alongside network_mode",
+  );
+});
+
+Deno.test("PUBLIC_URL matches what each mode actually serves", () => {
+  const cases: [Record<string, unknown>, string][] = [
+    [LOCAL, "http://localhost:8080"],
+    [CADDY, "https://agent.example.com:8443"],
+    [TS, "https://work.tail1234.ts.net"],
+  ];
+  for (const [answers, expected] of cases) {
+    const dir = tmp();
+    run(answers, dir);
+    assertEquals(envOf(dir).PUBLIC_URL, expected);
+  }
+});
+
+Deno.test("the dashboard shares the hostname and takes the next port", () => {
+  // Host-scoped cookies are why this works: one sign-in covers both ports, and
+  // only one redirect URI is ever registered with Google.
+  const dir = tmp();
+  run(CADDY, dir);
+  const env = envOf(dir);
+  assertEquals(
+    new URL(env.DASHBOARD_PUBLIC_URL).hostname,
+    new URL(env.PUBLIC_URL).hostname,
+  );
+  assertEquals(env.DASHBOARD_PUBLIC_URL, "https://agent.example.com:8444");
+});
+
+Deno.test(".env is written with restrictive permissions", () => {
+  if (Deno.build.os === "windows") return;
+  const dir = tmp();
+  run(LOCAL, dir);
+  const mode = Deno.statSync(`${dir}/.env`).mode! & 0o777;
+  assertEquals(
+    mode,
+    0o600,
+    `.env is ${mode.toString(8)}, and it holds secrets`,
+  );
+});
+
+function existsSync(p: string): boolean {
+  try {
+    Deno.statSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
