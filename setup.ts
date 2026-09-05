@@ -71,6 +71,8 @@ const C = {
 
 let interactive = true;
 let preset: Record<string, unknown> = {};
+/** Where the generated files land; relative answers resolve against it. */
+let outDir = ".";
 
 function note(s = "") {
   console.log(s);
@@ -162,7 +164,15 @@ function ask(
 }
 
 function yesNo(key: string, question: string, fallback: boolean): boolean {
-  if (key in preset) return Boolean(preset[key]);
+  if (key in preset) {
+    const v = preset[key];
+    if (typeof v === "boolean") return v;
+    if (v === "true") return true;
+    if (v === "false") return false;
+    // Truthiness would make the string "false" enable rootless Docker, which
+    // adds SYS_ADMIN and relaxes seccomp. Not a thing to infer.
+    bad(key, `expected true or false, got ${JSON.stringify(v)}`);
+  }
   if (!interactive) return fallback;
   while (true) {
     const raw = prompt(`${C.b(question)} ${fallback ? "[Y/n]" : "[y/N]"}:`);
@@ -207,12 +217,15 @@ function parseEnvFile(text: string): Record<string, EnvEntry> {
     const m = /^\s*([A-Z][A-Z0-9_]*)=(.*)$/.exec(line);
     if (!m) continue;
     const raw = m[2].trim();
-    let value = raw;
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
+    let value: string;
+    if (raw.startsWith('"') && raw.endsWith('"') && raw.length > 1) {
+      value = raw.slice(1, -1).replace(/\\(.)/g, "$1");
+    } else if (raw.startsWith("'") && raw.endsWith("'") && raw.length > 1) {
+      value = raw.slice(1, -1);
+    } else {
+      // dotenv ends an unquoted value at an unescaped #. Reading past it made
+      // a managed value come back different, so a rerun rewrote the password.
+      value = raw.replace(/\s+#.*$/, "").trim();
     }
     out[m[1]] = { value, raw };
   }
@@ -304,7 +317,8 @@ function collect(
     domain = ask("domain", "Domain name", prev.domain ?? "agent.example.com", {
       validate: (
         v,
-      ) => (/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(v)
+      ) => (/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i
+          .test(v)
         ? null
         : "a bare hostname, no scheme and no port"),
     });
@@ -331,6 +345,13 @@ function collect(
       prev.acmeEmail ?? "",
       {
         optional: true,
+        // Written into the Caddyfile as a directive argument, so the same class
+        // of problem as the workspace path: anything outside an address could
+        // become configuration.
+        validate: (v) =>
+          /^[^\s<>"'{}\\]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(v)
+            ? null
+            : "an email address, or leave it blank",
       },
     );
     publicUrl = `https://${domain}${httpsPort === 443 ? "" : `:${httpsPort}`}`;
@@ -491,20 +512,6 @@ function collect(
   // 4. Extras. Each of these costs something, so they are asked rather than
   //    assumed.
   const maxMain = 65535 - DASHBOARD_PORT_OFFSET;
-  // The dashboard takes the next port up, which the top of the range has no
-  // room for. Compose rejects 65536 outright, so catch it here instead.
-  if (httpsPort !== undefined && httpsPort > maxMain) {
-    note();
-    note(C.r(`Port ${httpsPort} leaves no room for the dashboard.`));
-    note(
-      `  It is served on the next port up, and ${
-        httpsPort + DASHBOARD_PORT_OFFSET
-      } is not a port.`,
-    );
-    note(`  Pick ${maxMain} or lower.`);
-    Deno.exit(1);
-  }
-
   const dashboard = yesNo(
     "dashboard",
     mode === "caddy"
@@ -514,6 +521,20 @@ function collect(
       : "Serve the agent-browser dashboard too? (needs a second port)",
     prev.dashboard ?? mode !== "caddy",
   );
+
+  // Only the dashboard needs the port above, so this is a limit on that
+  // combination, not on the port itself.
+  if (dashboard && httpsPort !== undefined && httpsPort > maxMain) {
+    note();
+    note(C.r(`Port ${httpsPort} leaves no room for the dashboard.`));
+    note(
+      `  It is served on the next port up, and ${
+        httpsPort + DASHBOARD_PORT_OFFSET
+      } is not a port.`,
+    );
+    note(`  Pick ${maxMain} or lower, or turn the dashboard off.`);
+    Deno.exit(1);
+  }
 
   const rootlessDocker = yesNo(
     "rootlessDocker",
@@ -581,7 +602,7 @@ function collect(
 
   let workspace: Workspace = { kind: "volume" };
   if (wsKind === "path") {
-    const path = ask(
+    let path = ask(
       "workspacePath",
       "Host directory to mount at /workspace",
       prev.workspace?.path ?? "",
@@ -592,9 +613,23 @@ function collect(
           /[\n\r]/.test(v) ? "a path cannot contain a newline" : null,
       },
     );
+    // Compose reads a bare relative path as a named volume, and there is no
+    // such volume, so it rejects the file. "./" is what was meant.
+    if (!path.startsWith("/") && !path.startsWith(".")) {
+      note(
+        C.dim(
+          `  Reading "${path}" as "./${path}" — compose treats a bare name as a volume.`,
+        ),
+      );
+      path = `./${path}`;
+    }
     let puid = 1000, pgid = 1000;
     try {
-      const st = Deno.statSync(path);
+      // Relative paths in the compose file resolve against the compose file,
+      // which lives in --out — not against wherever this was run from.
+      const st = Deno.statSync(
+        path.startsWith("/") ? path : `${outDir.replace(/\/$/, "")}/${path}`,
+      );
       if (typeof st.uid === "number") puid = st.uid;
       if (typeof st.gid === "number") pgid = st.gid;
       note(
@@ -1101,7 +1136,7 @@ function readIfExists(path: string): string | null {
 }
 
 function main() {
-  const outDir = arg("out") ?? ".";
+  outDir = arg("out") ?? ".";
   const force = Deno.args.includes("--force");
   const answersArg = arg("answers");
 
@@ -1109,7 +1144,12 @@ function main() {
     preset = JSON.parse(Deno.readTextFileSync(answersArg));
     interactive = false;
   } else if (!Deno.stdin.isTerminal()) {
-    interactive = false;
+    // Falling back to defaults here would generate a deployment nobody chose,
+    // and write it over whatever was there.
+    note(C.r("No terminal to ask questions on."));
+    note("  Run this interactively, or pass --answers <file.json> to say what");
+    note("  you want. It will not guess.");
+    Deno.exit(2);
   }
 
   const p = (f: string) => `${outDir.replace(/\/$/, "")}/${f}`;
@@ -1135,6 +1175,12 @@ function main() {
   const clobber = Object.keys(files).filter((f) =>
     f !== ANSWERS_FILE && readIfExists(p(f)) !== null
   );
+  if (clobber.length && !force && !interactive) {
+    note(C.r("These already exist, and this is not an interactive run:"));
+    note(`  ${clobber.join(", ")}`);
+    note("  Pass --force to overwrite them.");
+    Deno.exit(1);
+  }
   if (clobber.length && !force && interactive) {
     note(
       `${C.y("These already exist and will be overwritten:")} ${
@@ -1150,11 +1196,28 @@ function main() {
   try {
     Deno.mkdirSync(outDir, { recursive: true });
   } catch { /* already there */ }
-  for (const [name, body] of Object.entries(files)) {
-    Deno.writeTextFileSync(p(name), body);
-    // .env holds secrets; the others do not.
-    if (name === ".env") Deno.chmodSync(p(name), 0o600);
-    note(`${C.g("wrote")} ${p(name)}`);
+  // Write beside, then rename: an interruption partway through used to leave
+  // .env from one generation next to a compose file from another, which is a
+  // deployment that never existed.
+  const staged: [string, string][] = [];
+  try {
+    for (const [name, body] of Object.entries(files)) {
+      const tmp = p(`.${name}.tmp`);
+      Deno.writeTextFileSync(tmp, body);
+      if (name === ".env") Deno.chmodSync(tmp, 0o600);
+      staged.push([tmp, p(name)]);
+    }
+  } catch (e) {
+    for (const [tmp] of staged) {
+      try {
+        Deno.removeSync(tmp);
+      } catch { /* nothing to clean up */ }
+    }
+    throw e;
+  }
+  for (const [tmp, final] of staged) {
+    Deno.renameSync(tmp, final);
+    note(`${C.g("wrote")} ${final}`);
   }
 
   const stale = [

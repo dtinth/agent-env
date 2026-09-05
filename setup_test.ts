@@ -501,3 +501,90 @@ Deno.test("two services cannot be given the same host port", () => {
     assert(!existsSync(`${dir}/compose.yaml`));
   }
 });
+
+Deno.test("a non-boolean answer cannot enable a privileged feature", () => {
+  // JSON has strings, and "false" is truthy. Inferring from truthiness meant a
+  // typo added SYS_ADMIN and relaxed seccomp.
+
+  // The canonical spellings are honoured, and "false" means false.
+  const off = tmp();
+  assertEquals(run({ ...LOCAL, rootlessDocker: "false" }, off).code, 0);
+  assertEquals(envOf(off).DOCKER_ROOTLESS_ENABLE, "false");
+  assert(
+    !Deno.readTextFileSync(`${off}/compose.yaml`).includes("SYS_ADMIN"),
+    'the string "false" still widened the sandbox',
+  );
+
+  // Anything else is a typo, and guessing at it is how the sandbox gets
+  // widened by accident.
+  for (const v of ["no", "0", 0, "", null, "yes"]) {
+    const dir = tmp();
+    const r = run(
+      { ...LOCAL, rootlessDocker: v } as Record<string, unknown>,
+      dir,
+    );
+    assertEquals(r.code, 2, `accepted rootlessDocker=${JSON.stringify(v)}`);
+    assert(!existsSync(`${dir}/compose.yaml`));
+  }
+});
+
+Deno.test("a managed value survives an inline comment", () => {
+  const dir = tmp();
+  run(LOCAL, dir);
+  const env = Deno.readTextFileSync(`${dir}/.env`)
+    .replace(
+      /^GATEWAY_PASSWORD=.*$/m,
+      "GATEWAY_PASSWORD=hunter2 # my password",
+    );
+  Deno.writeTextFileSync(`${dir}/.env`, env);
+  run(LOCAL, dir, ["--force"]);
+  assertEquals(envOf(dir).GATEWAY_PASSWORD, "hunter2");
+});
+
+Deno.test("port 65535 is fine when nothing needs the port above", () => {
+  const withDash = tmp(), without = tmp();
+  assertEquals(run({ ...CADDY, httpsPort: 65535 }, withDash).code, 1);
+  assertEquals(
+    run({ ...CADDY, httpsPort: 65535, dashboard: false }, without).code,
+    0,
+  );
+});
+
+Deno.test("a bare relative workspace path is read as a directory", () => {
+  // Compose treats `workspace:/workspace` as a named volume that does not
+  // exist, and rejects the whole file.
+  const dir = tmp();
+  run({ ...LOCAL, workspaceKind: "path", workspacePath: "code" }, dir);
+  assertStringIncludes(
+    Deno.readTextFileSync(`${dir}/compose.yaml`),
+    '"./code:/workspace"',
+  );
+});
+
+Deno.test("a crafted ACME email cannot write Caddy directives", () => {
+  const dir = tmp();
+  const r = run({
+    ...CADDY,
+    acmeEmail: 'me@example.com\n}\n:80 {\n\trespond "x"',
+  }, dir);
+  assertEquals(r.code, 2);
+  assert(!existsSync(`${dir}/Caddyfile`));
+});
+
+Deno.test("a malformed domain is rejected", () => {
+  for (
+    const d of ["-a.example.com", "a..example.com", "example", "a.example.com-"]
+  ) {
+    const dir = tmp();
+    assertEquals(run({ ...CADDY, domain: d }, dir).code, 2, `accepted ${d}`);
+  }
+});
+
+Deno.test("automation does not overwrite an existing deployment by omission", () => {
+  const dir = tmp();
+  assertEquals(run(LOCAL, dir).code, 0);
+  const r = run(LOCAL, dir);
+  assertEquals(r.code, 1, "overwrote without --force");
+  assertStringIncludes(r.stdout, "--force");
+  assertEquals(run(LOCAL, dir, ["--force"]).code, 0);
+});
