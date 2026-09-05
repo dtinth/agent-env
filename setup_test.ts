@@ -445,3 +445,59 @@ Deno.test("answers from a file face the same validators as typed ones", () => {
     assert(!existsSync(`${dir}/compose.yaml`));
   }
 });
+
+Deno.test("a setting kept in .env actually reaches the container", () => {
+  // Carrying unknown keys into .env was only half the job: compose reads .env
+  // for interpolation, so a key missing from the service's environment list
+  // silently keeps the image default. The two lists are one list now.
+  const dir = tmp();
+  run(LOCAL, dir);
+  Deno.writeTextFileSync(`${dir}/.env`, "\nMISE_TOOLS=python@3.13\n", {
+    append: true,
+  });
+  run(LOCAL, dir, ["--force"]);
+  assertEquals(envOf(dir).MISE_TOOLS, "python@3.13");
+  assertStringIncludes(
+    Deno.readTextFileSync(`${dir}/compose.yaml`),
+    "- MISE_TOOLS",
+  );
+});
+
+Deno.test("a carried value keeps its quoting", () => {
+  // dotenv truncates an unquoted value at the first #, so stripping the quotes
+  // and writing the value back raw silently eats the rest of it.
+  const dir = tmp();
+  run(LOCAL, dir);
+  Deno.writeTextFileSync(
+    `${dir}/.env`,
+    `\nOPENCODE_CONFIG_CONTENT='part # suffix'\n`,
+    {
+      append: true,
+    },
+  );
+  run(LOCAL, dir, ["--force"]);
+  const line = Deno.readTextFileSync(`${dir}/.env`)
+    .split("\n")
+    .find((l) => l.startsWith("OPENCODE_CONFIG_CONTENT="))!;
+  assert(
+    /^OPENCODE_CONFIG_CONTENT=['"]part # suffix['"]$/.test(line),
+    `value lost its quoting: ${line}`,
+  );
+});
+
+Deno.test("two services cannot be given the same host port", () => {
+  for (
+    const [answers, why] of [
+      [{ ...LOCAL, sshPort: 8080 }, "ssh vs gateway"],
+      [{ ...LOCAL, sshPort: 8081 }, "ssh vs dashboard"],
+      [{ ...CADDY, sshPort: 80 }, "ssh vs ACME"],
+      [{ ...CADDY, sshPort: 8443 }, "ssh vs gateway through caddy"],
+    ] as const
+  ) {
+    const dir = tmp();
+    const r = run(answers as Record<string, unknown>, dir);
+    assertEquals(r.code, 1, `accepted a collision: ${why}`);
+    assertStringIncludes(r.stdout, "claimed twice");
+    assert(!existsSync(`${dir}/compose.yaml`));
+  }
+});
