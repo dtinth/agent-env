@@ -80,13 +80,29 @@ function warn(s: string) {
 }
 
 /** A numbered menu. Written by hand so the script stays dependency-free. */
+function bad(key: string, why: string): never {
+  note(`${C.r("Invalid answer")} for ${C.b(key)}: ${why}`);
+  Deno.exit(2);
+}
+
 function select<T extends string>(
   key: string,
   question: string,
   options: { value: T; label: string; hint?: string }[],
   fallback: T,
 ): T {
-  if (key in preset) return preset[key] as T;
+  if (key in preset) {
+    const v = preset[key] as T;
+    // An --answers file is automation input, and automation is exactly where a
+    // silently-wrong value turns into a broken deployment nobody typed.
+    if (!options.some((o) => o.value === v)) {
+      bad(
+        key,
+        `expected one of ${options.map((o) => o.value).join(", ")}, got "${v}"`,
+      );
+    }
+    return v;
+  }
   if (!interactive) return fallback;
 
   note();
@@ -115,7 +131,13 @@ function ask(
   fallback = "",
   opts: { optional?: boolean; validate?: (v: string) => string | null } = {},
 ): string {
-  if (key in preset) return String(preset[key] ?? "");
+  if (key in preset) {
+    const v = String(preset[key] ?? "");
+    if (!v && !opts.optional) bad(key, "required");
+    const err = v && opts.validate ? opts.validate(v) : null;
+    if (err) bad(key, err);
+    return v;
+  }
   if (!interactive) return fallback;
 
   while (true) {
@@ -450,6 +472,21 @@ function collect(
 
   // 4. Extras. Each of these costs something, so they are asked rather than
   //    assumed.
+  const maxMain = 65535 - DASHBOARD_PORT_OFFSET;
+  // The dashboard takes the next port up, which the top of the range has no
+  // room for. Compose rejects 65536 outright, so catch it here instead.
+  if (httpsPort !== undefined && httpsPort > maxMain) {
+    note();
+    note(C.r(`Port ${httpsPort} leaves no room for the dashboard.`));
+    note(
+      `  It is served on the next port up, and ${
+        httpsPort + DASHBOARD_PORT_OFFSET
+      } is not a port.`,
+    );
+    note(`  Pick ${maxMain} or lower.`);
+    Deno.exit(1);
+  }
+
   const dashboard = yesNo(
     "dashboard",
     mode === "caddy"
@@ -530,6 +567,12 @@ function collect(
       "workspacePath",
       "Host directory to mount at /workspace",
       prev.workspace?.path ?? "",
+      {
+        // Quoting handles colons and hashes. A newline cannot be quoted into a
+        // single scalar, and would become extra YAML inside the service.
+        validate: (v) =>
+          /[\n\r]/.test(v) ? "a path cannot contain a newline" : null,
+      },
     );
     let puid = 1000, pgid = 1000;
     try {
@@ -586,20 +629,32 @@ function collect(
 // ---------------------------------------------------------------------------
 
 const DASHBOARD_PORT_OFFSET = 1;
+/** What the image documents for mosh, and what the client is told to ask for. */
+const MOSH_PORTS = "60000-60010:60000-60010/udp";
+
+/** The port the dashboard is reached on. Everything that needs it asks here. */
+function dashboardPort(a: Answers): number {
+  const u = new URL(a.publicUrl);
+  const base = u.port ? Number(u.port) : u.protocol === "https:" ? 443 : 80;
+  return base + DASHBOARD_PORT_OFFSET;
+}
 
 function dashboardUrl(a: Answers): string {
   // Same hostname, different port. The oauth2-proxy session cookie is
   // host-scoped and ignores the port, so one sign-in covers both and only one
   // redirect URI is ever registered with Google.
   const u = new URL(a.publicUrl);
-  const base = u.port ? Number(u.port) : u.protocol === "https:" ? 443 : 80;
-  u.port = String(base + DASHBOARD_PORT_OFFSET);
+  u.port = String(dashboardPort(a));
   return u.toString().replace(/\/$/, "");
 }
 
 function renderEnv(a: Answers, keep: Record<string, string>): string {
   const L: string[] = [];
-  const put = (k: string, v: string) => L.push(`${k}=${v}`);
+  const emitted = new Set<string>();
+  const put = (k: string, v: string) => {
+    emitted.add(k);
+    L.push(`${k}=${v}`);
+  };
   const secret = (k: string, gen: () => string) => put(k, keep[k] || gen());
 
   L.push(
@@ -659,7 +714,10 @@ function renderEnv(a: Answers, keep: Record<string, string>): string {
   );
   for (const k of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]) {
     if (keep[k]) put(k, keep[k]);
-    else L.push(`# ${k}=`);
+    else {
+      emitted.add(k);
+      L.push(`# ${k}=`);
+    }
   }
   L.push("");
 
@@ -678,6 +736,17 @@ function renderEnv(a: Answers, keep: Record<string, string>): string {
     );
     L.push("# expires (90 days at most) will fail to come back.");
     put("TS_AUTHKEY", keep.TS_AUTHKEY || "tskey-auth-CHANGEME");
+    L.push("");
+  }
+
+  // Anything else already in .env is the operator's — another provider key, a
+  // MISE_TOOLS list, a DESKTOP_RESOLUTION. This file is theirs to edit, and a
+  // generator that silently drops what it does not recognise makes "re-run it"
+  // advice you cannot follow.
+  const carried = Object.keys(keep).filter((k) => !emitted.has(k)).sort();
+  if (carried.length) {
+    L.push("# --- Kept from your previous .env ---");
+    for (const k of carried) L.push(`${k}=${keep[k]}`);
     L.push("");
   }
 
@@ -703,6 +772,11 @@ function envPassthroughKeys(a: Answers): string[] {
   keys.push("SSH_AUTHORIZED_KEYS", "ANTHROPIC_API_KEY", "OPENAI_API_KEY");
   if (a.workspace.kind === "path") keys.push("PUID", "PGID");
   return keys;
+}
+
+/** A YAML double-quoted scalar. Paths are data, not syntax. */
+function yamlString(v: string): string {
+  return '"' + v.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
 }
 
 function renderCompose(a: Answers): string {
@@ -760,16 +834,27 @@ function renderCompose(a: Answers): string {
     if (a.dashboard) L.push(`      - "${dp}"`);
     L.push("    ports:");
     L.push(`      - "${a.sshPort ?? 2222}:22"`);
+    L.push("      # One UDP port per mosh session; ssh alone is not enough.");
+    L.push(`      - "${MOSH_PORTS}"`);
   } else {
+    // With a TLS terminator in front, PUBLIC_URL is the proxy's address and has
+    // nothing to do with what this container binds — taking its port would make
+    // the two fight over 443. Bind the gateway's own ports and let the proxy
+    // forward to them.
+    const hostPort = a.behindProxy ? gp : extPort;
+    const hostDash = a.behindProxy ? dp : extPort + DASHBOARD_PORT_OFFSET;
     L.push(
-      "    # Bound to loopback. Put your own proxy in front to expose it.",
+      a.behindProxy
+        ? "    # Bound to loopback for the proxy in front to forward to."
+        : "    # Bound to loopback. Put your own proxy in front to expose it.",
     );
     L.push("    ports:");
-    L.push(`      - "127.0.0.1:${extPort}:${gp}"`);
-    if (a.dashboard) {
-      L.push(`      - "127.0.0.1:${extPort + DASHBOARD_PORT_OFFSET}:${dp}"`);
-    }
+    L.push(`      - "127.0.0.1:${hostPort}:${gp}"`);
+    if (a.dashboard) L.push(`      - "127.0.0.1:${hostDash}:${dp}"`);
     L.push(`      - "127.0.0.1:${a.sshPort ?? 2222}:22"`);
+    L.push("      # mosh picks one UDP port per session out of this range.");
+    L.push("      # Without it ssh connects and every mosh session times out.");
+    L.push(`      - "127.0.0.1:${MOSH_PORTS}"`);
   }
   L.push("");
 
@@ -798,7 +883,7 @@ function renderCompose(a: Answers): string {
 
   L.push("    volumes:");
   if (a.workspace.kind === "path") {
-    L.push(`      - ${a.workspace.path}:/workspace`);
+    L.push(`      - ${yamlString(`${a.workspace.path}:/workspace`)}`);
   } else {
     L.push("      - workspace:/workspace");
   }
@@ -925,7 +1010,7 @@ function renderTsServe(a: Answers): string {
     },
   };
   if (a.dashboard) {
-    const dash = 8443;
+    const dash = dashboardPort(a);
     (cfg.TCP as Record<number, unknown>)[dash] = { HTTPS: true };
     (cfg.Web as Record<string, unknown>)[`${a.tsHostname}:${dash}`] = {
       Handlers: { "/": { Proxy: "http://127.0.0.1:8081" } },
@@ -1005,6 +1090,20 @@ function main() {
     // .env holds secrets; the others do not.
     if (name === ".env") Deno.chmodSync(p(name), 0o600);
     note(`${C.g("wrote")} ${p(name)}`);
+  }
+
+  const stale = [
+    ["Caddyfile", "caddy"],
+    ["ts-serve.json", "tailscale"],
+  ].filter(([f, forMode]) =>
+    answers.mode !== forMode && !(f in files) && readIfExists(p(f)) !== null
+  );
+  if (stale.length) {
+    note();
+    for (const [f] of stale) {
+      warn(`${p(f)} is left over from a previous mode and is no longer used.`);
+    }
+    warn("Left in place in case you edited it — delete it when you are sure.");
   }
 
   note();

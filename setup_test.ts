@@ -338,3 +338,110 @@ function existsSync(p: string): boolean {
     return false;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Regressions. Each of these was a real defect found in review on this branch,
+// reproduced before it was fixed.
+// ---------------------------------------------------------------------------
+
+Deno.test("a re-run keeps every key, not just the ones it knows", () => {
+  // The first version carried an allowlist of secrets and dropped the rest, so
+  // a MISE_TOOLS or DESKTOP_RESOLUTION added by hand vanished on the next run —
+  // while the README said the file was safe to edit.
+  const dir = tmp();
+  run(LOCAL, dir);
+  Deno.writeTextFileSync(
+    `${dir}/.env`,
+    "\nMISE_TOOLS=python@3.13 go@latest\nDESKTOP_RESOLUTION=2560x1440x24\nOPENROUTER_API_KEY=sk-or-mine\n",
+    { append: true },
+  );
+  run(LOCAL, dir, ["--force"]);
+  const env = envOf(dir);
+  assertEquals(env.MISE_TOOLS, "python@3.13 go@latest");
+  assertEquals(env.DESKTOP_RESOLUTION, "2560x1440x24");
+  assertEquals(env.OPENROUTER_API_KEY, "sk-or-mine");
+});
+
+Deno.test("behind a TLS proxy, the container does not bind the proxy's port", () => {
+  // PUBLIC_URL is the proxy's address. Binding its port made the container
+  // fight whatever is already terminating TLS on 443.
+  const dir = tmp();
+  run(
+    { ...LOCAL, behindProxy: true, publicUrl: "https://agent.example.com" },
+    dir,
+  );
+  const compose = Deno.readTextFileSync(`${dir}/compose.yaml`);
+  assert(!compose.includes("127.0.0.1:443:"), "bound the proxy's own port");
+  assertStringIncludes(compose, "127.0.0.1:8080:8080");
+  assertEquals(envOf(dir).PUBLIC_URL, "https://agent.example.com");
+});
+
+Deno.test("the tailnet dashboard is served on the port it advertises", () => {
+  const dir = tmp();
+  run(TS, dir);
+  const advertised = Number(new URL(envOf(dir).DASHBOARD_PUBLIC_URL).port);
+  const serve = JSON.parse(Deno.readTextFileSync(`${dir}/ts-serve.json`));
+  assert(
+    Object.keys(serve.TCP).includes(String(advertised)),
+    `advertises :${advertised} but serves ${Object.keys(serve.TCP).join(", ")}`,
+  );
+});
+
+Deno.test("mosh's UDP range is published wherever SSH is", () => {
+  for (const answers of [LOCAL, CADDY]) {
+    const dir = tmp();
+    run(answers, dir);
+    assertStringIncludes(
+      Deno.readTextFileSync(`${dir}/compose.yaml`),
+      "60000-60010:60000-60010/udp",
+    );
+  }
+});
+
+Deno.test("a workspace path is data, not YAML syntax", () => {
+  const dir = tmp();
+  run({ ...LOCAL, workspaceKind: "path", workspacePath: "/srv/my:code" }, dir);
+  assertStringIncludes(
+    Deno.readTextFileSync(`${dir}/compose.yaml`),
+    '"/srv/my:code:/workspace"',
+  );
+});
+
+Deno.test("a workspace path cannot inject compose configuration", () => {
+  const dir = tmp();
+  const r = run(
+    {
+      ...LOCAL,
+      workspaceKind: "path",
+      workspacePath: "/srv/code\n    privileged: true",
+    },
+    dir,
+  );
+  assert(r.code !== 0, "accepted a path containing a newline");
+  assert(!existsSync(`${dir}/compose.yaml`), "wrote a compose file anyway");
+});
+
+Deno.test("a port with no room for the dashboard is refused", () => {
+  const dir = tmp();
+  const r = run({ ...CADDY, httpsPort: 65535 }, dir);
+  assertEquals(r.code, 1);
+  assertStringIncludes(r.stdout, "no room for the dashboard");
+  assert(!existsSync(`${dir}/compose.yaml`));
+});
+
+Deno.test("answers from a file face the same validators as typed ones", () => {
+  // --answers is automation input, and automation is where a silently-wrong
+  // value becomes a deployment nobody typed.
+  for (
+    const broken of [
+      { ...LOCAL, mode: "nonsense" },
+      { ...CADDY, httpsPort: "not-a-port" },
+      { ...CADDY, domain: "https://not-a-bare-hostname" },
+    ]
+  ) {
+    const dir = tmp();
+    const r = run(broken as Record<string, unknown>, dir);
+    assertEquals(r.code, 2, `accepted ${JSON.stringify(broken).slice(0, 60)}`);
+    assert(!existsSync(`${dir}/compose.yaml`));
+  }
+});
