@@ -66,6 +66,16 @@ jobs:
             deno run -A setup.ts --answers "${dir}/a.json" --out "${dir}"
             ( cd "${dir}" && docker compose config -q )
             echo "::notice::${mode} compose is valid"
+
+            # A generated Caddyfile that compose accepts can still be one Caddy
+            # refuses, and that failure only shows up at first start in domain
+            # mode. Ask Caddy itself.
+            if [ -f "${dir}/Caddyfile" ]; then
+              docker run --rm -v "${dir}/Caddyfile:/tmp/Caddyfile:ro" \
+                --entrypoint caddy caddy:2-alpine \
+                validate --config /tmp/Caddyfile --adapter caddyfile
+              echo "::notice::${mode} Caddyfile is valid"
+            fi
           done
 
   build:

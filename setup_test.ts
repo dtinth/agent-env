@@ -51,11 +51,25 @@ function tmp(): string {
   return Deno.makeTempDirSync({ prefix: "agent-env-setup-" });
 }
 
+/**
+ * The *effective* value of each key, the way dotenv reads it — an unquoted
+ * value ends at an unescaped #, and a quoted one is unwrapped. Comparing raw
+ * file text instead would fail the wizard for preserving a line exactly, which
+ * is the behaviour that keeps exotic values intact.
+ */
 function envOf(dir: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const line of Deno.readTextFileSync(`${dir}/.env`).split("\n")) {
     const m = /^([A-Z][A-Z0-9_]*)=(.*)$/.exec(line);
-    if (m) out[m[1]] = m[2];
+    if (!m) continue;
+    const raw = m[2].trim();
+    if (raw.startsWith('"') && raw.endsWith('"') && raw.length > 1) {
+      out[m[1]] = raw.slice(1, -1).replace(/\\(.)/g, "$1");
+    } else if (raw.startsWith("'") && raw.endsWith("'") && raw.length > 1) {
+      out[m[1]] = raw.slice(1, -1);
+    } else {
+      out[m[1]] = raw.replace(/\s+#.*$/, "").trim();
+    }
   }
   return out;
 }
@@ -587,4 +601,61 @@ Deno.test("automation does not overwrite an existing deployment by omission", ()
   assertEquals(r.code, 1, "overwrote without --force");
   assertStringIncludes(r.stdout, "--force");
   assertEquals(run(LOCAL, dir, ["--force"]).code, 0);
+});
+
+Deno.test("a reused credential keeps its exact value", () => {
+  // Unescaping a quoted value and writing it back re-escaped turned pa\ss into
+  // pass — a password that silently stopped being the password.
+  const dir = tmp();
+  run(LOCAL, dir);
+  const env = Deno.readTextFileSync(`${dir}/.env`)
+    .replace(/^GATEWAY_PASSWORD=.*$/m, String.raw`GATEWAY_PASSWORD="pa\\ss"`);
+  Deno.writeTextFileSync(`${dir}/.env`, env);
+  run(LOCAL, dir, ["--force"]);
+  const line = Deno.readTextFileSync(`${dir}/.env`)
+    .split("\n").find((l) => l.startsWith("GATEWAY_PASSWORD="))!;
+  assertEquals(line, String.raw`GATEWAY_PASSWORD="pa\\ss"`);
+});
+
+Deno.test("a URL with a query or fragment is rejected", () => {
+  // Every derived address appends to PUBLIC_URL, so a suffix here is inherited
+  // by the OAuth redirect URI and the dashboard origin alike.
+  for (
+    const u of [
+      "https://a.example.com?x=1",
+      "https://a.example.com#frag",
+      "https://a.example.com/base",
+      "ftp://a.example.com",
+    ]
+  ) {
+    const dir = tmp();
+    assertEquals(
+      run({ ...LOCAL, behindProxy: true, publicUrl: u }, dir).code,
+      2,
+      `accepted ${u}`,
+    );
+  }
+});
+
+Deno.test("an OAuth client id needs more than the suffix", () => {
+  for (
+    const id of [
+      ".apps.googleusercontent.com",
+      "apps.googleusercontent.com",
+      "x.apps.googleusercontent.com.evil",
+    ]
+  ) {
+    const dir = tmp();
+    assertEquals(
+      run({ ...CADDY, googleClientId: id }, dir).code,
+      2,
+      `accepted ${id}`,
+    );
+  }
+  const ok = tmp();
+  assertEquals(
+    run({ ...CADDY, googleClientId: "1234-abc.apps.googleusercontent.com" }, ok)
+      .code,
+    0,
+  );
 });
