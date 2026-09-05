@@ -13,7 +13,7 @@ args=(
   "${root}"
   --bind 127.0.0.1
   --port "${DUFS_PORT:-5000}"
-  --path-prefix "/${DUFS_PATH:-files}"
+  --path-prefix "/${DUFS_PATH:-~env/files}"
   # Enough to actually manage files. Deliberately not --allow-all: that adds
   # --allow-symlink, which would let a symlink walk outside the served root.
   --allow-upload

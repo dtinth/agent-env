@@ -68,6 +68,12 @@ OPENCODE_WORKDIR="${OPENCODE_WORKDIR:-/workspace}"
 SSH_ENABLE="${SSH_ENABLE:-true}"
 SSH_PORT="${SSH_PORT:-22}"
 
+# Everything this image serves for itself lives under one reserved prefix, so
+# whatever answers at / keeps its entire path space. Not configurable on
+# purpose: it is a documented contract, and a knob here would only make the
+# README wrong. The `~` keeps it clear of any path a real application routes.
+ENV_PREFIX='~env'
+
 DESKTOP_ENABLE="${DESKTOP_ENABLE:-true}"
 DESKTOP_RESOLUTION="${DESKTOP_RESOLUTION:-1920x1080x24}"
 DESKTOP_DISPLAY="${DESKTOP_DISPLAY:-:1}"
@@ -77,11 +83,22 @@ NOVNC_PORT="${NOVNC_PORT:-6080}"
 TTYD_ENABLE="${TTYD_ENABLE:-true}"
 TTYD_PORT="${TTYD_PORT:-7681}"
 TTYD_WRITABLE="${TTYD_WRITABLE:-true}"
+# ttyd and dufs are told their own prefix so their UIs work under one; noVNC is
+# not, because the gateway strips the prefix before proxying to it.
+TTYD_PATH="${ENV_PREFIX}/terminal"
+DESKTOP_PATH="${ENV_PREFIX}/desktop"
+HEALTH_PATH="${ENV_PREFIX}/healthz"
 
 USER_SUPERVISOR_ENABLE="${USER_SUPERVISOR_ENABLE:-true}"
 # pitchfork's own web UI, served by the user's supervisor. It can start, stop
 # and restart daemons, stream their logs and edit the config, so it sits behind
 # the gateway's auth like everything else.
+#
+# This is the one part of the environment that cannot move under ENV_PREFIX:
+# pitchfork validates PITCHFORK_WEB_PATH as a single [A-Za-z0-9_-] segment and
+# bakes it into a <base href>, so a nested prefix is rejected outright. It keeps
+# a top-level path, and ${ENV_PREFIX}/daemons redirects to it so the reserved
+# prefix stays the one address worth documenting.
 USER_WEB_ENABLE="${USER_WEB_ENABLE:-true}"
 USER_WEB_PORT="${USER_WEB_PORT:-4747}"
 USER_WEB_PATH="${USER_WEB_PATH:-pitchfork}"
@@ -89,7 +106,7 @@ USER_WEB_PATH="${USER_WEB_PATH:-pitchfork}"
 # dufs: a file manager for the workspace, run by the user's own supervisor.
 DUFS_ENABLE="${DUFS_ENABLE:-true}"
 DUFS_PORT="${DUFS_PORT:-5000}"
-DUFS_PATH="${DUFS_PATH:-files}"
+DUFS_PATH="${DUFS_PATH:-${ENV_PREFIX}/files}"
 DUFS_ROOT="${DUFS_ROOT:-${OPENCODE_WORKDIR}}"
 
 # A rootless Docker engine for the dev user, so an agent can bring up a
@@ -388,6 +405,12 @@ GATEWAY_BASIC_B64="$(printf 'opencode:%s' "${OPENCODE_SERVER_PASSWORD}" | base64
   echo "GATEWAY_PORT=${GATEWAY_PORT}"
   echo "PUBLIC_URL=${PUBLIC_URL}"
   echo "AUTH_MODE=${AUTH_MODE}"
+  echo "ENV_PREFIX=${ENV_PREFIX}"
+  echo "TTYD_PATH=${TTYD_PATH}"
+  echo "DESKTOP_PATH=${DESKTOP_PATH}"
+  echo "DUFS_PATH=${DUFS_PATH}"
+  echo "HEALTH_PATH=${HEALTH_PATH}"
+  echo "USER_WEB_PATH=${USER_WEB_PATH}"
   echo "OPENCODE_PORT=${OPENCODE_PORT}"
   echo "OPENCODE_WORKDIR=${OPENCODE_WORKDIR}"
   echo "SSH_PORT=${SSH_PORT}"
@@ -722,6 +745,74 @@ esac
 # ---------------------------------------------------------------------------
 # Caddyfile
 # ---------------------------------------------------------------------------
+# The environment's own index, served at /${ENV_PREFIX}/. Rendered from the same
+# flags the gateway is, so it can only ever list what is actually routed.
+render_env_index() {
+  local d=/opt/agent-env/web
+  mkdir -p "${d}"
+
+  svc() {
+    printf '      <li><a class="svc" href="%s"><b>%s</b><span>%s</span></a></li>\n' "$1" "$2" "$3"
+  }
+
+  {
+    cat <<'HTMLHEAD'
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>agent-env</title>
+<style>
+  :root { color-scheme: light dark;
+    --fg:#111; --muted:#666; --bg:#fafafa; --card:#fff; --line:#e4e4e4; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg:#e8e8e8; --muted:#9a9a9a; --bg:#0d0d0d; --card:#171717; --line:#2b2b2b; }
+  }
+  body { margin:0; background:var(--bg); color:var(--fg);
+    font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+  main { max-width:34rem; margin:0 auto; padding:3rem 1.25rem; }
+  h1 { font-size:1.05rem; margin:0 0 .3rem; }
+  p.sub { margin:0 0 1.75rem; color:var(--muted); font-size:.875rem; }
+  ul { list-style:none; margin:0; padding:0; display:grid; gap:.5rem; }
+  a.svc { display:block; padding:.8rem 1rem; background:var(--card); color:inherit;
+    border:1px solid var(--line); border-radius:.5rem; text-decoration:none; }
+  a.svc:hover { border-color:var(--muted); }
+  a.svc b { display:block; font-weight:600; font-size:.95rem; }
+  a.svc span { color:var(--muted); font-size:.82rem; }
+  footer { margin-top:2rem; color:var(--muted); font-size:.8rem; }
+  code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.925em; }
+</style>
+<main>
+  <h1>agent-env</h1>
+  <p class="sub">Everything this environment serves for itself is under <code>/~env/</code>.
+    Whatever is at <code>/</code> belongs to the workspace.</p>
+  <ul>
+HTMLHEAD
+
+    is_true "${TTYD_ENABLE}" \
+      && svc "/${TTYD_PATH}/" "Terminal" "The OpenCode TUI, over a websocket"
+    is_true "${DESKTOP_ENABLE}" \
+      && svc "/${DESKTOP_PATH}/" "Desktop" "XFCE on a virtual display, over noVNC"
+    is_true "${DUFS_ENABLE}" \
+      && svc "/${DUFS_PATH}/" "Files" "Browse, upload and download the workspace"
+    if is_true "${USER_SUPERVISOR_ENABLE}" && is_true "${USER_WEB_ENABLE}"; then
+      svc "/${USER_WEB_PATH}" "Daemons" "Start, stop and tail your own background processes"
+    fi
+    is_true "${AB_DASHBOARD_ENABLE}" \
+      && svc "${DASHBOARD_PUBLIC_URL}" "Browser dashboard" "Live agent-browser viewports and activity"
+
+    cat <<HTMLFOOT
+  </ul>
+  <footer>Health: <code>/${HEALTH_PATH}</code></footer>
+</main>
+HTMLFOOT
+  } > "${d}/index.html"
+
+  chmod 644 "${d}/index.html"
+  log "environment index written to ${d}/index.html"
+}
+
+render_env_index
+
 render_caddyfile() {
   local f=/etc/caddy/Caddyfile
   mkdir -p /etc/caddy
@@ -762,7 +853,10 @@ EOF
     [[ "${AUTH_MODE,,}" == "google" ]] || return 0
     cat <<EOF
 
-		# oauth2-proxy owns the sign-in endpoints.
+		# oauth2-proxy owns the sign-in endpoints. Deliberately NOT under
+		# /${ENV_PREFIX}/: this is the path the registered Google redirect URI
+		# already points at, and moving it would invalidate every existing
+		# OAuth client configuration for no gain.
 		handle /oauth2/* {
 			reverse_proxy 127.0.0.1:${OAUTH2_PROXY_PORT} {
 				header_up X-Real-IP {remote_host}
@@ -784,11 +878,17 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Main entrance: OpenCode v2 web UI + API, the TUI, and the noVNC desktop.
+# Main entrance.
+#
+# Everything this image serves for itself is under /${ENV_PREFIX}/, so the
+# handler at / owns its whole path space and can be given away to whatever the
+# workspace is running. Two things sit outside the prefix, both deliberately:
+# /oauth2/* (see below) and /${USER_WEB_PATH}* (pitchfork validates its web path
+# as a single path segment, so it cannot be nested).
 # ---------------------------------------------------------------------------
 :${GATEWAY_PORT} {
 ${BIND_DIRECTIVE}	route {
-		handle /healthz {
+		handle /${HEALTH_PATH} {
 			respond "ok" 200
 		}
 EOF
@@ -799,16 +899,28 @@ EOF
     echo "		route {"
     emit_auth_gate "${PUBLIC_URL}"
 
+    cat <<EOF
+
+			# The environment's index: what is running and where to find it.
+			redir /${ENV_PREFIX} /${ENV_PREFIX}/
+			handle /${ENV_PREFIX}/ {
+				root * /opt/agent-env/web
+				rewrite * /index.html
+				file_server
+			}
+EOF
+
     if is_true "${DESKTOP_ENABLE}"; then
       cat <<EOF
 
-			# noVNC desktop. noVNC resolves its websocket path relative to the
-			# page it was loaded from, so the default lands on /desktop/websockify.
-			redir /desktop /desktop/
-			handle /desktop/ {
-				redir * /desktop/vnc.html?autoconnect=true&resize=remote
+			# noVNC resolves its websocket relative to the page it was loaded
+			# from, so the default lands on /${DESKTOP_PATH}/websockify. It is
+			# not told the prefix; handle_path strips it before proxying.
+			redir /${DESKTOP_PATH} /${DESKTOP_PATH}/
+			handle /${DESKTOP_PATH}/ {
+				redir * /${DESKTOP_PATH}/vnc.html?autoconnect=true&resize=remote
 			}
-			handle_path /desktop/* {
+			handle_path /${DESKTOP_PATH}/* {
 				reverse_proxy 127.0.0.1:${NOVNC_PORT}
 			}
 EOF
@@ -817,9 +929,10 @@ EOF
     if is_true "${TTYD_ENABLE}"; then
       cat <<EOF
 
-			# OpenCode v2 TUI over ttyd, which serves its own /terminal base path.
-			redir /terminal /terminal/
-			handle /terminal/* {
+			# ttyd is told its own --base-path, so pass the path through rather
+			# than stripping it.
+			redir /${TTYD_PATH} /${TTYD_PATH}/
+			handle /${TTYD_PATH}/* {
 				reverse_proxy 127.0.0.1:${TTYD_PORT}
 			}
 EOF
@@ -828,8 +941,8 @@ EOF
     if is_true "${DUFS_ENABLE}"; then
       cat <<EOF
 
-			# dufs, the workspace file manager. It is told its prefix with
-			# --path-prefix, so pass the path through rather than stripping it.
+			# dufs is told its prefix with --path-prefix, so pass the path
+			# through rather than stripping it.
 			redir /${DUFS_PATH} /${DUFS_PATH}/
 			handle /${DUFS_PATH}/* {
 				reverse_proxy 127.0.0.1:${DUFS_PORT}
@@ -840,20 +953,31 @@ EOF
     if is_true "${USER_SUPERVISOR_ENABLE}" && is_true "${USER_WEB_ENABLE}"; then
       cat <<EOF
 
-			# pitchfork's web UI for the user's own daemons, including the
-			# OpenCode server. It is told to serve under this prefix, so pass
-			# the path through rather than stripping it. Its document lives at
-			# /${USER_WEB_PATH} with no trailing slash and carries a
-			# <base href="/${USER_WEB_PATH}/">, so a stray slash goes back to it.
+			# pitchfork's web UI for the user's own daemons. It cannot live
+			# under /${ENV_PREFIX}/ — PITCHFORK_WEB_PATH is validated as a
+			# single [A-Za-z0-9_-] segment and baked into a <base href> — so it
+			# keeps a top-level path and the prefix redirects to it. Its
+			# document is at /${USER_WEB_PATH} with no trailing slash, so a
+			# stray slash goes back to it.
+			redir /${ENV_PREFIX}/daemons /${USER_WEB_PATH}
+			redir /${ENV_PREFIX}/daemons/ /${USER_WEB_PATH}
 			redir /${USER_WEB_PATH}/ /${USER_WEB_PATH}
 			handle /${USER_WEB_PATH}* {
 				reverse_proxy 127.0.0.1:${USER_WEB_PORT}
 			}
 
-			# Its logo is requested from an absolute /img/logo.png, which
-			# ignores the <base href> and so escapes the prefix. Send that one
-			# path to where the file actually is.
-			handle /img/logo.png {
+			# Its logo is a hard-coded absolute /img/logo.png in the JS bundle,
+			# which ignores the <base href> and escapes the prefix. That is a
+			# path a real application may well want, so it is matched only when
+			# the request came from the daemons UI; everything else asking for
+			# /img/logo.png falls through to whatever is at /. If a referrer
+			# policy strips the path, the daemons UI loses its logo and nothing
+			# else — the right way for this to fail.
+			@${USER_WEB_PATH}_logo {
+				path /img/logo.png
+				expression {http.request.header.Referer}.contains("/${USER_WEB_PATH}")
+			}
+			handle @${USER_WEB_PATH}_logo {
 				rewrite * /${USER_WEB_PATH}/img/logo.png
 				reverse_proxy 127.0.0.1:${USER_WEB_PORT}
 			}
@@ -861,6 +985,13 @@ EOF
     fi
 
     cat <<EOF
+
+			# Nothing else under the reserved prefix exists. Answer for it here
+			# rather than letting it fall through, so / never sees a request
+			# that was addressed to the environment.
+			handle /${ENV_PREFIX}/* {
+				respond "no such service — see /${ENV_PREFIX}/ for what this environment serves" 404
+			}
 
 			# Everything else: the OpenCode v2 web UI and API. The server's own
 			# basic-auth credential is injected here so users never see it.
@@ -879,11 +1010,16 @@ EOF
 
 # ---------------------------------------------------------------------------
 # agent-browser observability dashboard, on its own port because it serves its
-# assets from absolute paths.
+# assets from absolute paths and its reverse-proxy scheme is origin-based.
+#
+# Same hostname as the main entrance, different port — so the oauth2-proxy
+# session cookie, which is host-scoped and ignores the port, covers both and
+# only one redirect URI is ever registered with Google. This port has no
+# reserved prefix: the dashboard owns all of it.
 # ---------------------------------------------------------------------------
 :${DASHBOARD_GATEWAY_PORT} {
 ${BIND_DIRECTIVE}	route {
-		handle /healthz {
+		handle /${HEALTH_PATH} {
 			respond "ok" 200
 		}
 EOF
@@ -987,6 +1123,8 @@ VNC_PORT = "${VNC_PORT}"
 NOVNC_PORT = "${NOVNC_PORT}"
 TTYD_PORT = "${TTYD_PORT}"
 TTYD_WRITABLE = "${TTYD_WRITABLE}"
+TTYD_PATH = "${TTYD_PATH}"
+DUFS_PATH = "${DUFS_PATH}"
 AB_DASHBOARD_PORT = "${AB_DASHBOARD_PORT}"
 EOF
 
@@ -1067,7 +1205,7 @@ EOF
       "${caddy_deps}" \
       'retry = true' \
       'env = { HOME = "/var/lib/caddy", XDG_CONFIG_HOME = "/var/lib/caddy", XDG_DATA_HOME = "/var/lib/caddy" }' \
-      "ready_http = { url = \"http://127.0.0.1:${GATEWAY_PORT}/healthz\", timeout = \"60s\" }"
+      "ready_http = { url = \"http://127.0.0.1:${GATEWAY_PORT}/${HEALTH_PATH}\", timeout = \"60s\" }"
 
     if is_true "${USER_SUPERVISOR_ENABLE}"; then
       local user_sup_ready="ready_cmd = { run = \"true\", timeout = \"5s\" }"
@@ -1103,13 +1241,14 @@ log "----------------------------------------------------------------"
 log " OpenCode v2 : $(su -s /bin/bash -c 'opencode2 --version' "${USER_NAME}" 2>/dev/null || echo unknown)"
 log " gateway     : ${PUBLIC_URL}  (listening on ${GATEWAY_BIND:-0.0.0.0}:${GATEWAY_PORT})"
 log " auth mode   : ${AUTH_MODE}"
-is_true "${TTYD_ENABLE}"        && log " TUI         : ${PUBLIC_URL}/terminal"
-is_true "${DESKTOP_ENABLE}"     && log " desktop     : ${PUBLIC_URL}/desktop"
+log " index       : ${PUBLIC_URL}/${ENV_PREFIX}/"
+is_true "${TTYD_ENABLE}"        && log " TUI         : ${PUBLIC_URL}/${TTYD_PATH}/"
+is_true "${DESKTOP_ENABLE}"     && log " desktop     : ${PUBLIC_URL}/${DESKTOP_PATH}/"
 is_true "${AB_DASHBOARD_ENABLE}" && log " browser dash: ${DASHBOARD_PUBLIC_URL}"
 if is_true "${USER_SUPERVISOR_ENABLE}" && is_true "${USER_WEB_ENABLE}"; then
   log " daemons     : ${PUBLIC_URL}/${USER_WEB_PATH}"
 fi
-is_true "${DUFS_ENABLE}" && log " files       : ${PUBLIC_URL}/${DUFS_PATH}"
+is_true "${DUFS_ENABLE}" && log " files       : ${PUBLIC_URL}/${DUFS_PATH}/"
 is_true "${DOCKER_ROOTLESS_ENABLE}" && log " docker      : rootless, as ${USER_NAME} (docker compose available)"
 is_true "${SSH_ENABLE}"         && log " ssh         : ${USER_NAME}@<host> -p ${SSH_PORT}"
 log " workspace   : ${OPENCODE_WORKDIR}"
