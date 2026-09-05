@@ -134,7 +134,10 @@ function ask(
   opts: { optional?: boolean; validate?: (v: string) => string | null } = {},
 ): string {
   if (key in preset) {
-    const v = String(preset[key] ?? "");
+    // Typed answers are trimmed; an answers file should behave the same, and
+    // new URL() trims for its own parsing while the raw value goes on to be
+    // written verbatim.
+    const v = String(preset[key] ?? "").trim();
     if (!v && !opts.optional) bad(key, "required");
     const err = v && opts.validate ? opts.validate(v) : null;
     if (err) bad(key, err);
@@ -774,15 +777,21 @@ function renderEnv(a: Answers, keep: Record<string, EnvEntry>): RenderedEnv {
     emitted.add(k);
     L.push(`${k}=${envValue(v)}`);
   };
-  /** Reuse the existing line exactly; only generate when there is nothing. */
-  const secret = (k: string, gen: () => string) => {
+  /**
+   * Reuse a value exactly as it was written. Never through put(): that renders
+   * a value, and a rendered `"my secret"` becomes `"\"my secret\""` with the
+   * quotes now part of the credential.
+   */
+  const carry = (k: string): boolean => {
     const existing = keep[k];
-    if (existing) {
-      emitted.add(k);
-      L.push(`${k}=${existing.raw}`);
-      return;
-    }
-    put(k, gen());
+    if (!existing) return false;
+    emitted.add(k);
+    L.push(`${k}=${existing.raw}`);
+    return true;
+  };
+  /** Reuse the existing line, or generate one when there is nothing. */
+  const secret = (k: string, gen: () => string) => {
+    if (!carry(k)) put(k, gen());
   };
 
   L.push(
@@ -802,10 +811,9 @@ function renderEnv(a: Answers, keep: Record<string, EnvEntry>): RenderedEnv {
   put("AUTH_MODE", a.authMode);
   if (a.authMode === "google") {
     put("GOOGLE_CLIENT_ID", a.googleClientId ?? "");
-    put(
-      "GOOGLE_CLIENT_SECRET",
-      keep.GOOGLE_CLIENT_SECRET?.raw || "CHANGEME-google-client-secret",
-    );
+    if (!carry("GOOGLE_CLIENT_SECRET")) {
+      put("GOOGLE_CLIENT_SECRET", "CHANGEME-google-client-secret");
+    }
     if (a.allowedEmails) put("ALLOWED_EMAILS", a.allowedEmails);
     if (a.allowedEmailDomains) {
       put("ALLOWED_EMAIL_DOMAINS", a.allowedEmailDomains);
@@ -841,8 +849,9 @@ function renderEnv(a: Answers, keep: Record<string, EnvEntry>): RenderedEnv {
     "# Or sign in interactively with /connect in the TUI; it persists on the home volume.",
   );
   for (const k of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]) {
-    if (keep[k]) put(k, keep[k].raw);
-    else {
+    if (carry(k)) {
+      // reused as written
+    } else {
       emitted.add(k);
       L.push(`# ${k}=`);
     }
@@ -863,7 +872,7 @@ function renderEnv(a: Answers, keep: Record<string, EnvEntry>): RenderedEnv {
       "# Tag the key and make it reusable, or an unattended restart after it",
     );
     L.push("# expires (90 days at most) will fail to come back.");
-    put("TS_AUTHKEY", keep.TS_AUTHKEY?.raw || "tskey-auth-CHANGEME");
+    if (!carry("TS_AUTHKEY")) put("TS_AUTHKEY", "tskey-auth-CHANGEME");
     L.push("");
   }
 

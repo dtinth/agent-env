@@ -659,3 +659,42 @@ Deno.test("an OAuth client id needs more than the suffix", () => {
     0,
   );
 });
+
+Deno.test("every reused value round-trips byte for byte", () => {
+  // Fixing one reuse path and leaving the others is how a quoted client secret
+  // came back as "\"my secret\"". There are several kinds of reused value, so
+  // check all of them rather than the one that was reported.
+  const cases: [Record<string, unknown>, string, string][] = [
+    [LOCAL, "GATEWAY_PASSWORD", `"pa ss"`],
+    [CADDY, "GOOGLE_CLIENT_SECRET", `"my secret"`],
+    [CADDY, "OAUTH2_PROXY_COOKIE_SECRET", `'quoted-cookie-secret-value-32ch!'`],
+    [LOCAL, "ANTHROPIC_API_KEY", `"sk-with space"`],
+    [TS, "TS_AUTHKEY", `"tskey with space"`],
+    [LOCAL, "SOME_OTHER_SETTING", `"carried # verbatim"`],
+  ];
+  for (const [answers, key, raw] of cases) {
+    const dir = tmp();
+    run(answers, dir);
+    const before = Deno.readTextFileSync(`${dir}/.env`);
+    const replaced = new RegExp(`^#?\\s*${key}=.*$`, "m").test(before)
+      ? before.replace(new RegExp(`^#?\\s*${key}=.*$`, "m"), `${key}=${raw}`)
+      : `${before}\n${key}=${raw}\n`;
+    Deno.writeTextFileSync(`${dir}/.env`, replaced);
+
+    run(answers, dir, ["--force"]);
+    const line = Deno.readTextFileSync(`${dir}/.env`)
+      .split("\n").find((l) => l.startsWith(`${key}=`));
+    assertEquals(line, `${key}=${raw}`, `${key} was rewritten`);
+  }
+});
+
+Deno.test("an answer wrapped in whitespace is not taken literally", () => {
+  // new URL() trims for its own parsing, so validation passed and the padded
+  // string went on to be written as PUBLIC_URL.
+  const dir = tmp();
+  run(
+    { ...LOCAL, behindProxy: true, publicUrl: " https://a.example.com " },
+    dir,
+  );
+  assertEquals(envOf(dir).PUBLIC_URL, "https://a.example.com");
+});
