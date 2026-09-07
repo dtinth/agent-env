@@ -175,14 +175,27 @@ out=$(docker run --rm --name "${NAME}" -e AUTH_MODE=github -e GITHUB_CLIENT_ID=a
 [[ "${out}" -ge 1 ]] && { printf '  \033[32m✓\033[0m an allow list of only separators is refused, not obeyed\n'; pass=$((pass+1)); } \
                      || { printf '  \033[31m✗\033[0m an allow list of only separators was accepted\n'; fail=$((fail+1)); }
 
-# Accepted, it starts and then rejects every login: oauth2-proxy's hasTeam
-# refuses an unqualified slug rather than falling back to matching it.
-out=$(docker run --rm --name "${NAME}" -e AUTH_MODE=github -e GITHUB_CLIENT_ID=a \
-      -e GITHUB_CLIENT_SECRET=b -e GITHUB_TEAM=platform \
-      -e PUBLIC_URL=https://example.invalid \
-      "${IMAGE}" 2>&1 | grep -c "needs its organisation" || true)
-[[ "${out}" -ge 1 ]] && { printf '  \033[32m✓\033[0m a team with no org is refused, not left to fail every login\n'; pass=$((pass+1)); } \
-                     || { printf '  \033[31m✗\033[0m a team with no org was accepted\n'; fail=$((fail+1)); }
+# Accepted, any of these starts and then rejects every login: oauth2-proxy
+# matches a team literally, in whichever of the two forms the config selects.
+team_refused() {
+  local label="$1" want="$2"; shift 2
+  local out
+  out=$(docker run --rm --name "${NAME}" -e AUTH_MODE=github -e GITHUB_CLIENT_ID=a \
+        -e GITHUB_CLIENT_SECRET=b -e PUBLIC_URL=https://example.invalid \
+        "$@" "${IMAGE}" 2>&1 | grep -c -- "${want}" || true)
+  [[ "${out}" -ge 1 ]] && { printf '  \033[32m✓\033[0m %s\n' "${label}"; pass=$((pass+1)); } \
+                       || { printf '  \033[31m✗\033[0m %s\n' "${label}"; fail=$((fail+1)); }
+}
+team_refused "a team with no org is refused, not left to fail every login" \
+  "must be exactly org:team" -e GITHUB_TEAM=platform
+team_refused "a team with no slug after the colon is refused" \
+  "must be exactly org:team" -e GITHUB_TEAM=acme:
+team_refused "a team with no org before the colon is refused" \
+  "must be exactly org:team" -e GITHUB_TEAM=:platform
+team_refused "a team with two colons is refused" \
+  "must be exactly org:team" -e "GITHUB_TEAM=acme:platform:extra"
+team_refused "a qualified team is refused when GITHUB_ORG is set" \
+  "must be a plain team slug" -e GITHUB_ORG=acme -e GITHUB_TEAM=acme:platform
 
 out=$(docker run --rm --name "${NAME}" -e AUTH_MODE=google -e GOOGLE_CLIENT_ID=a \
       -e GOOGLE_CLIENT_SECRET=b -e "ALLOWED_EMAILS=," -e "ALLOWED_EMAIL_DOMAINS= " \
