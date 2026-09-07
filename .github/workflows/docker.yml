@@ -229,6 +229,16 @@ jobs:
           CONTAINER=agent-env-noc ./scripts/smoke-test.sh \
             http://localhost:8082 "opencode:${password}"
 
+      # The smoke suite tests one running container, so it can only ever see
+      # one way of configuring the gate. What varies between the rest is how
+      # the entrypoint *renders* oauth2-proxy's arguments, and a mistake there
+      # produces a proxy that starts perfectly well and cannot complete a
+      # sign-in — or one that lets everybody in. Neither is visible above.
+      - name: Auth matrix
+        env:
+          IMAGE: ${{ steps.ref.outputs.image }}
+        run: ./scripts/auth-matrix.sh "${IMAGE}"
+
       - name: Container logs on failure
         if: failure()
         run: |

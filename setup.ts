@@ -537,13 +537,34 @@ function collect(
       prev.githubTeam ?? "",
       { optional: true },
     );
+    // The image counts an email rule as an allow list for GitHub too, so the
+    // wizard has to be able to write one — otherwise an email-only deployment
+    // the container would accept cannot be generated here at all.
+    allowedEmails = ask(
+      "allowedEmails",
+      "Allowed emails (comma-separated)",
+      prev.allowedEmails ?? "",
+      { optional: true },
+    );
+    allowedEmailDomains = ask(
+      "allowedEmailDomains",
+      "Allowed email domains (comma-separated)",
+      prev.allowedEmailDomains ?? "",
+      { optional: true },
+    );
     // Same reason as the Google branch: the image refuses to start without an
     // allow list, and finding that out at deploy time is worse.
-    if (!githubUsers && !githubOrg && !githubTeam) {
+    if (
+      !githubUsers && !githubOrg && !githubTeam && !allowedEmails &&
+      !allowedEmailDomains
+    ) {
       note();
       note(C.r("GitHub sign-in needs an allow list."));
       note(
-        "  Without one, any GitHub account on the internet could sign in, and",
+        "  Give usernames, an org, teams, or an email rule. Without one, any",
+      );
+      note(
+        "  GitHub account on the internet could sign in, and",
       );
       note("  the container refuses to start rather than let that happen.");
       Deno.exit(1);
@@ -890,6 +911,10 @@ function renderEnv(a: Answers, keep: Record<string, EnvEntry>): RenderedEnv {
     if (a.githubUsers) put("GITHUB_USERS", a.githubUsers);
     if (a.githubOrg) put("GITHUB_ORG", a.githubOrg);
     if (a.githubTeam) put("GITHUB_TEAM", a.githubTeam);
+    if (a.allowedEmails) put("ALLOWED_EMAILS", a.allowedEmails);
+    if (a.allowedEmailDomains) {
+      put("ALLOWED_EMAIL_DOMAINS", a.allowedEmailDomains);
+    }
     L.push(
       "# Persisted so sessions survive a restart instead of silently rotating.",
     );
