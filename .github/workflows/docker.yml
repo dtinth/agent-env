@@ -205,6 +205,11 @@ jobs:
             -e OPENCODE_ENABLE=false \
             -e AB_DASHBOARD_ENABLE=false \
             -e PUBLIC_URL=http://localhost:8082 \
+            # Rides along on a container that already exists: an oversized
+            # *_FILE must not brick startup. Without the entrypoint's size
+            # guard this container never reaches healthy and the wait below
+            # fails, so the regression cannot land quietly.
+            -e SMOKE_OVERSIZE_FILE=/etc/ssl/certs/ca-certificates.crt \
             "${IMAGE}"
 
           # The healthcheck must go healthy with no OpenCode server at all —

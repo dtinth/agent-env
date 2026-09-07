@@ -256,6 +256,28 @@ if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1
     || bad "non-canonical flags would desync the healthcheck and helper: ${noncanon//$'\n'/, }"
 fi
 
+# An oversized *_FILE variable used to take the container out entirely: the
+# entrypoint exported the whole file, which pushed one variable past the
+# kernel's per-string limit and made every later exec fail with "Argument list
+# too long" — pointing at whichever command ran next rather than at the
+# variable. Only asserted when the caller actually passed one, so a plain local
+# run skips it; CI sets it on the OpenCode-off container, which costs nothing
+# extra. Reaching this point at all means the container came up.
+#
+# Both greps read from a variable rather than a pipe on purpose: this script
+# runs under `set -o pipefail`, and `grep -q` exits at the first match, so
+# `docker logs | grep -q` SIGPIPEs the producer and the pipeline reports
+# failure even when the pattern matched.
+if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1; then
+  cfg_env=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER}" 2>/dev/null || true)
+  if grep -q '^SMOKE_OVERSIZE_FILE=' <<<"${cfg_env}"; then
+    container_logs=$(docker logs "${CONTAINER}" 2>&1 || true)
+    grep -q 'over the .*-byte limit for a file secret' <<<"${container_logs}" \
+      && ok "an oversized *_FILE is refused by name instead of bricking the container" \
+      || bad "no size-limit warning for SMOKE_OVERSIZE_FILE — the guard did not run"
+  fi
+fi
+
 head_ "Readiness probes"
 # A ready_http that never passes is invisible for one probe window and then
 # restarts the daemon forever. Moving /healthz under the reserved prefix broke
