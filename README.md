@@ -172,12 +172,21 @@ The allow list is whichever of these you set, and at least one is **required**:
 | `GITHUB_TEAM` | these team slugs within `GITHUB_ORG`; without it, spell each one `org:team` |
 | `ALLOWED_EMAILS` / `ALLOWED_EMAIL_DOMAINS` | the account's primary verified address |
 
-`GITHUB_ORG` and `GITHUB_TEAM` add the `read:org` scope, so the consent screen
-asks for organisation membership as well as the email address. Whichever check
-lets someone in, oauth2-proxy still validates their email — so when the allow
-list is written against accounts rather than addresses the gateway passes
-`--email-domain=*`, and the account restrictions are the whole boundary. Set
-`ALLOWED_EMAILS` or `ALLOWED_EMAIL_DOMAINS` as well to narrow it on both axes.
+The consent screen asks for `user:email read:org` whatever the allow list says.
+That is not over-asking: oauth2-proxy reads `/user/orgs` and `/user/teams` on
+every sign-in, before it looks at any restriction and whether or not an org is
+configured, and both need `read:org`. Narrowing the scope breaks the callback
+even for a deployment restricted only by username.
+
+Whichever check lets someone in, oauth2-proxy still validates their email — so
+when the allow list is written against accounts rather than addresses the
+gateway passes `--email-domain=*`, and the account restrictions are the whole
+boundary. Set `ALLOWED_EMAILS` or `ALLOWED_EMAIL_DOMAINS` as well to narrow it
+on both axes.
+
+An allow list is counted after the separators and whitespace come out of it, so
+`GITHUB_USERS=,` is refused rather than treated as a restriction that happens to
+match nobody.
 
 A GitHub OAuth app belongs to one account or organisation, and organisations can
 require approval before it may read their membership — so if sign-in works but

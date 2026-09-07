@@ -738,3 +738,26 @@ Deno.test("GitHub sign-in with no allow list is refused", () => {
   assertEquals(r.code, 1);
   assertStringIncludes(r.stdout, "needs an allow list");
 });
+
+// The entrypoint counts an email rule as a GitHub allow list, so a deployment
+// restricted only by address is one the container accepts — and therefore one
+// the wizard has to be able to write, and to read back on a re-run.
+Deno.test("GitHub sign-in can be restricted by email alone", () => {
+  const dir = tmp();
+  const answers = {
+    ...GITHUB,
+    githubOrg: "",
+    githubTeam: "",
+    githubUsers: "",
+    allowedEmailDomains: "example.com",
+  };
+  const r = run(answers, dir);
+  assertEquals(r.code, 0);
+  assertEquals(envOf(dir).ALLOWED_EMAIL_DOMAINS, "example.com");
+  assert(!("GITHUB_ORG" in envOf(dir)));
+
+  const again = run(answers, dir, ["--force"]);
+  assertEquals(again.code, 0);
+  assertEquals(envOf(dir).ALLOWED_EMAIL_DOMAINS, "example.com");
+  assertEquals(envOf(dir).AUTH_MODE, "github");
+});

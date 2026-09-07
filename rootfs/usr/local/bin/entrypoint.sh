@@ -72,6 +72,22 @@ rand_secret() { head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n'; }
 
 url_host() { sed -E 's#^[a-zA-Z]+://##; s#/.*$##' <<<"$1"; }
 
+# A comma-separated allow list, with the whitespace and the empty entries taken
+# out: `a, ,b,` becomes `a,b` and `,` becomes nothing at all. Allow lists are
+# counted before they are rendered, and a value that renders no restriction has
+# to read as empty at the point it is counted — see the auth gate below.
+clean_list() {
+  local item out=""
+  local -a items=()
+  IFS=',' read -ra items <<<"${1:-}"
+  for item in "${items[@]}"; do
+    item="$(tr -d '[:space:]' <<<"${item}")"
+    [[ -n "${item}" ]] || continue
+    out+="${out:+,}${item}"
+  done
+  printf '%s' "${out}"
+}
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -656,18 +672,30 @@ case "${AUTH_MODE,,}" in
     [[ -n "${client_secret}" ]] \
       || die "AUTH_MODE=${AUTH_PROVIDER} requires ${client_secret_var} (or OAUTH2_PROXY_CLIENT_SECRET)"
 
+    # Every allow list is normalised before it is counted, because these are
+    # the values that decide whether there is a gate at all. `GITHUB_USERS=,`
+    # is non-empty as a string and renders no restriction whatsoever, so
+    # counting the raw value would accept it as an allow list and then, with
+    # --email-domain=* below, hand the container to any GitHub account there
+    # is. Count what will actually be rendered, not what was typed.
+    allowed_emails="$(clean_list "${ALLOWED_EMAILS:-}")"
+    allowed_email_domains="$(clean_list "${ALLOWED_EMAIL_DOMAINS:-}")"
+    github_users="$(clean_list "${GITHUB_USERS:-}")"
+    github_org="$(clean_list "${GITHUB_ORG:-}")"
+    github_team="$(clean_list "${GITHUB_TEAM:-}")"
+
     # Refuse an open door before doing any other work.
     case "${AUTH_PROVIDER}" in
       google)
-        if [[ -z "${ALLOWED_EMAILS:-}" && -z "${ALLOWED_EMAIL_DOMAINS:-}" ]]; then
+        if [[ -z "${allowed_emails}" && -z "${allowed_email_domains}" ]]; then
           die "AUTH_MODE=google requires ALLOWED_EMAILS and/or ALLOWED_EMAIL_DOMAINS, otherwise any Google account on the internet could sign in"
         fi
         ;;
       github)
         # GitHub's allow list is normally written against accounts rather than
         # addresses, so any of five things counts as one.
-        if [[ -z "${GITHUB_USERS:-}" && -z "${GITHUB_ORG:-}" && -z "${GITHUB_TEAM:-}" \
-              && -z "${ALLOWED_EMAILS:-}" && -z "${ALLOWED_EMAIL_DOMAINS:-}" ]]; then
+        if [[ -z "${github_users}" && -z "${github_org}" && -z "${github_team}" \
+              && -z "${allowed_emails}" && -z "${allowed_email_domains}" ]]; then
           die "AUTH_MODE=github requires GITHUB_USERS, GITHUB_ORG, GITHUB_TEAM, ALLOWED_EMAILS or ALLOWED_EMAIL_DOMAINS, otherwise any GitHub account on the internet could sign in"
         fi
         ;;
@@ -738,25 +766,24 @@ else:
       OAUTH2_ARGS+=(--whitelist-domain="$(url_host "${DASHBOARD_PUBLIC_URL}")")
     fi
 
-    # Comma-separated list to one repeated flag.
+    # A cleaned list to one repeated flag.
     add_list_args() {
-      local flag="$1" list="$2" item
+      local flag="$1" item
       local -a _items=()
-      IFS=',' read -ra _items <<<"${list}"
+      IFS=',' read -ra _items <<<"$2"
       for item in "${_items[@]}"; do
-        item="$(tr -d '[:space:]' <<<"${item}")"
         [[ -n "${item}" ]] && OAUTH2_ARGS+=("${flag}=${item}")
       done
       return 0
     }
 
-    if [[ -n "${ALLOWED_EMAIL_DOMAINS:-}" ]]; then
-      add_list_args --email-domain "${ALLOWED_EMAIL_DOMAINS}"
+    if [[ -n "${allowed_email_domains}" ]]; then
+      add_list_args --email-domain "${allowed_email_domains}"
     fi
 
-    if [[ -n "${ALLOWED_EMAILS:-}" ]]; then
+    if [[ -n "${allowed_emails}" ]]; then
       emails_file="${RUN_DIR}/authenticated-emails"
-      tr ',' '\n' <<<"${ALLOWED_EMAILS}" | tr -d '[:blank:]' | sed '/^$/d' > "${emails_file}"
+      tr ',' '\n' <<<"${allowed_emails}" > "${emails_file}"
       chmod 644 "${emails_file}"
       OAUTH2_ARGS+=(--authenticated-emails-file="${emails_file}")
     fi
@@ -769,7 +796,7 @@ else:
         if [[ -n "${GOOGLE_GROUPS:-}" ]]; then
           [[ -n "${GOOGLE_ADMIN_EMAIL:-}" ]] || die "GOOGLE_GROUPS requires GOOGLE_ADMIN_EMAIL"
           [[ -n "${GOOGLE_SERVICE_ACCOUNT_JSON:-}" ]] || die "GOOGLE_GROUPS requires GOOGLE_SERVICE_ACCOUNT_JSON (path to the key file)"
-          add_list_args --google-group "${GOOGLE_GROUPS}"
+          add_list_args --google-group "$(clean_list "${GOOGLE_GROUPS}")"
           OAUTH2_ARGS+=(
             --google-admin-email="${GOOGLE_ADMIN_EMAIL}"
             --google-service-account-json="${GOOGLE_SERVICE_ACCOUNT_JSON}"
@@ -778,29 +805,27 @@ else:
         ;;
 
       github)
-        [[ -n "${GITHUB_ORG:-}" ]] && OAUTH2_ARGS+=(--github-org="${GITHUB_ORG}")
+        [[ -n "${github_org}" ]] && OAUTH2_ARGS+=(--github-org="${github_org}")
         # One flag, comma-separated, and it is the whole list: with no
         # GITHUB_ORG the entries have to be spelled `org:team`.
-        if [[ -n "${GITHUB_TEAM:-}" ]]; then
-          OAUTH2_ARGS+=(--github-team="$(tr -d '[:space:]' <<<"${GITHUB_TEAM}")")
-        fi
-        [[ -n "${GITHUB_USERS:-}" ]] && add_list_args --github-user "${GITHUB_USERS}"
+        [[ -n "${github_team}" ]] && OAUTH2_ARGS+=(--github-team="${github_team}")
+        [[ -n "${github_users}" ]] && add_list_args --github-user "${github_users}"
 
         # oauth2-proxy validates the account's email regardless of which
         # GitHub check let it in, and with no email rule of our own that
         # validation would reject everybody. The account restrictions above
-        # are the boundary in that case, so say every address is acceptable.
-        if [[ -z "${ALLOWED_EMAILS:-}" && -z "${ALLOWED_EMAIL_DOMAINS:-}" ]]; then
+        # are the boundary in that case — the check that refused to start
+        # guarantees there is one — so say every address is acceptable.
+        if [[ -z "${allowed_emails}" && -z "${allowed_email_domains}" ]]; then
           OAUTH2_ARGS+=(--email-domain='*')
         fi
 
-        # user:email is the provider's own default and reads the primary
-        # verified address; org and team membership needs read:org on top.
-        github_scope="user:email"
-        if [[ -n "${GITHUB_ORG:-}" || -n "${GITHUB_TEAM:-}" ]]; then
-          github_scope="${github_scope} read:org"
-        fi
-        OAUTH2_ARGS+=(--scope="${github_scope}")
+        # The provider's own default, and it has to be: EnrichSession reads
+        # /user/orgs and /user/teams on every sign-in, before it looks at any
+        # restriction and whether or not one is configured, and both need
+        # read:org. Narrowing this to user:email breaks the callback for every
+        # deployment — including one restricted only by username or by email.
+        OAUTH2_ARGS+=(--scope="user:email read:org")
         ;;
     esac
 
