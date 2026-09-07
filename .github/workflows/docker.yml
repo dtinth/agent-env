@@ -54,11 +54,12 @@ jobs:
       - name: The generated compose files are valid
         run: |
           set -euo pipefail
-          for mode in local caddy tailscale; do
+          for mode in local caddy github tailscale; do
             dir="$(mktemp -d)"
             case "${mode}" in
               local) answers='{"mode":"local","behindProxy":false,"authMode":"basic","gatewayUser":"opencode"}' ;;
               caddy) answers='{"mode":"caddy","domain":"agent.example.com","httpsPort":8443,"authMode":"google","googleClientId":"1.apps.googleusercontent.com","allowedEmails":"me@example.com"}' ;;
+              github) answers='{"mode":"caddy","domain":"gh.example.com","httpsPort":8443,"authMode":"github","githubClientId":"Iv1.0123456789abcdef","githubOrg":"acme","githubTeam":"platform"}' ;;
               tailscale) answers='{"mode":"tailscale","tsHostname":"work.tail1234.ts.net","authMode":"none"}' ;;
             esac
             common='"opencodeEnable":true,"dashboard":true,"rootlessDocker":true,"sshKeys":"ssh-ed25519 AAAA t@h","sshPort":2222,"workspaceKind":"volume","timezone":"UTC"'

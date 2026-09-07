@@ -761,3 +761,45 @@ Deno.test("GitHub sign-in can be restricted by email alone", () => {
   assertEquals(envOf(dir).ALLOWED_EMAIL_DOMAINS, "example.com");
   assertEquals(envOf(dir).AUTH_MODE, "github");
 });
+
+// The entrypoint counts an allow list after the separators come out of it, so
+// the wizard has to as well: an answer like ", ," describes nobody, and taking
+// it for an allow list writes a deployment the image then refuses to start.
+Deno.test("an allow list of only separators is not an allow list", () => {
+  const dir = tmp();
+  const r = run(
+    {
+      ...GITHUB,
+      githubUsers: ", ,",
+      githubOrg: " ",
+      githubTeam: "",
+      allowedEmails: " ",
+    },
+    dir,
+  );
+  assertEquals(r.code, 1);
+  assertStringIncludes(r.stdout, "needs an allow list");
+});
+
+// oauth2-proxy's hasTeam rejects an unqualified slug outright when no org is
+// configured, so this combination starts and turns everyone away.
+Deno.test("a team-only allow list must name its organisation", () => {
+  const dir = tmp();
+  const bad = run({ ...GITHUB, githubOrg: "", githubTeam: "platform" }, dir);
+  assertEquals(bad.code, 2);
+  assertStringIncludes(bad.stdout, "fully qualified");
+
+  const good = run(
+    { ...GITHUB, githubOrg: "", githubTeam: "acme:platform,other:sre" },
+    tmp(),
+  );
+  assertEquals(good.code, 0);
+});
+
+// With an org set, plain slugs are what oauth2-proxy wants.
+Deno.test("teams inside an organisation stay plain slugs", () => {
+  const dir = tmp();
+  const r = run({ ...GITHUB, githubOrg: "acme", githubTeam: "platform" }, dir);
+  assertEquals(r.code, 0);
+  assertEquals(envOf(dir).GITHUB_TEAM, "platform");
+});

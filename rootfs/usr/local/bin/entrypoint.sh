@@ -806,9 +806,21 @@ else:
 
       github)
         [[ -n "${github_org}" ]] && OAUTH2_ARGS+=(--github-org="${github_org}")
-        # One flag, comma-separated, and it is the whole list: with no
-        # GITHUB_ORG the entries have to be spelled `org:team`.
-        [[ -n "${github_team}" ]] && OAUTH2_ARGS+=(--github-team="${github_team}")
+        # One flag, comma-separated, and it is the whole list. With no
+        # GITHUB_ORG the entries have to be spelled `org:team`: oauth2-proxy's
+        # hasTeam rejects an unqualified slug outright rather than falling back
+        # to matching it, so such a container starts and then turns everyone
+        # away. Refuse it here, where the reason is still visible.
+        if [[ -n "${github_team}" ]]; then
+          if [[ -z "${github_org}" ]]; then
+            IFS=',' read -ra _teams <<<"${github_team}"
+            for _t in "${_teams[@]}"; do
+              [[ "${_t}" == *:* ]] || die "GITHUB_TEAM=${_t} needs its organisation (GITHUB_TEAM=org:${_t}), or set GITHUB_ORG.
+       Without GITHUB_ORG, oauth2-proxy rejects an unqualified team name and no one can sign in."
+            done
+          fi
+          OAUTH2_ARGS+=(--github-team="${github_team}")
+        fi
         [[ -n "${github_users}" ]] && add_list_args --github-user "${github_users}"
 
         # oauth2-proxy validates the account's email regardless of which

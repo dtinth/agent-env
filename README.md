@@ -169,7 +169,7 @@ The allow list is whichever of these you set, and at least one is **required**:
 |---|---|
 | `GITHUB_USERS` | these logins, comma-separated, regardless of org or team |
 | `GITHUB_ORG` | members of this organisation |
-| `GITHUB_TEAM` | these team slugs within `GITHUB_ORG`; without it, spell each one `org:team` |
+| `GITHUB_TEAM` | these team slugs within `GITHUB_ORG`; without it, spell each one `org:team` — an unqualified name there is refused at startup, because oauth2-proxy would reject every login instead |
 | `ALLOWED_EMAILS` / `ALLOWED_EMAIL_DOMAINS` | the account's primary verified address |
 
 The consent screen asks for `user:email read:org` whatever the allow list says.
