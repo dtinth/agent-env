@@ -195,6 +195,19 @@ function yesNo(key: string, question: string, fallback: boolean): boolean {
 // ---------------------------------------------------------------------------
 
 /** Matches the entrypoint's own rand_secret: 32 random bytes, base64url, unpadded. */
+/**
+ * The entrypoint's `clean_list`, in TypeScript. An allow list decides whether
+ * there is a gate at all, so what the wizard counts has to be what the
+ * container will count: `", ,"` is a non-empty answer that describes nobody,
+ * and treating it as an allow list writes a deployment the image then refuses
+ * to start.
+ */
+function cleanList(v: string | undefined): string {
+  return (v ?? "").split(",").map((x) => x.replace(/\s+/g, "")).filter((x) =>
+    x.length > 0
+  ).join(",");
+}
+
 function randomSecret(bytes = 32): string {
   const buf = new Uint8Array(bytes);
   crypto.getRandomValues(buf);
@@ -496,8 +509,8 @@ function collect(
       { optional: true },
     );
     // The image refuses to start without one of these, so catching it now
-    // saves a deploy-time failure.
-    if (!allowedEmails && !allowedEmailDomains) {
+    // saves a deploy-time failure. Counted after cleaning, as it is there.
+    if (!cleanList(allowedEmails) && !cleanList(allowedEmailDomains)) {
       note();
       note(C.r("Google sign-in needs an allow list."));
       note(
@@ -533,9 +546,22 @@ function collect(
     );
     githubTeam = ask(
       "githubTeam",
-      "Allowed teams in that org (comma-separated slugs)",
+      githubOrg
+        ? "Allowed teams in that org (comma-separated slugs)"
+        : "Allowed teams (comma-separated, each one org:team)",
       prev.githubTeam ?? "",
-      { optional: true },
+      {
+        optional: true,
+        // With no organisation set, oauth2-proxy takes the team list as the
+        // whole restriction and rejects any entry that does not name its org:
+        // hasTeam fails the login with "team name is invalid" rather than
+        // falling back to a slug match. A deployment like that starts happily
+        // and turns everyone away, which is the worst way to find out.
+        validate: (v) =>
+          githubOrg || cleanList(v).split(",").every((t) => t.includes(":"))
+            ? null
+            : "without an organisation each team must be fully qualified, like acme:platform",
+      },
     );
     // The image counts an email rule as an allow list for GitHub too, so the
     // wizard has to be able to write one — otherwise an email-only deployment
@@ -553,10 +579,11 @@ function collect(
       { optional: true },
     );
     // Same reason as the Google branch: the image refuses to start without an
-    // allow list, and finding that out at deploy time is worse.
+    // allow list, and finding that out at deploy time is worse. Counted the
+    // way the entrypoint counts it — see cleanList.
     if (
-      !githubUsers && !githubOrg && !githubTeam && !allowedEmails &&
-      !allowedEmailDomains
+      ![githubUsers, githubOrg, githubTeam, allowedEmails, allowedEmailDomains]
+        .some((v) => cleanList(v))
     ) {
       note();
       note(C.r("GitHub sign-in needs an allow list."));

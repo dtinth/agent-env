@@ -79,6 +79,9 @@ try "OAUTH2_PROXY_* only, GitHub provider" "${GITHUB[@]}" \
 try "GITHUB_* by email alone, no account restriction" "${GITHUB[@]}" \
   -e GITHUB_CLIENT_ID=Iv1.aaaaaaaaaaaaaaaa -e GITHUB_CLIENT_SECRET=ghs-a \
   -e ALLOWED_EMAILS=me@example.com
+try "GITHUB_TEAM spanning orgs, spelled org:team" "${GITHUB[@]}" \
+  -e GITHUB_CLIENT_ID=Iv1.aaaaaaaaaaaaaaaa -e GITHUB_CLIENT_SECRET=ghs-a \
+  -e "GITHUB_TEAM=acme:platform, other:sre"
 
 # The rendered flags, rather than whether it booted. oauth2-proxy starts
 # happily with a scope that cannot complete a sign-in, and with an allow list
@@ -171,6 +174,15 @@ out=$(docker run --rm --name "${NAME}" -e AUTH_MODE=github -e GITHUB_CLIENT_ID=a
       "${IMAGE}" 2>&1 | grep -c "AUTH_MODE=github requires GITHUB_USERS" || true)
 [[ "${out}" -ge 1 ]] && { printf '  \033[32m✓\033[0m an allow list of only separators is refused, not obeyed\n'; pass=$((pass+1)); } \
                      || { printf '  \033[31m✗\033[0m an allow list of only separators was accepted\n'; fail=$((fail+1)); }
+
+# Accepted, it starts and then rejects every login: oauth2-proxy's hasTeam
+# refuses an unqualified slug rather than falling back to matching it.
+out=$(docker run --rm --name "${NAME}" -e AUTH_MODE=github -e GITHUB_CLIENT_ID=a \
+      -e GITHUB_CLIENT_SECRET=b -e GITHUB_TEAM=platform \
+      -e PUBLIC_URL=https://example.invalid \
+      "${IMAGE}" 2>&1 | grep -c "needs its organisation" || true)
+[[ "${out}" -ge 1 ]] && { printf '  \033[32m✓\033[0m a team with no org is refused, not left to fail every login\n'; pass=$((pass+1)); } \
+                     || { printf '  \033[31m✗\033[0m a team with no org was accepted\n'; fail=$((fail+1)); }
 
 out=$(docker run --rm --name "${NAME}" -e AUTH_MODE=google -e GOOGLE_CLIENT_ID=a \
       -e GOOGLE_CLIENT_SECRET=b -e "ALLOWED_EMAILS=," -e "ALLOWED_EMAIL_DOMAINS= " \
