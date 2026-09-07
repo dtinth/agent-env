@@ -4,7 +4,7 @@
 #   scripts/smoke-test.sh [base-url] [user:password]
 #
 # Defaults assume the basic-auth quick start on localhost:8080. With
-# AUTH_MODE=google every gated route answers 302 to the sign-in page instead of
+# AUTH_MODE=google or github every gated route answers 302 to the sign-in page instead of
 # 200, which this script reports as OK-redirected.
 set -uo pipefail
 
@@ -39,6 +39,12 @@ if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1
   auth_mode=$(docker exec "${CONTAINER}" sh -c \
     'sed -n "s/^AUTH_MODE=//p" /run/agent-env/env' 2>/dev/null | tr -d "\r")
 fi
+
+# google and github are the same gate — an OAuth sign-in redirect — so the
+# checks that need to reach a service with credentials of their own are
+# skipped for both, not just for google.
+oauth_gate=false
+case "${auth_mode}" in google|github) oauth_gate=true ;; esac
 
 # The reserved prefix and the paths under it are a contract the entrypoint
 # publishes; read them rather than hardcoding, so this test fails for the right
@@ -124,7 +130,7 @@ done
 # The daemons UI cannot be nested (pitchfork validates its web path as one
 # segment), so the prefix redirects to it instead. That redirect is the only
 # reason /${ENV_PREFIX}/ is a complete index of the environment.
-if [ "${auth_mode}" != google ] && [ "${USER_WEB_ENABLE}" = true ]; then
+if [ "${oauth_gate}" != true ] && [ "${USER_WEB_ENABLE}" = true ]; then
   loc=$(curl -s -o /dev/null --max-time 15 -u "${AUTH}" -w '%{redirect_url}' \
         "${BASE}/${ENV_PREFIX}/daemons")
   [[ "${loc}" == *"/${USER_WEB_PATH}" ]] \
@@ -135,7 +141,7 @@ fi
 # /img/logo.png is hardcoded absolute in pitchfork's bundle. It is scoped by
 # Referer so it cannot shadow the same path in a user's own app — the loop above
 # proves the fallthrough, this proves the UI still gets its logo.
-if [ "${auth_mode}" != google ] && [ "${USER_WEB_ENABLE}" = true ]; then
+if [ "${oauth_gate}" != true ] && [ "${USER_WEB_ENABLE}" = true ]; then
   ctype=$(curl -s -o /dev/null --max-time 15 -u "${AUTH}" -w '%{content_type}' \
           -H "Referer: ${BASE}/${USER_WEB_PATH}" "${BASE}/img/logo.png")
   [[ "${ctype}" == image/* ]] \
@@ -174,9 +180,9 @@ if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1
     || bad "the healthcheck fails with OPENCODE_ENABLE=${OPENCODE_ENABLE}"
 fi
 
-# Behind google auth every one of these bounces to sign-in before it can reach a
+# Behind an OAuth gate every one of these bounces to sign-in before it can reach a
 # service, so they would be testing the gate rather than the routing.
-if [ "${OPENCODE_ENABLE}" != true ] && [ "${auth_mode}" != google ]; then
+if [ "${OPENCODE_ENABLE}" != true ] && [ "${oauth_gate}" != true ]; then
   # Nothing is listening on PRIMARY_PORT yet, so / should explain itself rather
   # than show a bare 502. Caddy keeps the error status, which is honest — the
   # body is what matters here.
@@ -314,7 +320,7 @@ head_ "VNC websocket (browser path)"
 # `Connection: Upgrade` is not a thing, and the request would arrive upstream as
 # a plain GET and 404. Browsers open wss:// over HTTP/1.1, which is what this
 # imitates.
-if [ "${auth_mode}" != google ]; then
+if [ "${oauth_gate}" != true ]; then
   c=$(curl -s -o /dev/null --max-time 6 --http1.1 -w '%{http_code}' -u "${AUTH}" \
         -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
         -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
@@ -483,7 +489,7 @@ PY
     p=$(pgrep -f "opencode2 serve" | head -1)
     if [ -z "$p" ]; then echo no-process; exit 0; fi
     tr "\0" "\n" < /proc/$p/environ |
-      grep -cE "^(GOOGLE_CLIENT_SECRET|GATEWAY_PASSWORD|OAUTH2_PROXY_COOKIE_SECRET)=" || true
+      grep -cE "^(GOOGLE_CLIENT_SECRET|GITHUB_CLIENT_SECRET|GATEWAY_PASSWORD|OAUTH2_PROXY_COOKIE_SECRET)=" || true
   ' 2>/dev/null || true)
   case "${leak}" in
     0)  ok "gateway credentials are absent from the OpenCode server's environment" ;;
@@ -570,7 +576,7 @@ with open("/etc/mise/mise.lock", "rb") as fh:
   fi
 
   # Upload and delete are the point of it; check the file really lands as dev.
-  if [ "${auth_mode}" != google ]; then
+  if [ "${oauth_gate}" != true ]; then
   probe="smoke-upload-$$.txt"
   put=$(curl -s -o /dev/null --max-time 20 -w '%{http_code}' -u "${AUTH}" \
         --data-binary 'smoke' -X PUT "${BASE}/${DUFS_PATH}/${probe}")

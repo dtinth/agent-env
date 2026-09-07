@@ -31,21 +31,28 @@ services:
     environment:
       # --- Where it lives -------------------------------------------------
       # The URL people actually type, i.e. where your ingress terminates. It
-      # must match the redirect URI you register with Google, and it decides
-      # whether session cookies are marked secure.
+      # must match the redirect URI you register with the OAuth provider, and
+      # it decides whether session cookies are marked secure.
       - PUBLIC_URL
       - DASHBOARD_PUBLIC_URL
       - TZ
 
       # --- Who gets in ----------------------------------------------------
-      # AUTH_MODE is google (default), basic, or none. google refuses to start
-      # without ALLOWED_EMAILS or ALLOWED_EMAIL_DOMAINS — otherwise any Google
-      # account on the internet could sign in.
+      # AUTH_MODE is google (default), github, basic, or none. Both OAuth modes
+      # refuse to start without an allow list — otherwise any account on the
+      # internet could sign in.
       - AUTH_MODE
       - GOOGLE_CLIENT_ID
       - GOOGLE_CLIENT_SECRET
       - ALLOWED_EMAILS
       - ALLOWED_EMAIL_DOMAINS
+      # AUTH_MODE=github only. The allow list is GITHUB_USERS, GITHUB_ORG
+      # and/or GITHUB_TEAM, or the two ALLOWED_EMAIL* variables above.
+      - GITHUB_CLIENT_ID
+      - GITHUB_CLIENT_SECRET
+      - GITHUB_USERS
+      - GITHUB_ORG
+      - GITHUB_TEAM
       # Set this to keep sessions alive across restarts; generated otherwise.
       - OAUTH2_PROXY_COOKIE_SECRET
       # AUTH_MODE=basic only. A password is generated and logged if omitted.
@@ -163,5 +170,5 @@ volumes:
 #   sudo tailscale serve --bg --https=18081 http://127.0.0.1:8081
 #
 # Anyone on the tailnet then has an unauthenticated, root-capable shell in the
-# container, so keep AUTH_MODE=google if that is not what you want.
+# container, so keep AUTH_MODE=google or github if that is not what you want.
 # ---------------------------------------------------------------------------

@@ -24,7 +24,7 @@ const VERSION = 1;
 const ANSWERS_FILE = "agent-env.setup.json";
 
 type Mode = "local" | "caddy" | "tailscale";
-type AuthMode = "google" | "basic" | "none";
+type AuthMode = "google" | "github" | "basic" | "none";
 
 interface Workspace {
   kind: "volume" | "path";
@@ -44,6 +44,10 @@ interface Answers {
   tsHostname?: string;
   authMode: AuthMode;
   googleClientId?: string;
+  githubClientId?: string;
+  githubUsers?: string;
+  githubOrg?: string;
+  githubTeam?: string;
   allowedEmails?: string;
   allowedEmailDomains?: string;
   gatewayUser?: string;
@@ -375,7 +379,7 @@ function collect(
 
   if (mode === "tailscale") {
     // Google forbids raw IPs in redirect URIs, so the MagicDNS name is the only
-    // address that works for google auth — and it is nicer anyway.
+    // address that works for the OAuth modes — and it is nicer anyway.
     tsHostname = ask(
       "tsHostname",
       "Full MagicDNS name of this machine (e.g. work.tailXXXX.ts.net)",
@@ -403,7 +407,7 @@ function collect(
     warn(
       "Anyone on your tailnet then gets a root-capable shell in this container.",
     );
-    warn("If that is not what you want, pick Google sign-in below.");
+    warn("If that is not what you want, pick one of the sign-ins below.");
   }
 
   const authMode = select<AuthMode>("authMode", "Who can get in?", [
@@ -411,6 +415,11 @@ function collect(
       value: "google",
       label: "Google sign-in",
       hint: "oauth2-proxy, restricted to an allow list.",
+    },
+    {
+      value: "github",
+      label: "GitHub sign-in",
+      hint: "oauth2-proxy, restricted to accounts, orgs or teams.",
     },
     {
       value: "basic",
@@ -433,7 +442,7 @@ function collect(
       `  A public domain with AUTH_MODE=none puts a root-capable shell on the internet.`,
     );
     note(
-      `  Pick Google sign-in, or basic auth, or use the tailnet mode instead.`,
+      `  Pick Google or GitHub sign-in, or basic auth, or the tailnet mode.`,
     );
     Deno.exit(1);
   }
@@ -444,6 +453,10 @@ function collect(
   }
 
   let googleClientId: string | undefined;
+  let githubClientId: string | undefined;
+  let githubUsers: string | undefined;
+  let githubOrg: string | undefined;
+  let githubTeam: string | undefined;
   let allowedEmails: string | undefined;
   let allowedEmailDomains: string | undefined;
   let gatewayUser: string | undefined;
@@ -489,6 +502,48 @@ function collect(
       note(C.r("Google sign-in needs an allow list."));
       note(
         "  Without one, any Google account on the internet could sign in, and",
+      );
+      note("  the container refuses to start rather than let that happen.");
+      Deno.exit(1);
+    }
+  }
+
+  if (authMode === "github") {
+    githubClientId = ask(
+      "githubClientId",
+      "GitHub OAuth app client ID",
+      prev.githubClientId ?? "",
+    );
+    note(
+      C.dim(
+        `  Register this callback URL with that app: ${publicUrl}/oauth2/callback`,
+      ),
+    );
+    githubUsers = ask(
+      "githubUsers",
+      "Allowed GitHub usernames (comma-separated)",
+      prev.githubUsers ?? "",
+      { optional: true },
+    );
+    githubOrg = ask(
+      "githubOrg",
+      "Allowed GitHub organisation",
+      prev.githubOrg ?? "",
+      { optional: true },
+    );
+    githubTeam = ask(
+      "githubTeam",
+      "Allowed teams in that org (comma-separated slugs)",
+      prev.githubTeam ?? "",
+      { optional: true },
+    );
+    // Same reason as the Google branch: the image refuses to start without an
+    // allow list, and finding that out at deploy time is worse.
+    if (!githubUsers && !githubOrg && !githubTeam) {
+      note();
+      note(C.r("GitHub sign-in needs an allow list."));
+      note(
+        "  Without one, any GitHub account on the internet could sign in, and",
       );
       note("  the container refuses to start rather than let that happen.");
       Deno.exit(1);
@@ -723,6 +778,10 @@ function collect(
     tsHostname,
     authMode,
     googleClientId,
+    githubClientId,
+    githubUsers,
+    githubOrg,
+    githubTeam,
     allowedEmails,
     allowedEmailDomains,
     gatewayUser,
@@ -758,7 +817,7 @@ function dashboardPort(a: Answers): number {
 function dashboardUrl(a: Answers): string {
   // Same hostname, different port. The oauth2-proxy session cookie is
   // host-scoped and ignores the port, so one sign-in covers both and only one
-  // redirect URI is ever registered with Google.
+  // redirect URI is ever registered with the provider.
   const u = new URL(a.publicUrl);
   u.port = String(dashboardPort(a));
   return u.toString().replace(/\/$/, "");
@@ -818,6 +877,19 @@ function renderEnv(a: Answers, keep: Record<string, EnvEntry>): RenderedEnv {
     if (a.allowedEmailDomains) {
       put("ALLOWED_EMAIL_DOMAINS", a.allowedEmailDomains);
     }
+    L.push(
+      "# Persisted so sessions survive a restart instead of silently rotating.",
+    );
+    secret("OAUTH2_PROXY_COOKIE_SECRET", () => randomSecret(32));
+  }
+  if (a.authMode === "github") {
+    put("GITHUB_CLIENT_ID", a.githubClientId ?? "");
+    if (!carry("GITHUB_CLIENT_SECRET")) {
+      put("GITHUB_CLIENT_SECRET", "CHANGEME-github-client-secret");
+    }
+    if (a.githubUsers) put("GITHUB_USERS", a.githubUsers);
+    if (a.githubOrg) put("GITHUB_ORG", a.githubOrg);
+    if (a.githubTeam) put("GITHUB_TEAM", a.githubTeam);
     L.push(
       "# Persisted so sessions survive a restart instead of silently rotating.",
     );
@@ -1268,8 +1340,13 @@ function main() {
 
   note();
   note(C.b("Next:"));
-  if (answers.authMode === "google") {
-    note(`  1. Put your Google client secret in .env (GOOGLE_CLIENT_SECRET).`);
+  const oauth = answers.authMode === "google" || answers.authMode === "github";
+  if (oauth) {
+    const which = answers.authMode === "google" ? "Google" : "GitHub";
+    const key = answers.authMode === "google"
+      ? "GOOGLE_CLIENT_SECRET"
+      : "GITHUB_CLIENT_SECRET";
+    note(`  1. Put your ${which} client secret in .env (${key}).`);
     note(
       `  2. Register this redirect URI: ${answers.publicUrl}/oauth2/callback`,
     );
@@ -1277,14 +1354,14 @@ function main() {
   if (answers.mode === "caddy") {
     note(
       `  ${
-        answers.authMode === "google" ? "3" : "1"
+        oauth ? "3" : "1"
       }. Point an A record for ${answers.domain} at this host, before first start.`,
     );
   }
   if (answers.mode === "tailscale") {
     note(
       `  ${
-        answers.authMode === "google" ? "3" : "1"
+        oauth ? "3" : "1"
       }. Put a tagged, reusable auth key in .env (TS_AUTHKEY).`,
     );
   }

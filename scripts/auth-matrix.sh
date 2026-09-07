@@ -19,11 +19,13 @@ pass=0; fail=0
 cleanup() { docker rm -f "${NAME}" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
+# Boot with the given environment and wait for oauth2-proxy to report ready.
+# $1 is the label, the rest are docker run arguments; every case supplies its
+# own AUTH_MODE and allow list, since those are half of what is under test.
 try() {
   local label="$1"; shift
   docker rm -f "${NAME}" >/dev/null 2>&1
   docker run -d --name "${NAME}" --shm-size=1g \
-    -e AUTH_MODE=google -e ALLOWED_EMAILS=me@example.com \
     -e PUBLIC_URL=https://example.invalid \
     -e DESKTOP_ENABLE=false -e AB_DASHBOARD_ENABLE=false -e DUFS_ENABLE=false \
     "$@" "${IMAGE}" >/dev/null 2>&1
@@ -44,18 +46,36 @@ try() {
   docker rm -f "${NAME}" >/dev/null 2>&1
 }
 
+GOOGLE=(-e AUTH_MODE=google -e ALLOWED_EMAILS=me@example.com)
+GITHUB=(-e AUTH_MODE=github)
+
 printf '\n\033[1mWays of supplying the gateway secrets\033[0m\n'
-try "GOOGLE_* only, cookie secret generated" \
+try "GOOGLE_* only, cookie secret generated" "${GOOGLE[@]}" \
   -e GOOGLE_CLIENT_ID=a.apps.googleusercontent.com -e GOOGLE_CLIENT_SECRET=GOCSPX-a
-try "GOOGLE_* plus OAUTH2_PROXY_COOKIE_SECRET" \
+try "GOOGLE_* plus OAUTH2_PROXY_COOKIE_SECRET" "${GOOGLE[@]}" \
   -e GOOGLE_CLIENT_ID=a.apps.googleusercontent.com -e GOOGLE_CLIENT_SECRET=GOCSPX-a \
   -e "OAUTH2_PROXY_COOKIE_SECRET=${SECRET}"
-try "OAUTH2_PROXY_* only" \
+try "OAUTH2_PROXY_* only" "${GOOGLE[@]}" \
   -e OAUTH2_PROXY_CLIENT_ID=b.apps.googleusercontent.com -e OAUTH2_PROXY_CLIENT_SECRET=GOCSPX-b \
   -e "OAUTH2_PROXY_COOKIE_SECRET=${SECRET}"
-try "secret from a file, cookie from the environment" \
+try "secret from a file, cookie from the environment" "${GOOGLE[@]}" \
   -e GOOGLE_CLIENT_ID=a.apps.googleusercontent.com -e GOOGLE_CLIENT_SECRET_FILE=/etc/hostname \
   -e "OAUTH2_PROXY_COOKIE_SECRET=${SECRET}"
+
+printf '\n\033[1mGitHub sign-in\033[0m\n'
+try "GITHUB_* with a user allow list" "${GITHUB[@]}" \
+  -e GITHUB_CLIENT_ID=Iv1.aaaaaaaaaaaaaaaa -e GITHUB_CLIENT_SECRET=ghs-a \
+  -e GITHUB_USERS=octocat
+try "GITHUB_* restricted to an org and teams" "${GITHUB[@]}" \
+  -e GITHUB_CLIENT_ID=Iv1.aaaaaaaaaaaaaaaa -e GITHUB_CLIENT_SECRET=ghs-a \
+  -e GITHUB_ORG=acme -e "GITHUB_TEAM=eng, ops" \
+  -e "OAUTH2_PROXY_COOKIE_SECRET=${SECRET}"
+try "GITHUB_* narrowed by email as well" "${GITHUB[@]}" \
+  -e GITHUB_CLIENT_ID=Iv1.aaaaaaaaaaaaaaaa -e GITHUB_CLIENT_SECRET_FILE=/etc/hostname \
+  -e GITHUB_ORG=acme -e ALLOWED_EMAIL_DOMAINS=example.com
+try "OAUTH2_PROXY_* only, GitHub provider" "${GITHUB[@]}" \
+  -e OAUTH2_PROXY_CLIENT_ID=Iv1.bbbbbbbbbbbbbbbb -e OAUTH2_PROXY_CLIENT_SECRET=ghs-b \
+  -e GITHUB_USERS=octocat -e "OAUTH2_PROXY_COOKIE_SECRET=${SECRET}"
 
 printf '\n\033[1mRefusals\033[0m\n'
 out=$(docker run --rm --name "${NAME}" -e AUTH_MODE=google -e GOOGLE_CLIENT_ID=a \
@@ -70,6 +90,18 @@ out=$(docker run --rm --name "${NAME}" -e AUTH_MODE=google -e GOOGLE_CLIENT_ID=a
       "${IMAGE}" 2>&1 | grep -c "requires ALLOWED_EMAILS" || true)
 [[ "${out}" -ge 1 ]] && { printf '  \033[32m✓\033[0m a missing allow list refuses to start\n'; pass=$((pass+1)); } \
                      || { printf '  \033[31m✗\033[0m a missing allow list did not refuse\n'; fail=$((fail+1)); }
+
+out=$(docker run --rm --name "${NAME}" -e AUTH_MODE=github -e GITHUB_CLIENT_ID=a \
+      -e GITHUB_CLIENT_SECRET=b -e PUBLIC_URL=https://example.invalid \
+      "${IMAGE}" 2>&1 | grep -c "AUTH_MODE=github requires GITHUB_USERS" || true)
+[[ "${out}" -ge 1 ]] && { printf '  \033[32m✓\033[0m GitHub with no allow list refuses to start\n'; pass=$((pass+1)); } \
+                     || { printf '  \033[31m✗\033[0m GitHub with no allow list did not refuse\n'; fail=$((fail+1)); }
+
+out=$(docker run --rm --name "${NAME}" -e AUTH_MODE=github -e GITHUB_USERS=octocat \
+      -e PUBLIC_URL=https://example.invalid \
+      "${IMAGE}" 2>&1 | grep -c "requires GITHUB_CLIENT_ID" || true)
+[[ "${out}" -ge 1 ]] && { printf '  \033[32m✓\033[0m GitHub with no client ID names the variable it wants\n'; pass=$((pass+1)); } \
+                     || { printf '  \033[31m✗\033[0m GitHub with no client ID did not name the variable\n'; fail=$((fail+1)); }
 
 printf '\n  %d passed, %d failed\n\n' "${pass}" "${fail}"
 [[ "${fail}" == 0 ]]

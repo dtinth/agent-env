@@ -633,24 +633,45 @@ GATEWAY_BASIC_HASH=""
 declare -a OAUTH2_ARGS=()
 
 case "${AUTH_MODE,,}" in
-  google)
+  google|github)
+    # Both modes are the same gate — oauth2-proxy in front of Caddy — differing
+    # only in the provider, the credentials it reads and what an allow list can
+    # be written against. Everything below the provider switch is shared.
+    AUTH_PROVIDER="${AUTH_MODE,,}"
+
+    case "${AUTH_PROVIDER}" in
+      google) client_id_var=GOOGLE_CLIENT_ID; client_secret_var=GOOGLE_CLIENT_SECRET ;;
+      github) client_id_var=GITHUB_CLIENT_ID; client_secret_var=GITHUB_CLIENT_SECRET ;;
+    esac
+
     # oauth2-proxy reads its own OAUTH2_PROXY_* variables directly, so accept
-    # either those or the friendlier GOOGLE_* names.
-    [[ -n "${GOOGLE_CLIENT_ID:-}" || -n "${OAUTH2_PROXY_CLIENT_ID:-}" ]] \
-      || die "AUTH_MODE=google requires GOOGLE_CLIENT_ID (or OAUTH2_PROXY_CLIENT_ID)"
-    [[ -n "${GOOGLE_CLIENT_SECRET:-}" || -n "${OAUTH2_PROXY_CLIENT_SECRET:-}" ]] \
-      || die "AUTH_MODE=google requires GOOGLE_CLIENT_SECRET (or OAUTH2_PROXY_CLIENT_SECRET)"
+    # either those or the friendlier per-provider names.
+    client_id="${!client_id_var:-${OAUTH2_PROXY_CLIENT_ID:-}}"
+    # Whichever spelling carries it, the secret goes to oauth2-proxy by file —
+    # so it is out of the process list and out of every daemon's environment,
+    # and there is only one path to get wrong.
+    client_secret="${!client_secret_var:-${OAUTH2_PROXY_CLIENT_SECRET:-}}"
+    [[ -n "${client_id}" ]] \
+      || die "AUTH_MODE=${AUTH_PROVIDER} requires ${client_id_var} (or OAUTH2_PROXY_CLIENT_ID)"
+    [[ -n "${client_secret}" ]] \
+      || die "AUTH_MODE=${AUTH_PROVIDER} requires ${client_secret_var} (or OAUTH2_PROXY_CLIENT_SECRET)"
 
-    if [[ -z "${ALLOWED_EMAILS:-}" && -z "${ALLOWED_EMAIL_DOMAINS:-}" ]]; then
-      die "AUTH_MODE=google requires ALLOWED_EMAILS and/or ALLOWED_EMAIL_DOMAINS, otherwise any Google account on the internet could sign in"
-    fi
-
-    # Set when the operator supplied the cookie secret through oauth2-proxy's
-    # own variable; we then leave it in the environment untouched.
-    # Either spelling may carry these. Whichever it is, the value goes to
-    # oauth2-proxy by file — so it is out of the process list and out of every
-    # daemon's environment, and there is only one path to get wrong.
-    client_secret="${GOOGLE_CLIENT_SECRET:-${OAUTH2_PROXY_CLIENT_SECRET:-}}"
+    # Refuse an open door before doing any other work.
+    case "${AUTH_PROVIDER}" in
+      google)
+        if [[ -z "${ALLOWED_EMAILS:-}" && -z "${ALLOWED_EMAIL_DOMAINS:-}" ]]; then
+          die "AUTH_MODE=google requires ALLOWED_EMAILS and/or ALLOWED_EMAIL_DOMAINS, otherwise any Google account on the internet could sign in"
+        fi
+        ;;
+      github)
+        # GitHub's allow list is normally written against accounts rather than
+        # addresses, so any of five things counts as one.
+        if [[ -z "${GITHUB_USERS:-}" && -z "${GITHUB_ORG:-}" && -z "${GITHUB_TEAM:-}" \
+              && -z "${ALLOWED_EMAILS:-}" && -z "${ALLOWED_EMAIL_DOMAINS:-}" ]]; then
+          die "AUTH_MODE=github requires GITHUB_USERS, GITHUB_ORG, GITHUB_TEAM, ALLOWED_EMAILS or ALLOWED_EMAIL_DOMAINS, otherwise any GitHub account on the internet could sign in"
+        fi
+        ;;
+    esac
 
     cookie_secret="${OAUTH2_PROXY_COOKIE_SECRET:-}"
     if [[ -z "${cookie_secret}" ]]; then
@@ -693,10 +714,10 @@ else:
     fi
 
     OAUTH2_ARGS=(
-      --provider=google
+      --provider="${AUTH_PROVIDER}"
       --http-address="127.0.0.1:${OAUTH2_PROXY_PORT}"
       --reverse-proxy=true
-      --client-id="${GOOGLE_CLIENT_ID:-${OAUTH2_PROXY_CLIENT_ID}}"
+      --client-id="${client_id}"
       --redirect-url="${PUBLIC_URL}/oauth2/callback"
       --upstream="static://202"
       --set-xauthrequest=true
@@ -706,7 +727,6 @@ else:
       --cookie-refresh="${AUTH_SESSION_REFRESH:-1h}"
       --whitelist-domain="$(url_host "${PUBLIC_URL}")"
       --silence-ping-logging=true
-      --scope="openid email profile"
       # Only Caddy talks to oauth2-proxy, so only loopback may supply
       # X-Forwarded-* headers.
       --trusted-proxy-ip="127.0.0.1/32"
@@ -718,12 +738,20 @@ else:
       OAUTH2_ARGS+=(--whitelist-domain="$(url_host "${DASHBOARD_PUBLIC_URL}")")
     fi
 
-    if [[ -n "${ALLOWED_EMAIL_DOMAINS:-}" ]]; then
-      IFS=',' read -ra _domains <<<"${ALLOWED_EMAIL_DOMAINS}"
-      for d in "${_domains[@]}"; do
-        d="$(tr -d '[:space:]' <<<"${d}")"
-        [[ -n "${d}" ]] && OAUTH2_ARGS+=(--email-domain="${d}")
+    # Comma-separated list to one repeated flag.
+    add_list_args() {
+      local flag="$1" list="$2" item
+      local -a _items=()
+      IFS=',' read -ra _items <<<"${list}"
+      for item in "${_items[@]}"; do
+        item="$(tr -d '[:space:]' <<<"${item}")"
+        [[ -n "${item}" ]] && OAUTH2_ARGS+=("${flag}=${item}")
       done
+      return 0
+    }
+
+    if [[ -n "${ALLOWED_EMAIL_DOMAINS:-}" ]]; then
+      add_list_args --email-domain "${ALLOWED_EMAIL_DOMAINS}"
     fi
 
     if [[ -n "${ALLOWED_EMAILS:-}" ]]; then
@@ -733,20 +761,48 @@ else:
       OAUTH2_ARGS+=(--authenticated-emails-file="${emails_file}")
     fi
 
-    # Optional Google Workspace group restriction.
-    if [[ -n "${GOOGLE_GROUPS:-}" ]]; then
-      [[ -n "${GOOGLE_ADMIN_EMAIL:-}" ]] || die "GOOGLE_GROUPS requires GOOGLE_ADMIN_EMAIL"
-      [[ -n "${GOOGLE_SERVICE_ACCOUNT_JSON:-}" ]] || die "GOOGLE_GROUPS requires GOOGLE_SERVICE_ACCOUNT_JSON (path to the key file)"
-      IFS=',' read -ra _groups <<<"${GOOGLE_GROUPS}"
-      for g in "${_groups[@]}"; do
-        g="$(tr -d '[:space:]' <<<"${g}")"
-        [[ -n "${g}" ]] && OAUTH2_ARGS+=(--google-group="${g}")
-      done
-      OAUTH2_ARGS+=(
-        --google-admin-email="${GOOGLE_ADMIN_EMAIL}"
-        --google-service-account-json="${GOOGLE_SERVICE_ACCOUNT_JSON}"
-      )
-    fi
+    case "${AUTH_PROVIDER}" in
+      google)
+        OAUTH2_ARGS+=(--scope="openid email profile")
+
+        # Optional Google Workspace group restriction.
+        if [[ -n "${GOOGLE_GROUPS:-}" ]]; then
+          [[ -n "${GOOGLE_ADMIN_EMAIL:-}" ]] || die "GOOGLE_GROUPS requires GOOGLE_ADMIN_EMAIL"
+          [[ -n "${GOOGLE_SERVICE_ACCOUNT_JSON:-}" ]] || die "GOOGLE_GROUPS requires GOOGLE_SERVICE_ACCOUNT_JSON (path to the key file)"
+          add_list_args --google-group "${GOOGLE_GROUPS}"
+          OAUTH2_ARGS+=(
+            --google-admin-email="${GOOGLE_ADMIN_EMAIL}"
+            --google-service-account-json="${GOOGLE_SERVICE_ACCOUNT_JSON}"
+          )
+        fi
+        ;;
+
+      github)
+        [[ -n "${GITHUB_ORG:-}" ]] && OAUTH2_ARGS+=(--github-org="${GITHUB_ORG}")
+        # One flag, comma-separated, and it is the whole list: with no
+        # GITHUB_ORG the entries have to be spelled `org:team`.
+        if [[ -n "${GITHUB_TEAM:-}" ]]; then
+          OAUTH2_ARGS+=(--github-team="$(tr -d '[:space:]' <<<"${GITHUB_TEAM}")")
+        fi
+        [[ -n "${GITHUB_USERS:-}" ]] && add_list_args --github-user "${GITHUB_USERS}"
+
+        # oauth2-proxy validates the account's email regardless of which
+        # GitHub check let it in, and with no email rule of our own that
+        # validation would reject everybody. The account restrictions above
+        # are the boundary in that case, so say every address is acceptable.
+        if [[ -z "${ALLOWED_EMAILS:-}" && -z "${ALLOWED_EMAIL_DOMAINS:-}" ]]; then
+          OAUTH2_ARGS+=(--email-domain='*')
+        fi
+
+        # user:email is the provider's own default and reads the primary
+        # verified address; org and team membership needs read:org on top.
+        github_scope="user:email"
+        if [[ -n "${GITHUB_ORG:-}" || -n "${GITHUB_TEAM:-}" ]]; then
+          github_scope="${github_scope} read:org"
+        fi
+        OAUTH2_ARGS+=(--scope="${github_scope}")
+        ;;
+    esac
 
     # Both by file, always — see where they were resolved above.
     write_gateway_secret() {
@@ -787,7 +843,7 @@ else:
     ;;
 
   *)
-    die "unknown AUTH_MODE='${AUTH_MODE}' (expected: google, basic or none)"
+    die "unknown AUTH_MODE='${AUTH_MODE}' (expected: google, github, basic or none)"
     ;;
 esac
 
@@ -898,7 +954,7 @@ render_caddyfile() {
   emit_auth_gate() {
     local origin="$1"
     case "${AUTH_MODE,,}" in
-      google)
+      google|github)
         cat <<EOF
 			forward_auth 127.0.0.1:${OAUTH2_PROXY_PORT} {
 				uri /oauth2/auth
@@ -922,13 +978,13 @@ EOF
   }
 
   emit_oauth_endpoints() {
-    [[ "${AUTH_MODE,,}" == "google" ]] || return 0
+    case "${AUTH_MODE,,}" in google|github) ;; *) return 0 ;; esac
     cat <<EOF
 
 		# oauth2-proxy owns the sign-in endpoints. Deliberately NOT under
-		# /${ENV_PREFIX}/: this is the path the registered Google redirect URI
-		# already points at, and moving it would invalidate every existing
-		# OAuth client configuration for no gain.
+		# /${ENV_PREFIX}/: this is the path the registered redirect URI already
+		# points at, and moving it would invalidate every existing OAuth client
+		# configuration for no gain.
 		handle /oauth2/* {
 			reverse_proxy 127.0.0.1:${OAUTH2_PROXY_PORT} {
 				header_up X-Real-IP {remote_host}
@@ -1314,13 +1370,14 @@ EOF
     # Caddy is a proxy: it does not need its upstreams to exist at startup, and
     # opencode now lives in another supervisor entirely.
     local caddy_deps=''
-    if [[ "${AUTH_MODE,,}" == "google" ]]; then
+    case "${AUTH_MODE,,}" in google|github)
       emit_daemon oauth2-proxy "/opt/agent-env/bin/run-oauth2-proxy" \
         "user = \"${GATEWAY_USER_NAME}\"" \
         'retry = true' \
         "ready_http = { url = \"http://127.0.0.1:${OAUTH2_PROXY_PORT}/ping\", timeout = \"60s\" }"
       caddy_deps='depends = ["oauth2-proxy"]'
-    fi
+      ;;
+    esac
 
     emit_daemon caddy "/usr/local/bin/caddy run --config /etc/caddy/Caddyfile" \
       "user = \"${GATEWAY_USER_NAME}\"" \
@@ -1392,6 +1449,7 @@ log "----------------------------------------------------------------"
 # agent was asked to run. A prompt injection or a hostile postinstall could then
 # read them straight out of /proc/self/environ.
 unset GOOGLE_CLIENT_SECRET GOOGLE_CLIENT_SECRET_FILE \
+      GITHUB_CLIENT_SECRET GITHUB_CLIENT_SECRET_FILE \
       GATEWAY_PASSWORD GATEWAY_PASSWORD_FILE \
       OAUTH2_PROXY_COOKIE_SECRET OAUTH2_PROXY_CLIENT_SECRET
 
