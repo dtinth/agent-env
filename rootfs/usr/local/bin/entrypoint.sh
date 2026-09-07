@@ -20,13 +20,34 @@ RUN_DIR=/run/agent-env
 
 # Any FOO_FILE variable is read into FOO, so secrets can come from files or
 # Docker/Kubernetes secret mounts instead of the environment.
+#
+# The pattern is deliberately generic, which means it also matches variables
+# that were never meant as secrets — SSL_CERT_FILE is the obvious one, and it
+# usually points at a CA bundle a couple of hundred kilobytes long. Exporting
+# one of those puts a single variable past the kernel's per-string limit
+# (MAX_ARG_STRLEN, 128KiB), and from then on every exec in this script dies
+# with "Argument list too long", naming whichever command happened to run next
+# rather than the variable that caused it. So bound it here, where the name is
+# still known. Nothing this image legitimately reads from a file comes close:
+# passwords, cookie secrets, OAuth client secrets and authkeys are all well
+# under a kilobyte.
+FILE_SECRET_MAX_BYTES="${FILE_SECRET_MAX_BYTES:-65536}"
+
 expand_file_secrets() {
-  local name value target
+  local name value target size
   while IFS='=' read -r name value; do
     [[ "${name}" == *_FILE ]] || continue
     target="${name%_FILE}"
     [[ -n "${target}" ]] || continue
     [[ -r "${value}" ]] || { warn "${name}=${value} is not readable, ignoring"; continue; }
+    size=$(stat -Lc %s "${value}" 2>/dev/null) || size=0
+    if (( size > FILE_SECRET_MAX_BYTES )); then
+      # Skipped rather than fatal, matching the unreadable case just above: a
+      # value this size was never a usable secret, and refusing to boot would
+      # take out a container whose SSL_CERT_FILE is set for its real purpose.
+      warn "${name}=${value} is ${size} bytes, over the ${FILE_SECRET_MAX_BYTES}-byte limit for a file secret; not exporting ${target}"
+      continue
+    fi
     export "${target}=$(< "${value}")"
     log "loaded ${target} from ${value}"
   done < <(env)
