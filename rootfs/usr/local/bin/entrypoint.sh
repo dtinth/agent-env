@@ -811,14 +811,25 @@ else:
         # hasTeam rejects an unqualified slug outright rather than falling back
         # to matching it, so such a container starts and then turns everyone
         # away. Refuse it here, where the reason is still visible.
+        # The two forms are mutually exclusive, and oauth2-proxy matches either
+        # literally: with GITHUB_ORG set, hasOrgAndTeam compares each entry
+        # against the bare team slug, so a qualified name never matches; with
+        # no GITHUB_ORG, hasTeam compares against `org:team` and rejects
+        # anything else outright. Either way a wrong shape is a container that
+        # starts and turns everyone away, so the shape is checked here.
         if [[ -n "${github_team}" ]]; then
-          if [[ -z "${github_org}" ]]; then
-            IFS=',' read -ra _teams <<<"${github_team}"
-            for _t in "${_teams[@]}"; do
-              [[ "${_t}" == *:* ]] || die "GITHUB_TEAM=${_t} needs its organisation (GITHUB_TEAM=org:${_t}), or set GITHUB_ORG.
-       Without GITHUB_ORG, oauth2-proxy rejects an unqualified team name and no one can sign in."
-            done
-          fi
+          IFS=',' read -ra _teams <<<"${github_team}"
+          for _t in "${_teams[@]}"; do
+            if [[ -z "${github_org}" ]]; then
+              [[ "${_t}" =~ ^[^:]+:[^:]+$ ]] || die "GITHUB_TEAM=${_t} is not a fully qualified team name.
+       With no GITHUB_ORG every entry must be exactly org:team — oauth2-proxy matches that pair
+       literally, so anything else lets no one sign in. Set GITHUB_ORG, or spell it acme:${_t#*:}"
+            else
+              [[ "${_t}" != *:* ]] || die "GITHUB_TEAM=${_t} must be a plain team slug when GITHUB_ORG is set.
+       oauth2-proxy compares it against the team name on its own there, so a qualified name never
+       matches and no one can sign in. Use GITHUB_TEAM=${_t##*:}, or unset GITHUB_ORG."
+            fi
+          done
           OAUTH2_ARGS+=(--github-team="${github_team}")
         fi
         [[ -n "${github_users}" ]] && add_list_args --github-user "${github_users}"

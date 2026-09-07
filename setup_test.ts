@@ -787,7 +787,7 @@ Deno.test("a team-only allow list must name its organisation", () => {
   const dir = tmp();
   const bad = run({ ...GITHUB, githubOrg: "", githubTeam: "platform" }, dir);
   assertEquals(bad.code, 2);
-  assertStringIncludes(bad.stdout, "fully qualified");
+  assertStringIncludes(bad.stdout, "org:team");
 
   const good = run(
     { ...GITHUB, githubOrg: "", githubTeam: "acme:platform,other:sre" },
@@ -802,4 +802,38 @@ Deno.test("teams inside an organisation stay plain slugs", () => {
   const r = run({ ...GITHUB, githubOrg: "acme", githubTeam: "platform" }, dir);
   assertEquals(r.code, 0);
   assertEquals(envOf(dir).GITHUB_TEAM, "platform");
+});
+
+// oauth2-proxy matches either team form literally — the bare slug when an org
+// is set, `org:team` when not — so a half-written entry is a deployment that
+// starts and turns everyone away.
+Deno.test("a malformed team name is refused", () => {
+  for (const team of ["acme:", ":platform", "acme:platform:extra"]) {
+    const r = run({ ...GITHUB, githubOrg: "", githubTeam: team }, tmp());
+    assertEquals(r.code, 2, `expected ${team} to be refused`);
+    assertStringIncludes(r.stdout, "org:team");
+  }
+});
+
+// The mirror: with an org set it is compared against the team name alone, so a
+// qualified name never matches.
+Deno.test("a qualified team name is refused when an org is set", () => {
+  const r = run(
+    { ...GITHUB, githubOrg: "acme", githubTeam: "acme:platform" },
+    tmp(),
+  );
+  assertEquals(r.code, 2);
+  assertStringIncludes(r.stdout, "plain slug");
+});
+
+// The team question is optional, and its validator runs on the empty answer
+// too — an interactive user with no org who skips it was stuck in a loop.
+// A value that cleans away to nothing reaches the same branch through the
+// answers file, which is the only path a test can drive.
+Deno.test("an empty team list is not a malformed one", () => {
+  const dir = tmp();
+  const r = run({ ...GITHUB, githubTeam: ",", githubOrg: "acme" }, dir);
+  assertEquals(r.code, 0);
+  assert(!("GITHUB_TEAM" in envOf(dir)));
+  assertEquals(envOf(dir).GITHUB_ORG, "acme");
 });
