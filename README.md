@@ -2,8 +2,8 @@
 
 [![docker](https://github.com/dtinth/agent-env/actions/workflows/docker.yml/badge.svg)](https://github.com/dtinth/agent-env/actions/workflows/docker.yml)
 
-A ready-to-use Docker image that turns OpenCode v2 into a hosted, Google-authenticated
-workstation.
+A ready-to-use Docker image that turns OpenCode v2 into a hosted,
+SSO-authenticated workstation.
 
 ![The agent-env desktop over noVNC: fastfetch, btop and a user-owned pitchfork daemon](desktop.png)
 
@@ -19,7 +19,7 @@ One container gives you:
 | **an index of all of it** | `<PUBLIC_URL>/~env/` | everything the environment serves |
 | **file manager** | `<PUBLIC_URL>/~env/files` | browse, upload, download the workspace |
 | **SSH + mosh** | port `22`, UDP `60000-60010` | key-based by default |
-| **Google sign-in** in front of all of it | `<PUBLIC_URL>/oauth2/*` | oauth2-proxy behind Caddy |
+| **Google or GitHub sign-in** in front of all of it | `<PUBLIC_URL>/oauth2/*` | oauth2-proxy behind Caddy |
 | **mise** | `/opt/mise` | manages node and anything else you add |
 | **a usable shell** | — | git, ripgrep, fd, jq, fastfetch, btop, ncdu, a compiler |
 | **pitchfork** | PID 1, plus one per user | supervises it all; the OpenCode server is yours, not root's |
@@ -64,8 +64,8 @@ wrong. It also does the things that are tedious by hand and easy to forget:
 
 - Generates and **persists** `OAUTH2_PROXY_COOKIE_SECRET`, so sessions survive a
   restart instead of silently rotating.
-- **Refuses** to write a public-domain deployment with `AUTH_MODE=none`, or a
-  Google one with no allow list. Everything in this container is root-capable.
+- **Refuses** to write a public-domain deployment with `AUTH_MODE=none`, or an
+  OAuth one with no allow list. Everything in this container is root-capable.
 - Emits all four rootless-Docker host flags together, or none — three out of
   four leaves the daemon down.
 - Reads `PUID`/`PGID` off a host directory you mount, so files stay yours.
@@ -83,7 +83,7 @@ deno run -A .../setup.ts   # again, later: answers pre-filled, secrets kept
 `.env.example` stays the reference for the fifty-odd keys it does not ask about;
 a test asserts the wizard never emits one that is missing from it.
 
-### Locally, with basic auth (no Google setup needed)
+### Locally, with basic auth (no OAuth app needed)
 
 ```bash
 docker build -t agent-env .          # or use ghcr.io/dtinth/agent-env:latest
@@ -135,17 +135,54 @@ balancer, Cloudflare, Caddy/nginx on the host) and point it at port 8080.
   `GOOGLE_CLIENT_SECRET`, and at least one of `ALLOWED_EMAILS` /
   `ALLOWED_EMAIL_DOMAINS`. The container **refuses to start** without an allow
   list, because otherwise any Google account on the internet could sign in.
+- **`github`** — the same gate with GitHub as the provider. Requires
+  `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, and an allow list — see below.
 - **`basic`** — HTTP basic auth (`GATEWAY_USER` / `GATEWAY_PASSWORD`). Good for
   local runs. A password is generated and printed to the log if you omit it.
 - **`none`** — no gate at all. Only sane behind your own authenticating proxy.
 
-Optionally restrict further by Google Workspace group with `GOOGLE_GROUPS`
-(needs `GOOGLE_ADMIN_EMAIL` and a delegated service-account key).
+Optionally restrict `google` further by Google Workspace group with
+`GOOGLE_GROUPS` (needs `GOOGLE_ADMIN_EMAIL` and a delegated service-account key).
 
 `ALLOWED_EMAIL_DOMAINS=*` is accepted and means what it says: anyone with a
 Google account. It is deliberately allowed rather than blocked — the check
 exists to stop you *forgetting* an allow list, not to overrule one you wrote on
 purpose.
+
+### GitHub sign-in
+
+Register an OAuth app at
+[github.com/settings/developers](https://github.com/settings/developers) with
+the **Authorization callback URL** set to exactly `<PUBLIC_URL>/oauth2/callback`,
+then:
+
+```bash
+AUTH_MODE=github
+GITHUB_CLIENT_ID=Iv1.....
+GITHUB_CLIENT_SECRET=...        # or GITHUB_CLIENT_SECRET_FILE=/run/secrets/...
+GITHUB_USERS=octocat,hubot      # and/or GITHUB_ORG / GITHUB_TEAM
+```
+
+The allow list is whichever of these you set, and at least one is **required**:
+
+| Variable | Means |
+|---|---|
+| `GITHUB_USERS` | these logins, comma-separated, regardless of org or team |
+| `GITHUB_ORG` | members of this organisation |
+| `GITHUB_TEAM` | these team slugs within `GITHUB_ORG`; without it, spell each one `org:team` |
+| `ALLOWED_EMAILS` / `ALLOWED_EMAIL_DOMAINS` | the account's primary verified address |
+
+`GITHUB_ORG` and `GITHUB_TEAM` add the `read:org` scope, so the consent screen
+asks for organisation membership as well as the email address. Whichever check
+lets someone in, oauth2-proxy still validates their email — so when the allow
+list is written against accounts rather than addresses the gateway passes
+`--email-domain=*`, and the account restrictions are the whole boundary. Set
+`ALLOWED_EMAILS` or `ALLOWED_EMAIL_DOMAINS` as well to narrow it on both axes.
+
+A GitHub OAuth app belongs to one account or organisation, and organisations can
+require approval before it may read their membership — so if sign-in works but
+everyone is rejected, check the app is approved in the org's *Third-party access*
+settings.
 
 `/~env/healthz` is always reachable without auth, so load balancers can probe it.
 
@@ -170,8 +207,8 @@ reaches your application by accident.
 Two things sit outside the prefix on purpose:
 
 - **`/oauth2/*`** — oauth2-proxy's own endpoints. This is where the redirect URI
-  you registered with Google already points, and moving it would invalidate
-  every existing OAuth client for no gain.
+  you registered with the provider already points, and moving it would
+  invalidate every existing OAuth client for no gain.
 - **`/pitchfork`** — pitchfork validates `PITCHFORK_WEB_PATH` as a single
   `[A-Za-z0-9_-]` segment and bakes it into a `<base href>`, so its dashboard
   cannot be nested. It keeps a top-level path, and `/~env/daemons` redirects
@@ -228,7 +265,7 @@ be listening on it.
 
 `opencode2 serve` has its own HTTP basic auth (user `opencode`, password from
 `OPENCODE_SERVER_PASSWORD`). The gateway injects that credential on the way
-through, so users authenticate once with Google and never see it. If you don't
+through, so users authenticate once at the gateway and never see it. If you don't
 set `OPENCODE_SERVER_PASSWORD`, one is generated and persisted in the
 `opencode-config` volume. The same value is exported inside the container so the
 `opencode2` CLI and TUI can talk to the server.
@@ -284,13 +321,13 @@ which would have made that account's lack of sudo worth very little. `dev` owns
 the cookie, so GUI applications started over SSH still land on the display with
 nothing to configure.
 
-Credentials for the gateway (`GOOGLE_CLIENT_SECRET`, `GATEWAY_PASSWORD`, the
-cookie secret) are unset before the supervisor is started. oauth2-proxy reads
-them from root-owned files instead, so they are absent from the environment of
-the OpenCode server — the process that runs whatever the agent was asked to run.
-Note that a secret passed with `-e` still sits in the container's *config*, where
-`docker inspect` and `docker exec` can see it; the `_FILE` form avoids that
-entirely.
+Credentials for the gateway (`GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_SECRET`,
+`GATEWAY_PASSWORD`, the cookie secret) are unset before the supervisor is
+started. oauth2-proxy reads them from root-owned files instead, so they are
+absent from the environment of the OpenCode server — the process that runs
+whatever the agent was asked to run. Note that a secret passed with `-e` still
+sits in the container's *config*, where `docker inspect` and `docker exec` can
+see it; the `_FILE` form avoids that entirely.
 
 `dev` has passwordless sudo, so you can install things inside the container
 freely — the image prunes apt's package lists, so run `sudo apt-get update`
@@ -313,8 +350,10 @@ See [`.env.example`](.env.example) for the annotated list. The essentials:
 | Variable | Default | Purpose |
 |---|---|---|
 | `PUBLIC_URL` | `http://localhost:8080` | External base URL; drives OAuth redirects |
-| `AUTH_MODE` | `google` | `google` / `basic` / `none` |
+| `AUTH_MODE` | `google` | `google` / `github` / `basic` / `none` |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | — | Required for `google` |
+| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | — | Required for `github` |
+| `GITHUB_USERS` / `GITHUB_ORG` / `GITHUB_TEAM` | — | The `github` allow list; at least one, or an `ALLOWED_EMAIL*` |
 | `ALLOWED_EMAILS`, `ALLOWED_EMAIL_DOMAINS` | — | Who may sign in |
 | `OAUTH2_PROXY_COOKIE_SECRET` | generated | Set it to survive restarts cleanly |
 | `OPENCODE_SERVER_PASSWORD` | generated | OpenCode server credential |
@@ -352,6 +391,9 @@ Pick whichever suits your deployment:
 -e GOOGLE_CLIENT_SECRET_FILE=/run/secrets/gcs   # read from a file at startup
 -e OAUTH2_PROXY_CLIENT_SECRET=GOCSPX-...        # oauth2-proxy's own variable
 ```
+
+With `AUTH_MODE=github` the first two are spelled `GITHUB_CLIENT_SECRET` and
+`GITHUB_CLIENT_SECRET_FILE`; the third is the same variable either way.
 
 All three end up the same way: the entrypoint writes the value to a root-owned
 file and hands oauth2-proxy `--client-secret-file`, so it appears neither in the
@@ -851,7 +893,7 @@ v2 beta builds.
 
 ```
                     ┌─── container (pitchfork = PID 1) ──────────────┐
-   browser ──8080──►│ Caddy ──forward_auth──► oauth2-proxy ──► Google│
+   browser ──8080──►│ Caddy ──forward_auth──► oauth2-proxy ──► IdP   │
                     │   │                                            │
                     │   ├─ /            ──► opencode2 serve  :4096   │
                     │   ├─ /pitchfork   ──► pitchfork web    :4747   │

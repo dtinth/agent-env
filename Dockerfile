@@ -6,7 +6,7 @@
 #   * SSH server
 #   * XFCE desktop on a virtual display, reachable over noVNC
 #   * ttyd, serving the real OpenCode v2 TUI in the browser
-#   * Google sign-in (oauth2-proxy) in front of all of it, via Caddy
+#   * Google or GitHub sign-in (oauth2-proxy) in front of all of it, via Caddy
 #   * mise as the language/tool manager
 #   * agent-browser + system Chromium, wired to the virtual display
 #

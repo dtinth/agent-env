@@ -101,6 +101,17 @@ const CADDY = {
   googleClientId: "1.apps.googleusercontent.com",
   allowedEmails: "me@example.com",
 };
+const GITHUB = {
+  ...BASE,
+  mode: "caddy",
+  domain: "agent.example.com",
+  httpsPort: 8443,
+  acmeEmail: "me@example.com",
+  authMode: "github",
+  githubClientId: "Iv1.0123456789abcdef",
+  githubOrg: "acme",
+  githubTeam: "platform,sre",
+};
 const TS = {
   ...BASE,
   mode: "tailscale",
@@ -138,7 +149,7 @@ Deno.test("every emitted key is documented in .env.example", () => {
     ].map((m) => m[1]),
   );
   const undocumented = new Set<string>();
-  for (const answers of [LOCAL, CADDY, TS]) {
+  for (const answers of [LOCAL, CADDY, GITHUB, TS]) {
     const dir = tmp();
     run(answers, dir);
     for (
@@ -697,4 +708,33 @@ Deno.test("an answer wrapped in whitespace is not taken literally", () => {
     dir,
   );
   assertEquals(envOf(dir).PUBLIC_URL, "https://a.example.com");
+});
+
+Deno.test("GitHub sign-in writes its own credentials and allow list", () => {
+  const dir = tmp();
+  const r = run(GITHUB, dir);
+  assertEquals(r.code, 0);
+  const env = envOf(dir);
+  assertEquals(env.AUTH_MODE, "github");
+  assertEquals(env.GITHUB_CLIENT_ID, "Iv1.0123456789abcdef");
+  assertEquals(env.GITHUB_ORG, "acme");
+  assertEquals(env.GITHUB_TEAM, "platform,sre");
+  // Google's keys would be dead weight the operator has to reason about.
+  assert(!("GOOGLE_CLIENT_ID" in env));
+  // Both OAuth modes need the cookie secret persisted, or every restart
+  // silently signs everyone out.
+  assertMatch(env.OAUTH2_PROXY_COOKIE_SECRET, /^[A-Za-z0-9_-]{20,}$/);
+  // The secret is the one thing the wizard cannot know.
+  assertStringIncludes(env.GITHUB_CLIENT_SECRET, "CHANGEME");
+  assertStringIncludes(r.stdout, "GITHUB_CLIENT_SECRET");
+});
+
+Deno.test("GitHub sign-in with no allow list is refused", () => {
+  const dir = tmp();
+  const r = run(
+    { ...GITHUB, githubOrg: "", githubTeam: "", githubUsers: "" },
+    dir,
+  );
+  assertEquals(r.code, 1);
+  assertStringIncludes(r.stdout, "needs an allow list");
 });
