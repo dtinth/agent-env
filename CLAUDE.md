@@ -33,8 +33,20 @@ docker run -d --name agent-env --shm-size=2g \
   -e DASHBOARD_PUBLIC_URL=http://localhost:8081 \
   agent-env:smoke
 
-# Wait for the image's own HEALTHCHECK before testing anything.
-until [ "$(docker inspect -f '{{.State.Health.Status}}' agent-env)" = healthy ]; do sleep 5; done
+# Wait for the image's own HEALTHCHECK before testing anything. Give up on
+# unhealthy or exited rather than spinning — that is how a bad run presents,
+# and the logs are the whole diagnosis.
+for _ in $(seq 1 60); do
+  state=$(docker inspect -f '{{.State.Health.Status}}/{{.State.Status}}' agent-env)
+  case "${state}" in
+    healthy/*) break ;;
+    unhealthy/*|*/exited|*/dead)
+      docker logs agent-env 2>&1 | tail -60; exit 1 ;;
+  esac
+  sleep 5
+done
+[ "$(docker inspect -f '{{.State.Health.Status}}' agent-env)" = healthy ] || {
+  echo "timed out waiting for healthy"; docker logs agent-env 2>&1 | tail -60; exit 1; }
 
 CONTAINER=agent-env ./scripts/smoke-test.sh http://localhost:8080 "opencode:${password}"
 ```
@@ -122,9 +134,20 @@ it is a dead end.
 `ARG` avoids this entirely: BuildKit exposes `ARG`s to `RUN` instructions but
 does not persist them into the image, which is exactly the scope wanted.
 
-More generally: any large `*_FILE` variable passed to a container built from
-this image will brick it the same way. Worth keeping in mind when debugging a
-container that goes unhealthy immediately with an unrelated-looking error.
+This is not confined to modified builds. The stock image reproduces it with an
+ordinary variable and no Dockerfile change at all:
+
+```bash
+docker run -d --name brick -e AUTH_MODE=basic -e GATEWAY_PASSWORD=x \
+  -e SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt agent-env:latest
+# unhealthy; `docker logs brick` shows the ln error above
+```
+
+`SSL_CERT_FILE` is a normal thing to have in an environment, and the system CA
+bundle is ~228KB. So: any sufficiently large `*_FILE` variable reaching a
+container built from this image bricks it at startup, with an error naming
+`ln` rather than the variable. Worth remembering when a container goes
+unhealthy immediately for a reason that looks unrelated.
 
 ### Housekeeping
 
