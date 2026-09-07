@@ -198,6 +198,12 @@ jobs:
           password="ci-$(openssl rand -hex 12)"
 
           docker rm -f agent-env-noc >/dev/null 2>&1 || true
+
+          # SMOKE_OVERSIZE_FILE rides along on a container this job already
+          # starts, so the check costs no extra runtime: an oversized *_FILE
+          # must not brick startup. Without the entrypoint's size guard this
+          # container never reaches healthy and the wait below fails, so the
+          # regression cannot land quietly.
           docker run -d --name agent-env-noc --shm-size=2g \
             -p 8082:8080 \
             -e AUTH_MODE=basic \
@@ -205,10 +211,6 @@ jobs:
             -e OPENCODE_ENABLE=false \
             -e AB_DASHBOARD_ENABLE=false \
             -e PUBLIC_URL=http://localhost:8082 \
-            # Rides along on a container that already exists: an oversized
-            # *_FILE must not brick startup. Without the entrypoint's size
-            # guard this container never reaches healthy and the wait below
-            # fails, so the regression cannot land quietly.
             -e SMOKE_OVERSIZE_FILE=/etc/ssl/certs/ca-certificates.crt \
             "${IMAGE}"
 
