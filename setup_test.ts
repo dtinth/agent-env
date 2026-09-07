@@ -837,3 +837,31 @@ Deno.test("an empty team list is not a malformed one", () => {
   assert(!("GITHUB_TEAM" in envOf(dir)));
   assertEquals(envOf(dir).GITHUB_ORG, "acme");
 });
+
+// Clearing an allow list has to actually clear it. The carry-through pass
+// exists so a key the wizard does not know about survives a re-run, but an
+// allow list it just asked about is not one of those — restoring it would
+// leave the operator looking at a file that still admits the account they
+// removed.
+Deno.test("a cleared allow list does not come back on a re-run", () => {
+  const dir = tmp();
+  const first = run(
+    { ...GITHUB, githubUsers: "octocat", githubOrg: "acme" },
+    dir,
+  );
+  assertEquals(first.code, 0);
+  assertEquals(envOf(dir).GITHUB_USERS, "octocat");
+
+  const again = run(
+    { ...GITHUB, githubUsers: ", ,", githubOrg: "acme" },
+    dir,
+    ["--force"],
+  );
+  assertEquals(again.code, 0);
+  assert(!("GITHUB_USERS" in envOf(dir)));
+  assertEquals(envOf(dir).GITHUB_ORG, "acme");
+  // And it is not passed through to a container that has no value for it.
+  assert(
+    !Deno.readTextFileSync(`${dir}/compose.yaml`).includes("GITHUB_USERS"),
+  );
+});

@@ -890,6 +890,13 @@ interface RenderedEnv {
 function renderEnv(a: Answers, keep: Record<string, EnvEntry>): RenderedEnv {
   const L: string[] = [];
   const emitted = new Set<string>();
+  /**
+   * Keys this run has decided about, whether or not it wrote a line. Not the
+   * same as `emitted`, which is also the compose passthrough list: a key that
+   * was deliberately left out has no value to pass through, but it must not be
+   * dragged back in by the carry-through pass either.
+   */
+  const decided = new Set<string>();
   const put = (k: string, v: string) => {
     emitted.add(k);
     L.push(`${k}=${envValue(v)}`);
@@ -917,6 +924,10 @@ function renderEnv(a: Answers, keep: Record<string, EnvEntry>): RenderedEnv {
    * over. What was counted is what gets written.
    */
   const putList = (k: string, v: string | undefined) => {
+    // Decided either way. Clearing an allow list has to actually clear it —
+    // carrying the old one back from .env would leave the operator looking at
+    // a file that still admits the account they just removed.
+    decided.add(k);
     const cleaned = cleanList(v);
     if (cleaned) put(k, cleaned);
   };
@@ -1020,7 +1031,9 @@ function renderEnv(a: Answers, keep: Record<string, EnvEntry>): RenderedEnv {
   // MISE_TOOLS list, a DESKTOP_RESOLUTION. This file is theirs to edit, and a
   // generator that silently drops what it does not recognise makes "re-run it"
   // advice you cannot follow.
-  const carried = Object.keys(keep).filter((k) => !emitted.has(k)).sort();
+  const carried = Object.keys(keep).filter((k) =>
+    !emitted.has(k) && !decided.has(k)
+  ).sort();
   if (carried.length) {
     L.push("# --- Kept from your previous .env ---");
     // Carried through as written: re-quoting someone else's value is how a
