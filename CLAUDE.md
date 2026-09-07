@@ -115,39 +115,42 @@ problem — report the blocked host instead of retrying.
 
 ### 3. Use `ARG`, not `ENV`, for those CA variables
 
-This one is subtle and costs a full rebuild to discover. `ENV
-SSL_CERT_FILE=...` persists into the final image, and the entrypoint's
+`ENV SSL_CERT_FILE=...` persists into the final image, where the entrypoint's
 `expand_file_secrets` (`rootfs/usr/local/bin/entrypoint.sh`) reads *any*
-`*_FILE` variable in the environment and re-exports its file's contents as the
-name minus the suffix. `SSL_CERT_FILE` therefore becomes a ~200KB `SSL_CERT`
-variable, which pushes the environment past the exec argument limit. The
-container goes unhealthy, and the only clue is:
+`*_FILE` variable and re-exports its file's contents as the name minus the
+suffix — so `SSL_CERT_FILE` turns into a ~228KB `SSL_CERT`.
+
+`ARG` avoids it: BuildKit exposes `ARG`s to `RUN` instructions but does not
+persist them into the image, which is exactly the scope wanted here. The CA is
+only needed while fetching things at build time.
+
+Since it is now bounded (see below) an oversized value is skipped with a
+warning rather than breaking the container, so this is no longer fatal — but
+`ARG` is still right, because `SSL_CERT` was never a variable anyone wanted.
+
+#### If you see `Argument list too long`
+
+Before the size guard landed, an oversized `*_FILE` bricked startup, and the
+only clue was:
 
 ```
 /usr/local/bin/entrypoint.sh: line 61: /usr/bin/ln: Argument list too long
 ```
 
-That line is the `ln -snf` for `/etc/localtime` — it is simply the first `exec`
-after the environment got too big, and has nothing to do with timezones. Chasing
-it is a dead end.
+That line is the `ln -snf` for `/etc/localtime`. It has nothing to do with
+timezones — it is simply the first `exec` after the environment grew past
+`MAX_ARG_STRLEN`, so chasing it is a dead end. `expand_file_secrets` now
+measures the file first and skips anything over 64KiB with a warning naming
+the variable:
 
-`ARG` avoids this entirely: BuildKit exposes `ARG`s to `RUN` instructions but
-does not persist them into the image, which is exactly the scope wanted.
-
-This is not confined to modified builds. The stock image reproduces it with an
-ordinary variable and no Dockerfile change at all:
-
-```bash
-docker run -d --name brick -e AUTH_MODE=basic -e GATEWAY_PASSWORD=x \
-  -e SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt agent-env:latest
-# unhealthy; `docker logs brick` shows the ln error above
+```
+[agent-env] WARN SSL_CERT_FILE=... is 456896 bytes, over the 65536-byte limit
+for a file secret; not exporting SSL_CERT
 ```
 
-`SSL_CERT_FILE` is a normal thing to have in an environment, and the system CA
-bundle is ~228KB. So: any sufficiently large `*_FILE` variable reaching a
-container built from this image bricks it at startup, with an error naming
-`ln` rather than the variable. Worth remembering when a container goes
-unhealthy immediately for a reason that looks unrelated.
+If you meet the old error on an older image, that is the cause. The bound is
+`FILE_SECRET_MAX_BYTES`, and the OpenCode-off CI run passes an oversized
+`*_FILE` so the regression cannot come back quietly.
 
 ### Housekeeping
 
