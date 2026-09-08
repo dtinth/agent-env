@@ -37,7 +37,8 @@ agent-env — manage this OpenCode v2 workstation
   agent-env restart <service>   Restart one service (e.g. opencode, desktop, caddy)
   agent-env start <service>     Start one service
   agent-env stop <service>      Stop one service
-  agent-env tui                 Attach the OpenCode v2 TUI to the running server
+  agent-env tui                 Enter the terminal: the OpenCode v2 TUI, or a
+                                login shell where TTYD_COMMAND says so
   agent-env top                 pitchfork's interactive dashboard
   agent-env config              Show the rendered gateway configuration
   agent-env daemons             Show the rendered daemon definitions
@@ -78,7 +79,7 @@ case "${1:-help}" in
     printf 'Environment     : %s/%s/\n' "${base}" "${prefix}"
     [[ "${TTYD_ENABLE:-true}" == "true" ]] && \
       printf '%-15s : %s/%s/\n' \
-        "$([[ "${OPENCODE_ENABLE:-true}" == "true" ]] && echo 'OpenCode TUI' || echo 'Terminal')" \
+        "$([[ "${TTYD_COMMAND:-tui}" == "tui" ]] && echo 'OpenCode TUI' || echo 'Terminal')" \
         "${base}" "${TTYD_PATH:-${prefix}/terminal}"
     [[ "${DESKTOP_ENABLE:-true}" == "true" ]] && \
       printf 'Desktop (noVNC) : %s/%s/\n' "${base}" "${DESKTOP_PATH:-${prefix}/desktop}"

@@ -239,7 +239,15 @@ fi
 # auth mode: ttyd exists to run the OpenCode TUI, and with no server to attach
 # to it would sit on a connect loop instead of giving you a usable terminal.
 if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1; then
+  # The entrypoint's rule, restated from what the container was *asked* for:
+  # a shell when TTYD_COMMAND says so, and a shell regardless once OpenCode is
+  # off. Comparing the published value against itself would prove nothing, and
+  # assuming the default would fail a container that legitimately asked for a
+  # shell with OpenCode still on.
   want_cmd=tui
+  requested=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER}" 2>/dev/null \
+    | sed -n 's/^TTYD_COMMAND=//p' | head -1 | tr -d '\r')
+  [ "${requested}" = shell ] && want_cmd=shell
   [ "${OPENCODE_ENABLE}" = true ] || want_cmd=shell
 
   ttyd_cmd=$(docker exec "${CONTAINER}" \

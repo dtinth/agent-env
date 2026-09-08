@@ -982,7 +982,9 @@ EOF
     fi
 
     if is_true "${TTYD_ENABLE}"; then
-      if is_true "${OPENCODE_ENABLE}"; then
+      # What it runs is TTYD_COMMAND's answer, not OpenCode's: a shell is what
+      # you get with OpenCode off *and* when you asked for one outright.
+      if [[ "${TTYD_COMMAND}" == tui ]]; then
         svc "/${TTYD_PATH}/" "Terminal" "The OpenCode TUI, over a websocket"
       else
         svc "/${TTYD_PATH}/" "Terminal" "A login shell, over a websocket"
@@ -1494,7 +1496,7 @@ log " gateway     : ${PUBLIC_URL}  (listening on ${GATEWAY_BIND:-0.0.0.0}:${GATE
 log " auth mode   : ${AUTH_MODE}"
 log " index       : ${PUBLIC_URL}/${ENV_PREFIX}/"
 if is_true "${TTYD_ENABLE}"; then
-  if is_true "${OPENCODE_ENABLE}"; then
+  if [[ "${TTYD_COMMAND}" == tui ]]; then
     log " TUI         : ${PUBLIC_URL}/${TTYD_PATH}/"
   else
     log " terminal    : ${PUBLIC_URL}/${TTYD_PATH}/  (login shell)"
