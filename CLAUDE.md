@@ -55,7 +55,7 @@ The second run is the same with `-e OPENCODE_ENABLE=false -e
 AB_DASHBOARD_ENABLE=false` on a different port and container name — see the
 `Smoke test with OpenCode off` step in `.github/workflows/docker.yml`.
 
-Expect a clean run to report roughly 71 checks (OpenCode on) and 73 (OpenCode
+Expect a clean run to report roughly 75 checks (OpenCode on) and 76 (OpenCode
 off), 0 failed. A full build from cold cache takes ~10 minutes; the container
 reaches healthy in well under a minute.
 

@@ -238,13 +238,25 @@ fi
 # Read out of the rendered config rather than over HTTP, so it holds in every
 # auth mode: ttyd exists to run the OpenCode TUI, and with no server to attach
 # to it would sit on a connect loop instead of giving you a usable terminal.
-if [ "${OPENCODE_ENABLE}" != true ] \
-   && command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1; then
+if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1; then
+  want_cmd=tui
+  [ "${OPENCODE_ENABLE}" = true ] || want_cmd=shell
+
   ttyd_cmd=$(docker exec "${CONTAINER}" \
     sed -n 's/^TTYD_COMMAND = "\(.*\)"/\1/p' /opt/agent-env/pitchfork/config.toml 2>/dev/null | tr -d '\r')
-  [[ "${ttyd_cmd}" == shell ]] \
-    && ok "the browser terminal falls back to a login shell" \
-    || bad "TTYD_COMMAND is '${ttyd_cmd:-unset}', expected shell"
+  [[ "${ttyd_cmd}" == "${want_cmd}" ]] \
+    && ok "the ttyd daemon is told to run the ${want_cmd}" \
+    || bad "TTYD_COMMAND in the daemon config is '${ttyd_cmd:-unset}', expected ${want_cmd}"
+
+  # The daemon's environment is not the only reader: `agent-env tui` runs from
+  # an SSH login shell, which inherits neither the container's environment nor
+  # pitchfork's. Both take the answer from the published file, so it has to say
+  # the same thing — a terminal that waits for a server nobody started is the
+  # failure this catches.
+  pub_cmd=$(runtime_var TTYD_COMMAND)
+  [[ "${pub_cmd}" == "${want_cmd}" ]] \
+    && ok "TTYD_COMMAND is published as ${want_cmd} for every reader" \
+    || bad "published TTYD_COMMAND is '${pub_cmd:-unset}', expected ${want_cmd}"
 fi
 
 head_ "Published configuration"
@@ -555,6 +567,19 @@ with open("/etc/mise/mise.lock", "rb") as fh:
   docker exec "${CONTAINER}" sh -c 'ls /etc/ssh/ssh_host_* >/dev/null 2>&1' \
     && bad "the image still carries host keys in /etc/ssh" \
     || ok "/etc/ssh has no baked-in host keys"
+
+  # C.UTF-8 is the only locale in the image, so a forwarded en_US.UTF-8 would
+  # make every shell an SSH session starts warn about setlocale. The pair below
+  # is what keeps that quiet: nothing locale-shaped is accepted from the client,
+  # and PAM hands each session the locale that does exist.
+  docker exec "${CONTAINER}" grep -qE '^AcceptEnv .*(LANG|LC_)' \
+    /etc/ssh/sshd_config.d/00-agent-env.conf \
+    && bad "sshd accepts locale variables the image cannot provide" \
+    || ok "sshd accepts no locale variables from the client"
+
+  docker exec "${CONTAINER}" grep -q '^LANG=C.UTF-8' /etc/environment \
+    && ok "PAM gives every session the locale the image has" \
+    || bad "/etc/environment sets no LANG, so SSH sessions land in the C locale"
 
   head_ "File manager"
 

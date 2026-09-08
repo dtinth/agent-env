@@ -374,6 +374,7 @@ See [`.env.example`](.env.example) for the annotated list. The essentials:
 | `DESKTOP_ENABLE` | `true` | XFCE + noVNC |
 | `DESKTOP_RESOLUTION` | `1920x1080x24` | Virtual display geometry, `WxH` or `WxHxD` |
 | `TTYD_ENABLE` | `true` | Browser TUI at `/~env/terminal` |
+| `TTYD_COMMAND` | `tui` | `shell` for a plain login shell instead of the TUI |
 | `AB_DASHBOARD_ENABLE` | `true` | agent-browser dashboard on its own port |
 | `MISE_TOOLS` | — | Extra global tools, e.g. `python@3.13 go@latest` |
 | `USER_SUPERVISOR_ENABLE` | `true` | Run the dev user's own pitchfork at boot |
@@ -565,6 +566,12 @@ sessions:
 ssh -p 2222 dev@host
 ssh -p 2222 dev@host 'opencode2 run "summarise this repo"'
 ```
+
+The image carries one locale, `C.UTF-8`, and PAM hands it to every session.
+`sshd` deliberately does not accept `LANG` or `LC_*` from the client: a
+forwarded `en_US.UTF-8` is a locale that does not exist here, and every shell
+started under it warns about `setlocale` before doing anything else. `TERM` and
+`COLORTERM` still come across.
 
 ### Docker inside the container
 
