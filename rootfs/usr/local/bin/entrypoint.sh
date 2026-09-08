@@ -135,6 +135,18 @@ NOVNC_PORT="${NOVNC_PORT:-6080}"
 TTYD_ENABLE="${TTYD_ENABLE:-true}"
 TTYD_PORT="${TTYD_PORT:-7681}"
 TTYD_WRITABLE="${TTYD_WRITABLE:-true}"
+# What the browser terminal runs: the OpenCode TUI, or a plain login shell. It
+# is resolved here rather than left to the terminal itself, so every reader —
+# the daemon, `agent-env tui`, the runtime env file — agrees on one answer.
+# With OpenCode off there is no server to attach to and the TUI would only sit
+# on a connect loop, so a shell is the only sane thing to run.
+case "${TTYD_COMMAND:-tui}" in
+  shell) TTYD_COMMAND=shell ;;
+  tui)   TTYD_COMMAND=tui ;;
+  *)     warn "TTYD_COMMAND=${TTYD_COMMAND} is not 'tui' or 'shell'; using tui"
+         TTYD_COMMAND=tui ;;
+esac
+is_true "${OPENCODE_ENABLE}" || TTYD_COMMAND=shell
 # ttyd and dufs are told their own prefix so their UIs work under one; noVNC is
 # not, because the gateway strips the prefix before proxying to it.
 TTYD_PATH="${ENV_PREFIX}/terminal"
@@ -485,6 +497,7 @@ fi
   echo "DASHBOARD_PUBLIC_URL=${DASHBOARD_PUBLIC_URL}"
   echo "DESKTOP_ENABLE=$(canon "${DESKTOP_ENABLE}")"
   echo "TTYD_ENABLE=$(canon "${TTYD_ENABLE}")"
+  echo "TTYD_COMMAND=${TTYD_COMMAND}"
   echo "SSH_ENABLE=$(canon "${SSH_ENABLE}")"
   echo "USER_NAME=${USER_NAME}"
   echo "DOCKER_ROOTLESS_ENABLE=$(canon "${DOCKER_ROOTLESS_ENABLE}")"
@@ -507,8 +520,14 @@ chmod 644 /etc/profile.d/99-agent-env.sh
 # /etc/profile is only read by login shells, and Debian's ~/.bashrc bails out
 # early when non-interactive — so `ssh host <command>` would see none of this.
 # pam_env reads /etc/environment for every PAM session, including that one.
+# LANG/LC_ALL are the locale the image actually has. The Dockerfile sets them
+# for everything the entrypoint starts; an SSH session is given its environment
+# by PAM instead, and without them it lands in the C locale. Keep this file free
+# of comments — pam_env reads it as bare KEY=VALUE lines.
 cat > /etc/environment <<EOF
 PATH=/opt/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+LANG=C.UTF-8
+LC_ALL=C.UTF-8
 MISE_DATA_DIR=/opt/mise
 MISE_CONFIG_DIR=${USER_HOME}/.config/mise
 MISE_STATE_DIR=/opt/mise/state
@@ -628,7 +647,10 @@ PubkeyAuthentication yes
 AllowUsers ${USER_NAME}
 X11Forwarding yes
 PrintMotd no
-AcceptEnv LANG LC_* TERM COLORTERM
+# Deliberately not LANG or LC_*: the image carries C.UTF-8 and nothing else, so
+# accepting a client's en_US.UTF-8 only produces a setlocale warning from every
+# shell it starts. TERM and COLORTERM are honoured because they always are.
+AcceptEnv TERM COLORTERM
 ClientAliveInterval 30
 ClientAliveCountMax 4
 EOF
@@ -1347,15 +1369,13 @@ NOVNC_PORT = "${NOVNC_PORT}"
 TTYD_PORT = "${TTYD_PORT}"
 TTYD_WRITABLE = "${TTYD_WRITABLE}"
 TTYD_PATH = "${TTYD_PATH}"
+TTYD_COMMAND = "${TTYD_COMMAND}"
 DUFS_PATH = "${DUFS_PATH}"
 AB_DASHBOARD_PORT = "${AB_DASHBOARD_PORT}"
 EOF
 
     # Must stay directly under [env]: in TOML everything after a table header
     # belongs to that table, and emit_daemon opens [daemons.*] below.
-    if ! is_true "${OPENCODE_ENABLE}"; then
-      printf 'TTYD_COMMAND = "shell"\n'
-    fi
     if is_true "${DOCKER_ROOTLESS_ENABLE}"; then
       printf 'DOCKER_HOST = "%s"\n' "${DOCKER_ROOTLESS_HOST}"
       printf 'DOCKER_ROOTLESS_DATA_ROOT = "%s"\n' "${DOCKER_ROOTLESS_DATA_ROOT}"

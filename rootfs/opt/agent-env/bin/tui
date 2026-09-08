@@ -3,16 +3,33 @@
 # attached to the same server the web UI talks to.
 set -uo pipefail
 export TERM="${TERM:-xterm-256color}"
-cd "${OPENCODE_WORKDIR:-/workspace}" || cd "${HOME}"
+
+# The runtime configuration, the way the healthcheck reads it. Trusting the
+# inherited environment instead is what made `agent-env tui` from an SSH
+# session disagree with the browser terminal: a login shell inherits neither
+# the container's environment nor the daemon's.
+env_file=/run/agent-env/env
+value() { sed -n "s/^$1=//p" "${env_file}" 2>/dev/null | head -1; }
+
+workdir="$(value OPENCODE_WORKDIR)"
+workdir="${workdir:-${OPENCODE_WORKDIR:-/workspace}}"
+cd "${workdir}" || cd "${HOME}"
 
 # shellcheck disable=SC1091
 [[ -r /etc/profile ]] && . /etc/profile
 
-if [[ "${TTYD_COMMAND:-tui}" == "shell" ]]; then
+# What to run is the entrypoint's decision, not this script's guess.
+command_="$(value TTYD_COMMAND)"
+command_="${command_:-${TTYD_COMMAND:-tui}}"
+# With OpenCode off there is nothing to attach to, whatever anything else says.
+[[ "$(value OPENCODE_ENABLE)" == false ]] && command_=shell
+
+if [[ "${command_}" == "shell" ]]; then
   exec bash -l
 fi
 
-port="${OPENCODE_PORT:-4096}"
+port="$(value OPENCODE_PORT)"
+port="${port:-${OPENCODE_PORT:-4096}}"
 
 # The server is a daemon of the user's own supervisor now, so it may still be
 # coming up when a browser opens the terminal. Wait for it rather than showing a
@@ -24,4 +41,4 @@ for _ in $(seq 1 120); do
 done
 printf '\r\033[K'
 
-exec opencode2 --server "http://127.0.0.1:${port}" "${OPENCODE_WORKDIR:-/workspace}"
+exec opencode2 --server "http://127.0.0.1:${port}" "${workdir}"
