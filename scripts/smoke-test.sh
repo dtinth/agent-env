@@ -12,10 +12,27 @@ BASE="${1:-http://localhost:8080}"
 AUTH="${2:-opencode:changeme}"
 CONTAINER="${CONTAINER:-agent-env}"
 
-pass=0; fail=0
+pass=0; fail=0; skipped=0
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; pass=$((pass+1)); }
 bad()  { printf '  \033[31m✗\033[0m %s\n' "$*"; fail=$((fail+1)); }
+# A check this run could not make, with the reason. Counted and printed rather
+# than dropped: a silently skipped section is indistinguishable from one that
+# passed, which is what made the totals approximate.
+skip() { printf '  \033[33m–\033[0m %s\n' "$*"; skipped=$((skipped+1)); }
 head_() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+
+# assert/refute take the command as arguments, not as a string, so nothing is
+# re-parsed and exactly one of ok/bad can run. `cmd && ok "..." || bad "..."`
+# reads fine until the assertion is negative — there `&&` marks the *failure*,
+# which is a trap for whoever edits it next. Use these wherever one sentence
+# describes the desired state; keep an explicit if/else where the failure
+# message has to carry a value the reader needs.
+assert() { local what="$1"; shift; if "$@" >/dev/null 2>&1; then ok "${what}"; else bad "${what}"; fi; }
+refute() { local what="$1"; shift; if "$@" >/dev/null 2>&1; then bad "${what}"; else ok "${what}"; fi; }
+
+# Every section below is guarded by this rather than by an inline `command -v
+# docker`, so "no container to look inside" is reported once, as skips.
+have_container() { command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1; }
 
 code() { curl -s -o /dev/null --max-time 15 -w '%{http_code}' -u "${AUTH}" "$1"; }
 
@@ -35,7 +52,7 @@ sys_pitchfork() {
 # where an unauthenticated 200 is correct rather than a hole. Ask the container
 # which mode it is in rather than guessing from the response.
 auth_mode=""
-if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1; then
+if have_container; then
   auth_mode=$(docker exec "${CONTAINER}" sh -c \
     'sed -n "s/^AUTH_MODE=//p" /run/agent-env/env' 2>/dev/null | tr -d "\r")
 fi
@@ -54,7 +71,7 @@ runtime_var() {
 }
 ENV_PREFIX=""; TTYD_PATH=""; DESKTOP_PATH=""; DUFS_PATH=""; HEALTH_PATH=""; USER_WEB_PATH=""
 OPENCODE_ENABLE=""; PRIMARY_PORT=""
-if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1; then
+if have_container; then
   OPENCODE_ENABLE=$(runtime_var OPENCODE_ENABLE)
   USER_WEB_ENABLE=$(runtime_var USER_WEB_ENABLE)
   PRIMARY_PORT=$(runtime_var PRIMARY_PORT)
@@ -130,23 +147,31 @@ done
 # The daemons UI cannot be nested (pitchfork validates its web path as one
 # segment), so the prefix redirects to it instead. That redirect is the only
 # reason /${ENV_PREFIX}/ is a complete index of the environment.
-if [ "${oauth_gate}" != true ] && [ "${USER_WEB_ENABLE}" = true ]; then
-  loc=$(curl -s -o /dev/null --max-time 15 -u "${AUTH}" -w '%{redirect_url}' \
-        "${BASE}/${ENV_PREFIX}/daemons")
-  [[ "${loc}" == *"/${USER_WEB_PATH}" ]] \
-    && ok "/${ENV_PREFIX}/daemons redirects to /${USER_WEB_PATH}" \
-    || bad "/${ENV_PREFIX}/daemons redirected to '${loc}', expected /${USER_WEB_PATH}"
+if [ "${USER_WEB_ENABLE}" = true ]; then
+  if [ "${oauth_gate}" != true ]; then
+    loc=$(curl -s -o /dev/null --max-time 15 -u "${AUTH}" -w '%{redirect_url}' \
+          "${BASE}/${ENV_PREFIX}/daemons")
+    [[ "${loc}" == *"/${USER_WEB_PATH}" ]] \
+      && ok "/${ENV_PREFIX}/daemons redirects to /${USER_WEB_PATH}" \
+      || bad "/${ENV_PREFIX}/daemons redirected to '${loc}', expected /${USER_WEB_PATH}"
+  else
+    skip "the /${ENV_PREFIX}/daemons redirect (the OAuth gate redirects to sign-in first)"
+  fi
 fi
 
 # /img/logo.png is hardcoded absolute in pitchfork's bundle. It is scoped by
 # Referer so it cannot shadow the same path in a user's own app — the loop above
 # proves the fallthrough, this proves the UI still gets its logo.
-if [ "${oauth_gate}" != true ] && [ "${USER_WEB_ENABLE}" = true ]; then
-  ctype=$(curl -s -o /dev/null --max-time 15 -u "${AUTH}" -w '%{content_type}' \
-          -H "Referer: ${BASE}/${USER_WEB_PATH}" "${BASE}/img/logo.png")
-  [[ "${ctype}" == image/* ]] \
-    && ok "/img/logo.png serves pitchfork's logo when the daemons UI asks (${ctype})" \
-    || bad "/img/logo.png returned ${ctype:-nothing} for the daemons UI"
+if [ "${USER_WEB_ENABLE}" = true ]; then
+  if [ "${oauth_gate}" != true ]; then
+    ctype=$(curl -s -o /dev/null --max-time 15 -u "${AUTH}" -w '%{content_type}' \
+            -H "Referer: ${BASE}/${USER_WEB_PATH}" "${BASE}/img/logo.png")
+    [[ "${ctype}" == image/* ]] \
+      && ok "/img/logo.png serves pitchfork's logo when the daemons UI asks (${ctype})" \
+      || bad "/img/logo.png returned ${ctype:-nothing} for the daemons UI"
+  else
+    skip "the daemons UI logo (the OAuth gate answers before pitchfork does)"
+  fi
 fi
 
 if [ "${auth_mode}" != none ]; then
@@ -154,10 +179,12 @@ if [ "${auth_mode}" != none ]; then
   [[ "$c" == 401 || "$c" == 302 ]] \
     && ok "the environment index is behind the gateway auth ($c)" \
     || bad "/${ENV_PREFIX}/ answered $c without credentials"
+else
+  skip "that the environment index is gated (AUTH_MODE=none asks for no gate)"
 fi
 
 head_ "Primary service at /"
-if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1; then
+if have_container; then
   # The OpenCode server's own basic-auth credential is injected at /. It exists
   # to reach OpenCode and nothing else, so if / is ever pointed at someone's own
   # application that header must not follow it there.
@@ -175,13 +202,17 @@ if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1
 
   # The healthcheck has to follow the configuration: an unconditional probe of
   # the OpenCode port marks an OpenCode-off container unhealthy forever.
-  docker exec "${CONTAINER}" /opt/agent-env/bin/healthcheck >/dev/null 2>&1 \
-    && ok "the healthcheck passes with OPENCODE_ENABLE=${OPENCODE_ENABLE}" \
-    || bad "the healthcheck fails with OPENCODE_ENABLE=${OPENCODE_ENABLE}"
+  assert "the healthcheck passes with OPENCODE_ENABLE=${OPENCODE_ENABLE}" \
+    docker exec "${CONTAINER}" /opt/agent-env/bin/healthcheck
+else
+  skip "credential injection at / and the healthcheck (no container to look inside)"
 fi
 
 # Behind an OAuth gate every one of these bounces to sign-in before it can reach a
 # service, so they would be testing the gate rather than the routing.
+if [ "${OPENCODE_ENABLE}" != true ] && [ "${oauth_gate}" = true ]; then
+  skip "the primary service at / (the OAuth gate answers before it does)"
+fi
 if [ "${OPENCODE_ENABLE}" != true ] && [ "${oauth_gate}" != true ]; then
   # Nothing is listening on PRIMARY_PORT yet, so / should explain itself rather
   # than show a bare 502. Caddy keeps the error status, which is honest — the
@@ -191,7 +222,7 @@ if [ "${OPENCODE_ENABLE}" != true ] && [ "${oauth_gate}" != true ]; then
     && ok "/ falls back to the environment index while nothing is on ${PRIMARY_PORT}" \
     || bad "/ did not fall back to the index: ${body:0:80}"
 
-  if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1; then
+  if have_container; then
     # And a real server on that port takes / over, without touching the prefix.
     docker exec -u dev "${CONTAINER}" sh -c 'cat > /tmp/smoke-primary.py <<PY
 import http.server
@@ -238,7 +269,7 @@ fi
 # Read out of the rendered config rather than over HTTP, so it holds in every
 # auth mode: ttyd exists to run the OpenCode TUI, and with no server to attach
 # to it would sit on a connect loop instead of giving you a usable terminal.
-if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1; then
+if have_container; then
   # The entrypoint's rule, restated from what the container was *asked* for:
   # a shell when TTYD_COMMAND says so, and a shell regardless once OpenCode is
   # off. Comparing the published value against itself would prove nothing, and
@@ -265,6 +296,8 @@ if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1
   [[ "${pub_cmd}" == "${want_cmd}" ]] \
     && ok "TTYD_COMMAND is published as ${want_cmd} for every reader" \
     || bad "published TTYD_COMMAND is '${pub_cmd:-unset}', expected ${want_cmd}"
+else
+  skip "what the browser terminal runs (no container to look inside)"
 fi
 
 head_ "Published configuration"
@@ -274,12 +307,14 @@ head_ "Published configuration"
 # every reader from what it actually decided — OPENCODE_ENABLE=1 starts the
 # server and injects its credential while a reader concludes it is off and
 # stops probing it.
-if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1; then
+if have_container; then
   noncanon=$(docker exec "${CONTAINER}" sh -c \
     "grep -E '^[A-Z_]+_ENABLE=' /run/agent-env/env | grep -vE '=(true|false)$'" 2>/dev/null || true)
   [[ -z "${noncanon}" ]] \
     && ok "every published *_ENABLE flag is a literal true or false" \
     || bad "non-canonical flags would desync the healthcheck and helper: ${noncanon//$'\n'/, }"
+else
+  skip "the published configuration (no container to look inside)"
 fi
 
 # An oversized *_FILE variable used to take the container out entirely: the
@@ -294,14 +329,18 @@ fi
 # runs under `set -o pipefail`, and `grep -q` exits at the first match, so
 # `docker logs | grep -q` SIGPIPEs the producer and the pipeline reports
 # failure even when the pattern matched.
-if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1; then
+if have_container; then
   cfg_env=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER}" 2>/dev/null || true)
   if grep -q '^SMOKE_OVERSIZE_FILE=' <<<"${cfg_env}"; then
     container_logs=$(docker logs "${CONTAINER}" 2>&1 || true)
     grep -q 'over the .*-byte limit for a file secret' <<<"${container_logs}" \
       && ok "an oversized *_FILE is refused by name instead of bricking the container" \
       || bad "no size-limit warning for SMOKE_OVERSIZE_FILE — the guard did not run"
+  else
+    skip "the oversized *_FILE guard (pass SMOKE_OVERSIZE_FILE to the container to check it)"
   fi
+else
+  skip "the oversized *_FILE guard (no container to look inside)"
 fi
 
 head_ "Readiness probes"
@@ -309,7 +348,7 @@ head_ "Readiness probes"
 # restarts the daemon forever. Moving /healthz under the reserved prefix broke
 # exactly this once already, so check every probe on its own terms: the URL the
 # supervisor will actually fetch, with no credentials, since it has none.
-if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1; then
+if have_container; then
   probes=$(docker exec "${CONTAINER}" sh -c \
     "grep -o 'ready_http = { url = \"[^\"]*\"' /opt/agent-env/pitchfork/config.toml \
      | sed 's/.*url = \"//; s/\"$//'" 2>/dev/null | tr -d '\r')
@@ -333,6 +372,8 @@ if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1
   grep -q running <<<"${state}" \
     && ok "caddy is running, not cycling (${state//  */})" \
     || bad "caddy is not running: ${state:-not listed}"
+else
+  skip "the daemons' readiness probes (no container to look inside)"
 fi
 
 head_ "VNC websocket (browser path)"
@@ -347,9 +388,11 @@ if [ "${oauth_gate}" != true ]; then
         "${BASE}/${DESKTOP_PATH}/websockify")
   [[ "$c" == 101 ]] && ok "websockify upgrade (101 Switching Protocols)" \
                     || bad "websockify upgrade returned $c"
+else
+  skip "the websockify upgrade (the OAuth gate answers before websockify does)"
 fi
 
-if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1; then
+if have_container; then
   head_ "Inside the container (${CONTAINER})"
 
   p1=$(docker exec "${CONTAINER}" ps -p 1 -o args= 2>/dev/null)
@@ -369,8 +412,7 @@ if command -v docker >/dev/null && docker inspect "${CONTAINER}" >/dev/null 2>&1
   [[ -n "$geom" ]] && ok "X display up (${geom## })" || bad "no X display on :1"
 
   # Several viewers must be able to share the desktop at once.
-  docker exec "${CONTAINER}" python3 - <<'PY' && ok "4 simultaneous VNC clients accepted" \
-                                              || bad "VNC does not accept concurrent clients"
+  if docker exec "${CONTAINER}" python3 - <<'PY'; then
 import socket, sys, threading, time
 res = {}
 def c(n):
@@ -394,6 +436,10 @@ for t in ts: t.start(); time.sleep(0.3)
 time.sleep(2)
 sys.exit(0 if sum(res.values()) == 4 else 1)
 PY
+    ok "4 simultaneous VNC clients accepted"
+  else
+    bad "VNC does not accept concurrent clients"
+  fi
 
   head_ "Users and privileges"
 
@@ -405,12 +451,11 @@ PY
   [[ "${caddy_user:-}" == "gateway" ]] && ok "caddy runs as the unprivileged gateway user" \
                                        || bad "caddy runs as '${caddy_user:-none}'"
 
-  docker exec -u dev "${CONTAINER}" sudo -n true 2>/dev/null \
-    && ok "dev has passwordless sudo" || bad "dev cannot sudo without a password"
+  assert "dev has passwordless sudo" \
+    docker exec -u dev "${CONTAINER}" sudo -n true
 
-  docker exec -u gateway "${CONTAINER}" sudo -n true 2>/dev/null \
-    && bad "gateway can sudo — it should not be able to" \
-    || ok "gateway has no sudo"
+  refute "gateway has no sudo" \
+    docker exec -u gateway "${CONTAINER}" sudo -n true
 
   head_ "Nested user supervisor"
 
@@ -441,9 +486,8 @@ PY
     *)       ok "user supervisor state is outside the home volume (${usd})" ;;
   esac
 
-  docker exec "${CONTAINER}" test -w /tmp/fslock \
-    && ok "/tmp/fslock is shared, so any user can run a supervisor" \
-    || bad "/tmp/fslock is not writable by other users"
+  assert "/tmp/fslock is shared, so any user can run a supervisor" \
+    docker exec "${CONTAINER}" test -w /tmp/fslock
 
   # The OpenCode server belongs to the user, not to root. Checked against a
   # listing we know is real, so an error cannot masquerade as absence.
@@ -476,9 +520,11 @@ PY
       *) bad "could not trace opencode to a supervisor: ${parent:-none}" ;;
     esac
   else
-    grep -qE "opencode" <<<"${user_daemons}" \
-      && bad "opencode is defined despite OPENCODE_ENABLE=false: ${user_daemons}" \
-      || ok "no opencode daemon is defined while disabled"
+    if grep -qE "opencode" <<<"${user_daemons}"; then
+      bad "opencode is defined despite OPENCODE_ENABLE=false: ${user_daemons}"
+    else
+      ok "no opencode daemon is defined while disabled"
+    fi
   fi
 
   head_ "X display access"
@@ -501,6 +547,9 @@ PY
 
   head_ "Credentials"
 
+  if [ "${OPENCODE_ENABLE}" != true ]; then
+    skip "gateway credentials in the agent's process (no OpenCode server to inspect)"
+  fi
   if [ "${OPENCODE_ENABLE}" = true ]; then
 
   # A secret passed with -e stays in the container config, but it must not
@@ -530,9 +579,8 @@ PY
   esac
 
   # ...while the image keeps owning its own toolchain, so updates land.
-  docker exec "${CONTAINER}" grep -q node /etc/mise/config.toml 2>/dev/null \
-    && ok "the image still declares its own toolchain in /etc/mise" \
-    || bad "/etc/mise/config.toml no longer declares the image toolchain"
+  assert "the image still declares its own toolchain in /etc/mise" \
+    docker exec "${CONTAINER}" grep -q node /etc/mise/config.toml
 
   head_ "Toolchain"
 
@@ -572,22 +620,19 @@ with open("/etc/mise/mise.lock", "rb") as fh:
     && ok "host keys live in the state directory, not the image" \
     || bad "no host keys in /var/lib/agent-env/ssh: ${keydir:-none}"
 
-  docker exec "${CONTAINER}" sh -c 'ls /etc/ssh/ssh_host_* >/dev/null 2>&1' \
-    && bad "the image still carries host keys in /etc/ssh" \
-    || ok "/etc/ssh has no baked-in host keys"
+  refute "/etc/ssh has no baked-in host keys" \
+    docker exec "${CONTAINER}" sh -c 'ls /etc/ssh/ssh_host_*'
 
   # C.UTF-8 is the only locale in the image, so a forwarded en_US.UTF-8 would
   # make every shell an SSH session starts warn about setlocale. The pair below
   # is what keeps that quiet: nothing locale-shaped is accepted from the client,
   # and PAM hands each session the locale that does exist.
-  docker exec "${CONTAINER}" grep -qE '^AcceptEnv .*(LANG|LC_)' \
-    /etc/ssh/sshd_config.d/00-agent-env.conf \
-    && bad "sshd accepts locale variables the image cannot provide" \
-    || ok "sshd accepts no locale variables from the client"
+  refute "sshd accepts no locale variables from the client" \
+    docker exec "${CONTAINER}" grep -qE '^AcceptEnv .*(LANG|LC_)' \
+    /etc/ssh/sshd_config.d/00-agent-env.conf
 
-  docker exec "${CONTAINER}" grep -q '^LANG=C.UTF-8' /etc/environment \
-    && ok "PAM gives every session the locale the image has" \
-    || bad "/etc/environment sets no LANG, so SSH sessions land in the C locale"
+  assert "PAM gives every session the locale the image has" \
+    docker exec "${CONTAINER}" grep -q '^LANG=C.UTF-8' /etc/environment
 
   head_ "File manager"
 
@@ -606,9 +651,14 @@ with open("/etc/mise/mise.lock", "rb") as fh:
     c=$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' "${BASE}/${DUFS_PATH}/")
     [[ "$c" == 401 || "$c" == 302 ]] && ok "the file manager is behind the gateway auth ($c)" \
                                      || bad "/${DUFS_PATH}/ answered $c without credentials"
+  else
+    skip "that the file manager is gated (AUTH_MODE=none asks for no gate)"
   fi
 
   # Upload and delete are the point of it; check the file really lands as dev.
+  if [ "${oauth_gate}" = true ]; then
+    skip "the upload/delete round trip (the OAuth gate answers before dufs does)"
+  fi
   if [ "${oauth_gate}" != true ]; then
   probe="smoke-upload-$$.txt"
   put=$(curl -s -o /dev/null --max-time 20 -w '%{http_code}' -u "${AUTH}" \
@@ -636,9 +686,11 @@ with open("/etc/mise/mise.lock", "rb") as fh:
     c=$(code "${BASE}/${USER_WEB_PATH}")
     # Not routed, so the path is the primary service's — 200/502 both mean it
     # fell through, which is the point. It must not be serving a dashboard.
-    grep -q 'pitchfork' <<<"$(curl -s --max-time 15 -u "${AUTH}" "${BASE}/${USER_WEB_PATH}")" \
-      && bad "/${USER_WEB_PATH} still serves a dashboard though USER_WEB_ENABLE=false" \
-      || ok "/${USER_WEB_PATH} is not routed while the dashboard is off ($c)"
+    if grep -q 'pitchfork' <<<"$(curl -s --max-time 15 -u "${AUTH}" "${BASE}/${USER_WEB_PATH}")"; then
+      bad "/${USER_WEB_PATH} still serves a dashboard though USER_WEB_ENABLE=false"
+    else
+      ok "/${USER_WEB_PATH} is not routed while the dashboard is off ($c)"
+    fi
   else
   c=$(code "${BASE}/${USER_WEB_PATH}")
   case "$c" in
@@ -656,6 +708,8 @@ with open("/etc/mise/mise.lock", "rb") as fh:
     c=$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' "${BASE}/${USER_WEB_PATH}")
     [[ "$c" == 401 || "$c" == 302 ]] && ok "the dashboard is behind the gateway auth ($c)" \
                                      || bad "/${USER_WEB_PATH} answered $c without credentials"
+  else
+    skip "that the dashboard is gated (AUTH_MODE=none asks for no gate)"
   fi
   fi
 
@@ -683,8 +737,7 @@ with open("/etc/mise/mise.lock", "rb") as fh:
   fi
 
   for tool in fastfetch btop ncdu; do
-    docker exec "${CONTAINER}" sh -c "command -v ${tool} >/dev/null" \
-      && ok "${tool} installed" || bad "${tool} missing"
+    assert "${tool} installed" docker exec "${CONTAINER}" sh -c "command -v ${tool}"
   done
 
   head_ "Rootless Docker"
@@ -697,8 +750,7 @@ with open("/etc/mise/mise.lock", "rb") as fh:
 
   # The binaries ship either way; only the daemon is conditional.
   for bin in dockerd rootlesskit dockerd-rootless.sh; do
-    docker exec "${CONTAINER}" sh -c "command -v ${bin} >/dev/null" \
-      && ok "${bin} present in the image" || bad "${bin} missing"
+    assert "${bin} present in the image" docker exec "${CONTAINER}" sh -c "command -v ${bin}"
   done
   docker exec -u dev "${CONTAINER}" bash -lc 'docker compose version' >/dev/null 2>&1 \
     && ok "the compose plugin resolves ($(docker exec -u dev "${CONTAINER}" bash -lc 'docker compose version --short' 2>/dev/null | tr -d '\r'))" \
@@ -710,9 +762,11 @@ with open("/etc/mise/mise.lock", "rb") as fh:
       || bad "dockerd is not running under dev: ${user_daemons:-none}"
 
     # It must be the user's daemon, not a second root one.
-    grep -q "dockerd" <<<"${sys_daemons}" \
-      && bad "dockerd is a system daemon — it should belong to dev" \
-      || ok "dockerd is not in the root supervisor"
+    if grep -q "dockerd" <<<"${sys_daemons}"; then
+      bad "dockerd is a system daemon — it should belong to dev"
+    else
+      ok "dockerd is not in the root supervisor"
+    fi
 
     info=$(docker exec -u dev "${CONTAINER}" bash -lc 'docker info 2>/dev/null')
     grep -q "rootless" <<<"${info}" \
@@ -746,10 +800,11 @@ with open("/etc/mise/mise.lock", "rb") as fh:
     # whatever it was running. That failure looks exactly like "my database
     # keeps dying", so check the probe rather than the symptom.
     sock=$(docker exec -u dev "${CONTAINER}" bash -lc 'echo "${DOCKER_HOST}"' | tr -d '\r')
-    docker exec -u dev "${CONTAINER}" env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/dev \
-      sh -c "docker -H ${sock} version >/dev/null 2>&1" \
-      && ok "the readiness probe passes with no environment to lean on" \
-      || bad "the readiness probe needs env that pitchfork will not give it — the daemon will restart-loop"
+    # A failure here means pitchfork restarts the daemon every probe window,
+    # stopping whatever it was running.
+    assert "the readiness probe passes with no environment to lean on" \
+      docker exec -u dev "${CONTAINER}" env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/dev \
+      sh -c "docker -H ${sock} version"
 
     # A shell must find the daemon without being told where it is.
     dh=$(docker exec -u dev "${CONTAINER}" bash -lc 'echo "${DOCKER_HOST:-unset}"' | tr -d '\r')
@@ -757,9 +812,11 @@ with open("/etc/mise/mise.lock", "rb") as fh:
                               || bad "DOCKER_HOST is '${dh}'"
   else
     ok "rootless Docker is off by default (DOCKER_ROOTLESS_ENABLE=${docker_rootless:-unset})"
-    grep -qE "dockerd" <<<"${user_daemons}" \
-      && bad "dockerd is defined even though the feature is disabled" \
-      || ok "no dockerd daemon is defined while disabled"
+    if grep -qE "dockerd" <<<"${user_daemons}"; then
+      bad "dockerd is defined even though the feature is disabled"
+    else
+      ok "no dockerd daemon is defined while disabled"
+    fi
   fi
 
   head_ "mosh"
@@ -771,8 +828,14 @@ with open("/etc/mise/mise.lock", "rb") as fh:
   logs=$(docker logs "${CONTAINER}" 2>&1 | grep -c '^\[global/')
   [[ "$logs" -gt 0 ]] && ok "daemon output reaches docker logs (${logs} lines)" \
                       || bad "no daemon output in docker logs"
+else
+  skip "everything inside the container: set CONTAINER=<name> and run where its docker daemon is"
 fi
 
 head_ "Result"
-printf '  %d passed, %d failed\n\n' "$pass" "$fail"
+if [[ "${skipped}" -gt 0 ]]; then
+  printf '  %d passed, %d failed, %d skipped\n\n' "$pass" "$fail" "$skipped"
+else
+  printf '  %d passed, %d failed\n\n' "$pass" "$fail"
+fi
 [[ "$fail" == 0 ]]

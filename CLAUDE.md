@@ -55,9 +55,13 @@ The second run is the same with `-e OPENCODE_ENABLE=false -e
 AB_DASHBOARD_ENABLE=false` on a different port and container name — see the
 `Smoke test with OpenCode off` step in `.github/workflows/docker.yml`.
 
-Expect a clean run to report roughly 75 checks (OpenCode on) and 77 (OpenCode
-off), 0 failed. A full build from cold cache takes ~10 minutes; the container
-reaches healthy in well under a minute.
+A clean run reports 75 passed (OpenCode on) and 77 (OpenCode off), 0 failed,
+and one skip each — the oversized `*_FILE` guard when the container was not
+given one, and the credential-isolation check when there is no OpenCode server
+to inspect. Skips are counted and printed rather than dropped, so a total that
+moves means a check appeared or vanished; `passed + skipped` is what stays
+constant across auth modes. A full build from cold cache takes ~10 minutes; the
+container reaches healthy in well under a minute.
 
 ---
 
