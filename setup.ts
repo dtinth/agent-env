@@ -161,7 +161,10 @@ function ask(
       warn("required");
       continue;
     }
-    const err = opts.validate ? opts.validate(value) : null;
+    // An optional question that came back blank is answered: there is nothing
+    // for a validator to check, and running one would reject the very answer
+    // the question offered — the preset path skips it for the same reason.
+    const err = value && opts.validate ? opts.validate(value) : null;
     if (err) {
       warn(err);
       continue;
