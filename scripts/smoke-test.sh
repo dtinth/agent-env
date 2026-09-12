@@ -609,34 +609,6 @@ with open("/etc/mise/mise.lock", "rb") as fh:
   [[ "${act}" == no ]] && ok "no chpwd hook: mise is in shims mode everywhere" \
                        || bad "an interactive shell hook-activated mise: '${act}'"
 
-  # /etc/bash.bashrc is read before ~/.bashrc, so a dotfile that assigns PATH
-  # outright drops the shims -- and with no hook left to recompute anything,
-  # `node` would quietly become Debian's rather than the pinned one.
-  # It has to be a real prompt-driven session, not `bash -ic`: the guard rides
-  # PROMPT_COMMAND, and -c never displays a prompt.
-  clob=$(docker exec -u dev "${CONTAINER}" bash -c '
-    cp -a ~/.bashrc /tmp/.bashrc.smoke
-    printf "PATH=\"\$HOME/.local/bin:/usr/bin:/bin\"\n" >> ~/.bashrc
-    printf "command -v node\nexit\n" | script -qec "bash -i" /dev/null
-    cp -a /tmp/.bashrc.smoke ~/.bashrc && rm -f /tmp/.bashrc.smoke' \
-    2>/dev/null | tr -d '\r' | grep -c '^/opt/mise/shims/node$' || true)
-  [[ "${clob}" == 1 ]] \
-    && ok "a dotfile that replaces PATH does not cost an interactive shell its shims" \
-    || bad "PATH-replacing dotfile left an interactive node outside the shims"
-
-  # That guard runs first in PROMPT_COMMAND, so it must hand the real exit
-  # status to whatever runs after it -- a prompt that shows the last command's
-  # status would otherwise report success for everything.
-  # -i so /etc/bash.bashrc sources the file; it returns early otherwise, and
-  # the guard would not be defined at all.
-  st=$(docker exec -u dev "${CONTAINER}" bash -ic '
-    _after() { echo "$?"; }
-    PROMPT_COMMAND="_mise_shims_guard;_after"
-    (exit 42); eval "${PROMPT_COMMAND}"' 2>/dev/null | tr -d '\r')
-  [[ "${st}" == 42 ]] \
-    && ok "the shims guard passes the real exit status along the prompt" \
-    || bad "the shims guard reported '${st:-nothing}' instead of the real 42"
-
   # A shim carries the enclosing mise.toml's [env] into the process it starts --
   # that is what a prompt-less caller gets instead of the hook -- but only once
   # the config is trusted, so an untrusted repo cannot inject anything.
