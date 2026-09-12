@@ -624,6 +624,19 @@ with open("/etc/mise/mise.lock", "rb") as fh:
     && ok "a dotfile that replaces PATH does not cost an interactive shell its shims" \
     || bad "PATH-replacing dotfile left an interactive node outside the shims"
 
+  # That guard runs first in PROMPT_COMMAND, so it must hand the real exit
+  # status to whatever runs after it -- a prompt that shows the last command's
+  # status would otherwise report success for everything.
+  # -i so /etc/bash.bashrc sources the file; it returns early otherwise, and
+  # the guard would not be defined at all.
+  st=$(docker exec -u dev "${CONTAINER}" bash -ic '
+    _after() { echo "$?"; }
+    PROMPT_COMMAND="_mise_shims_guard;_after"
+    (exit 42); eval "${PROMPT_COMMAND}"' 2>/dev/null | tr -d '\r')
+  [[ "${st}" == 42 ]] \
+    && ok "the shims guard passes the real exit status along the prompt" \
+    || bad "the shims guard reported '${st:-nothing}' instead of the real 42"
+
   # A shim carries the enclosing mise.toml's [env] into the process it starts --
   # that is what a prompt-less caller gets instead of the hook -- but only once
   # the config is trusted, so an untrusted repo cannot inject anything.
