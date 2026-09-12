@@ -733,6 +733,10 @@ Three things follow from using shims:
   `mise run` for those, or `eval "$(mise env)"` to pull them into the shell.
 - `which node` reports the shim, not the tool. `mise which node` gives the real
   path.
+- The shims reach `PATH` before your dotfiles run, so a `~/.bashrc` that
+  *assigns* `PATH` rather than prepending to it drops them, and `node` falls
+  back to Debian's. Nothing puts the entry back — `PATH` is yours. Prepend
+  (`PATH="$HOME/.local/bin:$PATH"`) and mise keeps working.
 - If a declared tool is not installed, a shim falls back to the next
   same-named executable on `PATH` rather than failing — so a missing `python`
   can silently become the system one. Auto-install is on, which normally

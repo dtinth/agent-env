@@ -30,31 +30,9 @@ command -v mise >/dev/null 2>&1 || return 0
 
 eval "$(mise activate bash --shims)"
 
-# Bash reads this file *before* ~/.bashrc, so the line above cannot outlast a
-# dotfile that assigns PATH outright rather than prepending to it -- and in
-# shims mode nothing else would ever put the shims back. `node` then silently
-# resolves to Debian's, not the version the lockfile pins. The old chpwd hook
-# happened to cover this, because it recomputed the environment on the next
-# `cd`; losing that quietly is worse than the small cost of a guard.
-#
-# This is not mise's hook by another name: it re-asserts one PATH entry if it
-# has gone missing and touches nothing else, so MISE_SHELL stays unset and
-# tool resolution still happens entirely in the shim. It rides PROMPT_COMMAND,
-# so it covers the prompt-driven session a person actually types into, not
-# `bash -ic` -- which never displays a prompt, and which the old hook did not
-# cover either.
-# Save and restore $? around the body. PROMPT_COMMAND components run in order
-# and this one runs first, so without this the `case` below would hand every
-# status-aware prompt after it a 0 and hide the exit code of what you just ran.
-_mise_shims_guard() {
-  local status="$?"
-  case ":${PATH}:" in
-    *":${MISE_DATA_DIR:-/opt/mise}/shims:"*) ;;
-    *) PATH="${MISE_DATA_DIR:-/opt/mise}/shims:${PATH}" ;;
-  esac
-  return "${status}"
-}
-case ";${PROMPT_COMMAND:-};" in
-  *";_mise_shims_guard;"*) ;;
-  *) PROMPT_COMMAND="_mise_shims_guard${PROMPT_COMMAND:+;${PROMPT_COMMAND}}" ;;
-esac
+# Nothing re-asserts that entry afterwards, deliberately. Bash reads this
+# file before ~/.bashrc, so a dotfile that assigns PATH outright rather than
+# prepending to it drops the shims and `node` falls back to Debian's. That is
+# the dotfile's call to make: PATH belongs to whoever is sitting at the shell,
+# and a guard that puts the entry back on every prompt would be arguing with
+# them. Prepend rather than assign, and mise keeps working.
