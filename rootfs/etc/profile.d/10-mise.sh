@@ -17,6 +17,9 @@ case ":${PATH}:" in
   *) export PATH="${MISE_DATA_DIR}/shims:${PATH}" ;;
 esac
 
-# Interactive shells re-assert the shims directory, in case a dotfile rewrote
-# PATH. Non-login interactive shells pick the same file up from /etc/bash.bashrc.
+# Interactive shells get the same shims entry from mise itself. That file is the
+# one thing a non-login interactive shell reads -- it never sees profile.d -- and
+# /etc/bash.bashrc sources it for exactly that reason. Both run before ~/.bashrc,
+# so neither survives a dotfile that assigns PATH rather than prepending to it,
+# which is the dotfile's prerogative.
 [ -r /etc/agent-env/mise-activate.sh ] && . /etc/agent-env/mise-activate.sh
