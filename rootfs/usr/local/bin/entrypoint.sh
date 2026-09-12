@@ -348,6 +348,25 @@ docker_rootless_preflight() {
   [[ "$(sed -n 's/^Seccomp:\s*//p' /proc/self/status)" == 0 ]] \
     || missing+=("--security-opt seccomp=unconfined")
 
+  # AppArmor's docker-default profile denies the mount syscall outright, and
+  # the first thing rootlesskit's child does inside its new mount namespace is
+  # remount / shared. Without this the daemon never gets past:
+  #   [rootlesskit:child] error: failed to share mount point: /: permission denied
+  # Nothing above catches it: seccomp, capabilities and /proc/sys are all fine
+  # by then, which is why it reads as a kernel-level refusal rather than a
+  # missing flag. Only ask for it where AppArmor is actually enforcing --
+  # /proc/self/attr/current carries other LSMs' labels on hosts without it.
+  if [[ "$(cat /sys/module/apparmor/parameters/enabled 2>/dev/null)" == "Y" ]]; then
+    local aa_label=""
+    if [[ -r /proc/self/attr/apparmor/current ]]; then
+      aa_label="$(tr -d '\0' < /proc/self/attr/apparmor/current 2>/dev/null || true)"
+    elif [[ -r /proc/self/attr/current ]]; then
+      aa_label="$(tr -d '\0' < /proc/self/attr/current 2>/dev/null || true)"
+    fi
+    [[ -z "${aa_label}" || "${aa_label}" == unconfined* ]] \
+      || missing+=("--security-opt apparmor=unconfined")
+  fi
+
   # slirp4netns gives the daemon its own network namespace, and builds a tap
   # device to do it.
   [[ -c /dev/net/tun ]] || missing+=("--device /dev/net/tun")
@@ -1314,7 +1333,9 @@ if [[ -n "${MISE_TOOLS:-}" ]]; then
   log "installing mise tools: ${MISE_TOOLS}"
   # shellcheck disable=SC2086
   gosu_run() { setpriv --reuid "${PUID}" --regid "${PGID}" --init-groups --inh-caps=-all "$@"; }
-  gosu_run env HOME="${USER_HOME}" mise use -g ${MISE_TOOLS} \
+  # --yes explicitly: MISE_YES is a build-time ARG and is deliberately not in
+  # the image's environment, so nothing here inherits a blanket "trust it".
+  gosu_run env HOME="${USER_HOME}" mise use -g --yes ${MISE_TOOLS} \
     || warn "mise failed to install one or more of: ${MISE_TOOLS}"
   gosu_run env HOME="${USER_HOME}" mise reshim || true
 fi

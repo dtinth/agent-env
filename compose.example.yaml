@@ -108,6 +108,7 @@ services:
     #   - SYS_ADMIN # setuid newuidmap, to map the subuid range
     # security_opt:
     #   - seccomp=unconfined # runc's per-container session keyring (keyctl)
+    #   - apparmor=unconfined # docker-default denies mount; rootlesskit remounts /
     #   - systempaths=unconfined # writable /proc/sys, for net.ipv4.ip_forward
     # devices:
     #   - /dev/net/tun # slirp4netns' tap device

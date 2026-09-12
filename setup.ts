@@ -1151,7 +1151,7 @@ function renderCompose(a: Answers, envKeys: string[]): string {
 
   if (a.rootlessDocker) {
     L.push(
-      "    # DOCKER_ROOTLESS_ENABLE=true needs all four of these. The entrypoint",
+      "    # DOCKER_ROOTLESS_ENABLE=true needs all five of these. The entrypoint",
     );
     L.push("    # names any that are missing and leaves the daemon down.");
     L.push("    cap_add:");
@@ -1159,6 +1159,9 @@ function renderCompose(a: Answers, envKeys: string[]): string {
     L.push("    security_opt:");
     L.push(
       "      - seccomp=unconfined # runc's per-container session keyring (keyctl)",
+    );
+    L.push(
+      "      - apparmor=unconfined # docker-default denies mount; rootlesskit remounts /",
     );
     L.push(
       "      - systempaths=unconfined # writable /proc/sys, for net.ipv4.ip_forward",

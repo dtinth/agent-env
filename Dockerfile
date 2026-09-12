@@ -137,8 +137,16 @@ RUN set -eux; \
 ENV MISE_DATA_DIR=/opt/mise \
     MISE_CONFIG_DIR=/etc/mise \
     MISE_STATE_DIR=/opt/mise/state \
-    MISE_CACHE_DIR=/opt/mise/cache \
-    MISE_YES=1
+    MISE_CACHE_DIR=/opt/mise/cache
+
+# Auto-answer mise's prompts while building, and *only* while building. As an
+# ENV this persisted into the image, where it silently auto-trusts any
+# mise.toml mise is asked to read -- so a repository the agent had just cloned
+# could set environment variables for every tool run inside it, which is the
+# exact thing `mise trust` exists to gate. ARG is exposed to RUN but not kept
+# in the image, which is the scope wanted here. Runtime callers that need it
+# pass --yes explicitly (see entrypoint.sh).
+ARG MISE_YES=1
 
 RUN curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh \
     && mkdir -p /opt/mise /etc/mise \
@@ -218,9 +226,9 @@ RUN set -eux; \
     chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/agent-env /opt/agent-env/bin/*; \
     # Debian's /etc/bash.bashrc is what an interactive non-login shell reads —
     # a terminal on the desktop, or `docker exec -it`. It does not source
-    # profile.d, so hook mise activation in from here too.
+    # profile.d, so wire mise's shims in from here too.
     printf '\n%s\n%s\n' \
-      '# mise: full activation for interactive shells' \
+      '# mise: shims on PATH for interactive shells' \
       '[ -r /etc/agent-env/mise-activate.sh ] && . /etc/agent-env/mise-activate.sh' \
       >> /etc/bash.bashrc; \
     mkdir -p /var/run/sshd /run/dbus /var/lib/caddy /var/lib/pitchfork /opt/agent-env/pitchfork; \

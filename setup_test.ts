@@ -255,6 +255,7 @@ Deno.test("the rootless-Docker flags are all present, or none are", () => {
     const flag of [
       "SYS_ADMIN",
       "seccomp=unconfined",
+      "apparmor=unconfined",
       "systempaths=unconfined",
       "/dev/net/tun",
     ]
@@ -266,12 +267,13 @@ Deno.test("the rootless-Docker flags are all present, or none are", () => {
   }
 
   const onCompose = Deno.readTextFileSync(`${on}/compose.yaml`);
-  // Each one is load-bearing; three out of four leaves the daemon down with a
+  // Each one is load-bearing; four out of five leaves the daemon down with a
   // message, which is a worse failure than not offering it at all.
   for (
     const flag of [
       "SYS_ADMIN",
       "seccomp=unconfined",
+      "apparmor=unconfined",
       "systempaths=unconfined",
       "/dev/net/tun",
     ]

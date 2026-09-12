@@ -1,8 +1,10 @@
-# mise, in two halves.
+# mise, in shims mode.
 #
-# Shims on PATH cover the cases where a shell prompt never appears: daemons,
-# `ssh host <command>`, IDEs, anything the agent shells out to. They resolve the
-# right tool version per directory, which is all most things need.
+# Shims on PATH are the whole mechanism: they resolve the right tool version per
+# directory *and* apply that directory's mise.toml [env] to the process they
+# start. That works everywhere, including the cases where a shell prompt never
+# appears -- daemons, `ssh host <command>`, IDEs, anything the agent shells out
+# to -- which is why there is no chpwd hook anywhere in this image.
 export MISE_DATA_DIR="${MISE_DATA_DIR:-/opt/mise}"
 export MISE_STATE_DIR="${MISE_STATE_DIR:-/opt/mise/state}"
 export MISE_CACHE_DIR="${MISE_CACHE_DIR:-/opt/mise/cache}"
@@ -15,6 +17,6 @@ case ":${PATH}:" in
   *) export PATH="${MISE_DATA_DIR}/shims:${PATH}" ;;
 esac
 
-# Interactive login shells additionally get the real activation. Non-login
-# interactive shells pick the same file up from /etc/bash.bashrc.
+# Interactive shells re-assert the shims directory, in case a dotfile rewrote
+# PATH. Non-login interactive shells pick the same file up from /etc/bash.bashrc.
 [ -r /etc/agent-env/mise-activate.sh ] && . /etc/agent-env/mise-activate.sh

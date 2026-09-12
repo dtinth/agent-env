@@ -592,16 +592,17 @@ outside — a container's own users map into `dev`'s subuid range, which is what
 lets stock images like `postgres` drop privileges normally.
 
 **The host has to relax this container's sandbox for it.** A rootless daemon
-needs four things a stock container does not get, and all four are required:
+needs five things a stock container does not get, and all five are required:
 
 | Flag | Why |
 |---|---|
 | `--cap-add SYS_ADMIN` | `newuidmap` is setuid-root, so its euid stops matching the owner of the user namespace it is mapping. That loses the kernel's "namespace owner holds all capabilities in it" shortcut and falls through to `CAP_SYS_ADMIN`, which docker drops. |
 | `--security-opt seccomp=unconfined` | `runc` joins a session keyring per container and `keyctl` is not in the default profile. The daemon starts fine without this; the containers it runs fail with `unable to join session keyring`. |
+| `--security-opt apparmor=unconfined` | On an AppArmor host the `docker-default` profile denies `mount`, and rootlesskit's first act is to remount `/` shared inside its own mount namespace. Without this the daemon dies with `[rootlesskit:child] error: failed to share mount point: /: permission denied`. Hosts without AppArmor (most non-Debian/Ubuntu ones) do not need it, and the entrypoint only asks for it where AppArmor is enforcing. |
 | `--security-opt systempaths=unconfined` | `dockerd-rootless.sh` sets `net.ipv4.ip_forward` inside its own network namespace, and `/proc/sys` is read-only in a stock container. |
 | `--device /dev/net/tun` | slirp4netns builds a tap device to give the daemon its network namespace. |
 
-The entrypoint checks for all four at startup. If any is missing it names it,
+The entrypoint checks for all five at startup. If any is missing it names it,
 leaves the daemon down and carries on, rather than crash-looping something that
 cannot work.
 
@@ -609,6 +610,7 @@ cannot work.
 docker run -d --name agent-env --shm-size=2g \
   --cap-add SYS_ADMIN \
   --security-opt seccomp=unconfined \
+  --security-opt apparmor=unconfined \
   --security-opt systempaths=unconfined \
   --device /dev/net/tun \
   -e DOCKER_ROOTLESS_ENABLE=true \
@@ -708,13 +710,27 @@ your own.
 
 #### Shims, and where they stop
 
-Tool resolution works through mise's shims, which is what makes `node` resolve
-correctly for a daemon, for `ssh host <command>`, and for anything the agent
-shells out to — none of which ever display a prompt. Shims cannot do everything
-`mise activate` does, so **interactive** bash additionally gets the full
-activation: a project's `mise.toml` `[env]` and the `cd` hooks work when you are
-actually sitting in a repo. Two things follow from using shims:
+mise runs in **shims mode**, everywhere — there is no `cd` hook in any shell.
+A shim resolves the tool version *and* applies the enclosing `mise.toml`'s
+`[env]` to the process it starts, so a project's environment reaches a daemon,
+`ssh host <command>`, an IDE and anything the agent shells out to, none of which
+ever display a prompt for a hook to attach to:
 
+```bash
+$ cat /workspace/api/mise.toml
+[env]
+DATABASE_URL = "postgres://localhost/api"
+
+$ ssh box 'cd /workspace/api && node -e "console.log(process.env.DATABASE_URL)"'
+postgres://localhost/api      # no prompt, no hook, still set
+```
+
+Three things follow from using shims:
+
+- The vars are set for the process the shim starts, not for the shell around
+  it. `echo "$DATABASE_URL"` shows nothing, and a tool that is *not* mise-managed
+  (an apt-installed `psql`, say) does not see them. Use `mise x -- psql ...` or
+  `mise run` for those, or `eval "$(mise env)"` to pull them into the shell.
 - `which node` reports the shim, not the tool. `mise which node` gives the real
   path.
 - If a declared tool is not installed, a shim falls back to the next
@@ -732,7 +748,12 @@ mise WARN /workspace/some-repo/mise.toml is not trusted, run `mise trust` to ena
 ```
 
 That is the right default here, where an agent clones code it has never seen —
-and it is asserted by the smoke suite. `mise trust` accepts a config once you
+and it is asserted by the smoke suite. In shims mode the gate matters more, not
+less: an untrusted `[env]` would otherwise reach every tool run inside the repo,
+not just a shell sitting in it. For the same reason `MISE_YES` is a build-time
+`ARG` rather than an image `ENV` — left in the environment it auto-answers the
+trust prompt, which would hand a freshly cloned repository exactly what the
+prompt is there to withhold. `mise trust` accepts a config once you
 have looked at it. Two further knobs if you want more distance from repository
 content: `MISE_SAFE=1` blocks template functions, hooks and scripts while still
 resolving versions, and the `paranoid` setting requires re-trusting a config
