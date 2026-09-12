@@ -43,11 +43,16 @@ eval "$(mise activate bash --shims)"
 # so it covers the prompt-driven session a person actually types into, not
 # `bash -ic` -- which never displays a prompt, and which the old hook did not
 # cover either.
+# Save and restore $? around the body. PROMPT_COMMAND components run in order
+# and this one runs first, so without this the `case` below would hand every
+# status-aware prompt after it a 0 and hide the exit code of what you just ran.
 _mise_shims_guard() {
+  local status="$?"
   case ":${PATH}:" in
     *":${MISE_DATA_DIR:-/opt/mise}/shims:"*) ;;
     *) PATH="${MISE_DATA_DIR:-/opt/mise}/shims:${PATH}" ;;
   esac
+  return "${status}"
 }
 case ";${PROMPT_COMMAND:-};" in
   *";_mise_shims_guard;"*) ;;

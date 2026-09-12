@@ -55,7 +55,7 @@ The second run is the same with `-e OPENCODE_ENABLE=false -e
 AB_DASHBOARD_ENABLE=false` on a different port and container name — see the
 `Smoke test with OpenCode off` step in `.github/workflows/docker.yml`.
 
-A clean run reports 76 passed (OpenCode on) and 78 (OpenCode off), 0 failed,
+A clean run reports 77 passed (OpenCode on) and 79 (OpenCode off), 0 failed,
 and one skip each — the oversized `*_FILE` guard when the container was not
 given one, and the credential-isolation check when there is no OpenCode server
 to inspect. Skips are counted and printed rather than dropped, so a total that
