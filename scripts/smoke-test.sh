@@ -597,21 +597,34 @@ with open("/etc/mise/mise.lock", "rb") as fh:
     bad "node is ${running:-unknown} but the lockfile says ${locked}"
   fi
 
-  # Interactive shells get the full activation; non-interactive ones must not,
-  # since there is no prompt for the hook and shims already resolve versions.
+  # Shims are the whole mechanism, so they have to be on PATH with or without a
+  # prompt -- and the hook must be gone, or an interactive shell would resolve
+  # tools by a second, different route.
+  ishim=$(docker exec -u dev "${CONTAINER}" bash -ic 'command -v node' 2>/dev/null | tr -d '\r')
+  nshim=$(docker exec -u dev "${CONTAINER}" bash -c 'command -v node' 2>/dev/null | tr -d '\r')
+  [[ "${ishim}" == /opt/mise/shims/node && "${nshim}" == /opt/mise/shims/node ]] \
+    && ok "interactive and non-interactive shells both resolve tools by shim" \
+    || bad "node resolves to '${ishim:-unset}' interactively, '${nshim:-unset}' otherwise"
   act=$(docker exec -u dev "${CONTAINER}" bash -ic 'echo "${MISE_SHELL:-no}"' 2>/dev/null | tr -d '\r')
-  [[ "${act}" == bash ]] && ok "interactive shells activate mise (project env and hooks work)" \
-                         || bad "interactive shell did not activate mise: '${act}'"
-  noact=$(docker exec -u dev "${CONTAINER}" bash -c 'echo "${MISE_SHELL:-no}"' 2>/dev/null | tr -d '\r')
-  [[ "${noact}" == no ]] && ok "non-interactive shells use shims alone" \
-                         || bad "non-interactive shell activated mise: '${noact}'"
+  [[ "${act}" == no ]] && ok "no chpwd hook: mise is in shims mode everywhere" \
+                       || bad "an interactive shell hook-activated mise: '${act}'"
 
-  # An untrusted repo config must not be able to inject env into a shell.
+  # A shim carries the enclosing mise.toml's [env] into the process it starts --
+  # that is what a prompt-less caller gets instead of the hook -- but only once
+  # the config is trusted, so an untrusted repo cannot inject anything.
   docker exec -u dev "${CONTAINER}" bash -c '
     mkdir -p /tmp/untrusted && printf "[env]\nSMOKE_INJECTED = \"yes\"\n" > /tmp/untrusted/mise.toml' 2>/dev/null
-  inj=$(docker exec -u dev -w /tmp/untrusted "${CONTAINER}" bash -ic 'echo "${SMOKE_INJECTED:-no}"' 2>/dev/null | tr -d '\r')
-  [[ "${inj}" == no ]] && ok "an untrusted mise.toml cannot set env in a shell" \
-                       || bad "untrusted mise.toml injected env: '${inj}'"
+  inj=$(docker exec -u dev -w /tmp/untrusted "${CONTAINER}" bash -c \
+    'node -e "console.log(process.env.SMOKE_INJECTED || \"no\")" 2>/dev/null || echo no' | tr -d '\r')
+  trusted=$(docker exec -u dev -w /tmp/untrusted "${CONTAINER}" bash -c \
+    'mise trust >/dev/null 2>&1; node -e "console.log(process.env.SMOKE_INJECTED || \"no\")" 2>/dev/null || echo no' | tr -d '\r')
+  if [[ "${inj}" == no && "${trusted}" == yes ]]; then
+    ok "a shim applies mise.toml [env], and only once the config is trusted"
+  elif [[ "${inj}" != no ]]; then
+    bad "untrusted mise.toml injected env through a shim: '${inj}'"
+  else
+    bad "a trusted mise.toml did not reach a shim-run process: '${trusted}'"
+  fi
 
   head_ "SSH host keys"
 
