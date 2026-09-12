@@ -678,7 +678,7 @@ function collect(
   if (rootlessDocker) {
     note(
       C.dim(
-        "  Adds four host flags that widen the sandbox. See the README before shipping this.",
+        "  Adds five host flags that widen the sandbox. See the README before shipping this.",
       ),
     );
     if (mode === "tailscale") {
