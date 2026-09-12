@@ -2,9 +2,8 @@
 #
 # The shims directory is already on PATH from /etc/profile.d/10-mise.sh and
 # from /etc/environment, so for most shells this is a no-op. It exists for the
-# one case those two miss: an interactive non-login shell whose PATH was
-# rewritten by a dotfile. `mise activate bash --shims` re-asserts the shims
-# directory at the front of PATH and nothing else.
+# interactive non-login shell -- a desktop terminal, `docker exec -it` -- which
+# reads /etc/bash.bashrc and never reads profile.d at all.
 #
 # Shims rather than the hook is a deliberate choice. A shim resolves the tool
 # version *and* applies the enclosing mise.toml's [env] to the process it
@@ -30,3 +29,27 @@ esac
 command -v mise >/dev/null 2>&1 || return 0
 
 eval "$(mise activate bash --shims)"
+
+# Bash reads this file *before* ~/.bashrc, so the line above cannot outlast a
+# dotfile that assigns PATH outright rather than prepending to it -- and in
+# shims mode nothing else would ever put the shims back. `node` then silently
+# resolves to Debian's, not the version the lockfile pins. The old chpwd hook
+# happened to cover this, because it recomputed the environment on the next
+# `cd`; losing that quietly is worse than the small cost of a guard.
+#
+# This is not mise's hook by another name: it re-asserts one PATH entry if it
+# has gone missing and touches nothing else, so MISE_SHELL stays unset and
+# tool resolution still happens entirely in the shim. It rides PROMPT_COMMAND,
+# so it covers the prompt-driven session a person actually types into, not
+# `bash -ic` -- which never displays a prompt, and which the old hook did not
+# cover either.
+_mise_shims_guard() {
+  case ":${PATH}:" in
+    *":${MISE_DATA_DIR:-/opt/mise}/shims:"*) ;;
+    *) PATH="${MISE_DATA_DIR:-/opt/mise}/shims:${PATH}" ;;
+  esac
+}
+case ";${PROMPT_COMMAND:-};" in
+  *";_mise_shims_guard;"*) ;;
+  *) PROMPT_COMMAND="_mise_shims_guard${PROMPT_COMMAND:+;${PROMPT_COMMAND}}" ;;
+esac
