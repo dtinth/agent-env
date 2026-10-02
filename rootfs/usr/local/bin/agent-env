@@ -16,6 +16,11 @@ case "${1:-help}" in
       echo "For your own daemons, use \`pitchfork\` (see: agent-env mine)." >&2
       exit 1
     fi
+    # Root must not read the operator's project pitchfork.toml: its lockfile in
+    # /tmp/fslock is created by whoever got there first, and fs.protected_regular
+    # then refuses root's O_CREAT open of a file the other user owns.
+    ORIG_PWD="${PWD}"
+    cd /
     ;;
 esac
 
@@ -61,8 +66,11 @@ case "${1:-help}" in
     pitchfork list
     if [[ -n "${SUDO_USER:-}" ]]; then
       printf '\n\033[1mYour daemons\033[0m (%s) — manage with `pitchfork`\n' "${SUDO_USER}"
-      sudo -u "${SUDO_USER}" -H env -u PITCHFORK_STATE_DIR -u PITCHFORK_CONFIG_DIR \
-        pitchfork list 2>/dev/null || echo "  (none)"
+      (
+        cd "${ORIG_PWD:-/}" 2>/dev/null || cd /
+        sudo -u "${SUDO_USER}" -H env -u PITCHFORK_STATE_DIR -u PITCHFORK_CONFIG_DIR \
+          pitchfork list || echo "  (none)"
+      )
     fi
     ;;
   mine)
