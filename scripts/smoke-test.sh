@@ -188,7 +188,7 @@ if have_container; then
   # The OpenCode server's own basic-auth credential is injected at /. It exists
   # to reach OpenCode and nothing else, so if / is ever pointed at someone's own
   # application that header must not follow it there.
-  inj=$(docker exec "${CONTAINER}" grep -c 'header_up Authorization' /etc/caddy/Caddyfile 2>/dev/null | head -1)
+  inj=$(docker exec "${CONTAINER}" grep -c 'import /run/agent-env/opencode-auth.caddy' /etc/caddy/Caddyfile 2>/dev/null | head -1)
   inj="${inj:-0}"
   if [ "${OPENCODE_ENABLE}" = true ]; then
     [[ "${inj}" -ge 1 ]] \
