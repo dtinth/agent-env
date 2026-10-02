@@ -545,6 +545,17 @@ PY
     && ok "the cookie can be read out for a forwarded display" \
     || bad "agent-env x-cookie produced no cookie"
 
+  # The dev user touches a project pitchfork.toml first (taking ownership of its
+  # lockfile in /tmp/fslock); root's `agent-env status` must not trip over it.
+  docker exec -u dev "${CONTAINER}" bash -lc '
+    d=$(mktemp -d); : > "$d/pitchfork.toml"; cd "$d"
+    pitchfork list >/dev/null 2>&1
+    out=$(agent-env status 2>&1); rc=$?
+    rm -rf "$d"
+    [ $rc -eq 0 ] && ! grep -q "fslock" <<<"$out"' \
+    && ok "agent-env status works from a directory with the dev user's pitchfork.toml" \
+    || bad "agent-env status fails in a directory with a dev-owned pitchfork.toml"
+
   head_ "Credentials"
 
   if [ "${OPENCODE_ENABLE}" != true ]; then
