@@ -272,12 +272,14 @@ be listening on it.
 
 ### How the OpenCode server itself is protected
 
-`opencode2 serve` has its own HTTP basic auth (user `opencode`, password from
-`OPENCODE_SERVER_PASSWORD`). The gateway injects that credential on the way
-through, so users authenticate once at the gateway and never see it. If you don't
-set `OPENCODE_SERVER_PASSWORD`, one is generated and persisted in the
-`opencode-config` volume. The same value is exported inside the container so the
-`opencode2` CLI and TUI can talk to the server.
+`opencode2 serve --service` registers the server as OpenCode's shared service, so
+the `opencode2` CLI's default discovery finds it instead of spawning a second
+one. The service has its own HTTP basic auth (user `opencode`) with a password it
+generates itself and records in `~/.local/state/opencode/service.json`; the
+gateway reads it from there and injects it on the way through, so users
+authenticate once at the gateway and never see it. Inside a login shell the same
+value is exported as `OPENCODE_SERVER_PASSWORD`, and `agent-env password` prints
+it. Setting `OPENCODE_SERVER_PASSWORD` yourself has no effect.
 
 Only ports **8080**, **8081** and **22** listen on external interfaces.
 The OpenCode server, VNC, websockify, ttyd, the dashboard and oauth2-proxy are
@@ -365,7 +367,6 @@ See [`.env.example`](.env.example) for the annotated list. The essentials:
 | `GITHUB_USERS` / `GITHUB_ORG` / `GITHUB_TEAM` | — | The `github` allow list; at least one, or an `ALLOWED_EMAIL*` |
 | `ALLOWED_EMAILS`, `ALLOWED_EMAIL_DOMAINS` | — | Who may sign in |
 | `OAUTH2_PROXY_COOKIE_SECRET` | generated | Set it to survive restarts cleanly |
-| `OPENCODE_SERVER_PASSWORD` | generated | OpenCode server credential |
 | `OPENCODE_ENABLE` | `true` | Whether OpenCode occupies `/` at all |
 | `OPENCODE_WORKDIR` | `/workspace` | Where the server and TUI start |
 | `PRIMARY_PORT` | `3000` | What `/` proxies to when OpenCode is off |

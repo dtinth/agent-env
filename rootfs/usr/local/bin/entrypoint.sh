@@ -472,26 +472,19 @@ MERGE
 chown -R "${PUID}:${PGID}" "$(dirname "${user_pf_config}")"
 
 # ---------------------------------------------------------------------------
-# OpenCode server password (also authenticates CLI/TUI clients)
+# OpenCode server credential
 # ---------------------------------------------------------------------------
-GATEWAY_BASIC_B64=""
-OPENCODE_SERVER_PASSWORD="${OPENCODE_SERVER_PASSWORD:-}"
-if is_true "${OPENCODE_ENABLE}"; then
-  if [[ -z "${OPENCODE_SERVER_PASSWORD:-}" ]]; then
-    pw_file="${USER_HOME}/.config/opencode/.server-password"
-    if [[ -s "${pw_file}" ]]; then
-      OPENCODE_SERVER_PASSWORD="$(< "${pw_file}")"
-    else
-      OPENCODE_SERVER_PASSWORD="$(rand_secret)"
-      printf '%s' "${OPENCODE_SERVER_PASSWORD}" > "${pw_file}"
-      chown "${PUID}:${PGID}" "${pw_file}"
-      chmod 600 "${pw_file}"
-      log "generated an OpenCode server password (persisted in ${pw_file})"
-    fi
-  fi
-  export OPENCODE_SERVER_PASSWORD
-  GATEWAY_BASIC_B64="$(printf 'opencode:%s' "${OPENCODE_SERVER_PASSWORD}" | base64 -w0)"
+# The server runs with --service, which mints its own password and records it in
+# the user's service.json. The gateway reads it from there (sync-opencode-auth);
+# nothing here chooses it.
+OPENCODE_AUTH_SNIPPET="${RUN_DIR}/opencode-auth.caddy"
+: > "${OPENCODE_AUTH_SNIPPET}"
+chown root:"${GATEWAY_GROUP}" "${OPENCODE_AUTH_SNIPPET}"
+chmod 640 "${OPENCODE_AUTH_SNIPPET}"
+if [[ -n "${OPENCODE_SERVER_PASSWORD:-}" ]]; then
+  log "WARN OPENCODE_SERVER_PASSWORD is ignored: the OpenCode service generates its own password"
 fi
+unset OPENCODE_SERVER_PASSWORD
 
 # Make the runtime configuration discoverable to shells and to `agent-env`.
 {
@@ -523,8 +516,11 @@ fi
 } > "${RUN_DIR}/env"
 
 cat > /etc/profile.d/99-agent-env.sh <<EOF
-export OPENCODE_SERVER_PASSWORD='${OPENCODE_SERVER_PASSWORD}'
 export OPENCODE_SERVER='http://127.0.0.1:${OPENCODE_PORT}'
+if [ -r "\$HOME/.local/state/opencode/service.json" ]; then
+  OPENCODE_SERVER_PASSWORD="\$(jq -r '.password // empty' "\$HOME/.local/state/opencode/service.json" 2>/dev/null)"
+  export OPENCODE_SERVER_PASSWORD
+fi
 export DISPLAY='${DESKTOP_DISPLAY}'
 export XAUTHORITY='${XAUTHORITY_FILE}'
 export XDG_RUNTIME_DIR='${XDG_RUNTIME_DIR}'
@@ -555,7 +551,6 @@ DISPLAY=${DESKTOP_DISPLAY}
 XAUTHORITY=${XAUTHORITY_FILE}
 XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}
 OPENCODE_SERVER=http://127.0.0.1:${OPENCODE_PORT}
-OPENCODE_SERVER_PASSWORD=${OPENCODE_SERVER_PASSWORD}
 EOF
 if is_true "${DOCKER_ROOTLESS_ENABLE}"; then
   echo "DOCKER_HOST=${DOCKER_ROOTLESS_HOST}" >> /etc/environment
@@ -1087,7 +1082,7 @@ EOF
   {
     cat <<EOF
 {
-	admin off
+	admin unix//var/lib/caddy/admin.sock|0600
 	auto_https off
 	log {
 		output stderr
@@ -1216,13 +1211,14 @@ EOF
       cat <<EOF
 
 			# Everything else: the OpenCode v2 web UI and API. The server's own
-			# basic-auth credential is injected here so users never see it.
+			# basic-auth credential is injected here so users never see it. It comes
+			# from a snippet that sync-opencode-auth keeps current.
 			# The injection is bound to OpenCode and must never follow / to anything
 			# else: it would hand a credential to someone's own application, and
 			# break anything that does its own Authorization.
 			handle {
 				reverse_proxy 127.0.0.1:${OPENCODE_PORT} {
-					header_up Authorization "Basic ${GATEWAY_BASIC_B64}"
+					import ${OPENCODE_AUTH_SNIPPET}
 				}
 			}
 		}
@@ -1382,7 +1378,6 @@ DISPLAY = "${DESKTOP_DISPLAY}"
 XAUTHORITY = "${XAUTHORITY_FILE}"
 XDG_RUNTIME_DIR = "${XDG_RUNTIME_DIR}"
 TZ = "${TZ}"
-OPENCODE_SERVER_PASSWORD = "${OPENCODE_SERVER_PASSWORD}"
 OPENCODE_PORT = "${OPENCODE_PORT}"
 OPENCODE_WORKDIR = "${OPENCODE_WORKDIR}"
 DESKTOP_DISPLAY = "${DESKTOP_DISPLAY}"
@@ -1476,6 +1471,12 @@ EOF
       'retry = true' \
       'env = { HOME = "/var/lib/caddy", XDG_CONFIG_HOME = "/var/lib/caddy", XDG_DATA_HOME = "/var/lib/caddy" }' \
       "ready_http = { url = \"http://127.0.0.1:${GATEWAY_PORT}/${HEALTH_PATH}\", timeout = \"60s\" }"
+
+    if is_true "${OPENCODE_ENABLE}"; then
+      emit_daemon opencode-auth-sync "/opt/agent-env/bin/sync-opencode-auth" \
+        'depends = ["caddy"]' \
+        'retry = true'
+    fi
 
     if is_true "${USER_SUPERVISOR_ENABLE}"; then
       local user_sup_ready="ready_cmd = { run = \"true\", timeout = \"5s\" }"

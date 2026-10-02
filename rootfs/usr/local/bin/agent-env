@@ -98,7 +98,7 @@ case "${1:-help}" in
     true
     ;;
   password)
-    printf '%s\n' "${OPENCODE_SERVER_PASSWORD:-$(cat "/home/${USER_NAME:-dev}/.config/opencode/.server-password" 2>/dev/null)}"
+    jq -r '.password // empty' "/home/${USER_NAME:-dev}/.local/state/opencode/service.json"
     ;;
   logs)
     if [[ -n "${2:-}" ]]; then exec pitchfork logs --follow "$2"; fi

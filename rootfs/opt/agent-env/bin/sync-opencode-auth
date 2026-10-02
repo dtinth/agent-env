@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Keeps the gateway's credential for the OpenCode server current. A --service
+# server mints its own password and records it in the user's service.json; this
+# copies it into the snippet the Caddyfile imports and reloads Caddy on change.
+# Runs as root: it reads the user's state and talks to Caddy's admin socket.
+set -uo pipefail
+env_file=/run/agent-env/env
+value() { sed -n "s/^$1=//p" "${env_file}" | head -1; }
+user="$(value USER_NAME)"
+port="$(value OPENCODE_PORT)"
+state="/home/${user}/.local/state/opencode/service.json"
+snippet=/run/agent-env/opencode-auth.caddy
+current=""
+
+while sleep 1; do
+  [[ -r "${state}" ]] || continue
+  # Only trust a registration that points at the supervised port.
+  want=":${port}"
+  password="$(jq -r --arg p "${want}" \
+    'select((.url // "") | endswith($p)) | .password // empty' "${state}" 2>/dev/null)"
+  [[ -n "${password}" && "${password}" != "${current}" ]] || continue
+  b64="$(printf 'opencode:%s' "${password}" | base64 -w0)"
+  tmp="${snippet}.tmp"
+  printf 'header_up Authorization "Basic %s"\n' "${b64}" > "${tmp}"
+  chown root:"$(stat -c %g "${snippet}")" "${tmp}"
+  chmod 640 "${tmp}"
+  mv -f "${tmp}" "${snippet}"
+  if caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile \
+       --address unix//var/lib/caddy/admin.sock >/dev/null 2>&1; then
+    current="${password}"
+    echo "gateway credential for OpenCode updated"
+  else
+    echo "caddy reload failed; will retry" >&2
+  fi
+done
