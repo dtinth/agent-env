@@ -1473,7 +1473,7 @@ EOF
       "ready_http = { url = \"http://127.0.0.1:${GATEWAY_PORT}/${HEALTH_PATH}\", timeout = \"60s\" }"
 
     if is_true "${OPENCODE_ENABLE}"; then
-      emit_daemon opencode-auth-sync "/opt/agent-env/bin/sync-opencode-auth" \
+      emit_daemon gateway-auth-sync "/opt/agent-env/bin/sync-opencode-auth" \
         'depends = ["caddy"]' \
         'retry = true'
     fi
