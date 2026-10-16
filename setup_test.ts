@@ -125,7 +125,7 @@ Deno.test("each mode generates a complete, self-consistent set of files", () => 
   for (
     const [name, answers, extra] of [
       ["local", LOCAL, []],
-      ["caddy", CADDY, ["Caddyfile"]],
+      ["caddy", CADDY, []],
       ["tailscale", TS, ["ts-serve.json"]],
     ] as const
   ) {
@@ -595,7 +595,27 @@ Deno.test("a crafted ACME email cannot write Caddy directives", () => {
     acmeEmail: 'me@example.com\n}\n:80 {\n\trespond "x"',
   }, dir);
   assertEquals(r.code, 2);
-  assert(!existsSync(`${dir}/Caddyfile`));
+  assert(!existsSync(`${dir}/compose.yaml`));
+});
+
+Deno.test("caddy mode inlines the Caddyfile in compose.yaml", () => {
+  const dir = tmp();
+  assertEquals(run(CADDY, dir).code, 0);
+  assert(!existsSync(`${dir}/Caddyfile`), "wrote a separate Caddyfile");
+  const compose = Deno.readTextFileSync(`${dir}/compose.yaml`);
+  assertStringIncludes(compose, "        target: /etc/caddy/Caddyfile");
+  assertStringIncludes(compose, "  caddyfile:\n    content: |\n");
+  assertStringIncludes(compose, "      agent.example.com:");
+  assertStringIncludes(compose, "\treverse_proxy agent-env:8080");
+});
+
+Deno.test("a Caddyfile from an older generation is reported as stale", () => {
+  const dir = tmp();
+  Deno.writeTextFileSync(`${dir}/Caddyfile`, "old\n");
+  const r = run(CADDY, dir, ["--force"]);
+  assertEquals(r.code, 0);
+  assertStringIncludes(r.stdout, "no longer used");
+  assertEquals(Deno.readTextFileSync(`${dir}/Caddyfile`), "old\n");
 });
 
 Deno.test("a malformed domain is rejected", () => {

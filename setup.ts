@@ -1207,8 +1207,10 @@ function renderCompose(a: Answers, envKeys: string[]): string {
         }"`,
       );
     }
+    L.push("    configs:");
+    L.push("      - source: caddyfile");
+    L.push("        target: /etc/caddy/Caddyfile");
     L.push("    volumes:");
-    L.push("      - ./Caddyfile:/etc/caddy/Caddyfile:ro");
     L.push(
       "      # Without this every recreate re-issues the certificate and you",
     );
@@ -1241,6 +1243,19 @@ function renderCompose(a: Answers, envKeys: string[]): string {
     L.push("");
   }
 
+  if (a.mode === "caddy") {
+    // Inline rather than a ./Caddyfile beside this file: one file is the whole
+    // deployment, and there is no second file to fall out of step with it.
+    L.push("configs:");
+    L.push("  caddyfile:");
+    L.push("    content: |");
+    for (const line of renderCaddyfile(a).trimEnd().split("\n")) {
+      // Compose interpolates ${...} inside content, so a literal $ is $$.
+      L.push(line ? `      ${line.replace(/\$/g, "$$$$")}` : "");
+    }
+    L.push("");
+  }
+
   L.push("volumes:");
   if (a.workspace.kind !== "path") L.push("  workspace:");
   L.push("  home:");
@@ -1265,7 +1280,7 @@ function renderCaddyfile(a: Answers): string {
   L.push(
     "# routing belong to the gateway inside the container, so they behave",
   );
-  L.push("# identically whether or not this file is in play.");
+  L.push("# identically whether or not this config is in play.");
   if (a.acmeEmail) {
     L.push("");
     L.push("{");
@@ -1357,7 +1372,6 @@ function main() {
     "compose.yaml": renderCompose(answers, env.keys),
     [ANSWERS_FILE]: JSON.stringify(answers, null, 2) + "\n",
   };
-  if (answers.mode === "caddy") files["Caddyfile"] = renderCaddyfile(answers);
   if (answers.mode === "tailscale") {
     files["ts-serve.json"] = renderTsServe(answers);
   }
@@ -1411,16 +1425,18 @@ function main() {
     note(`${C.g("wrote")} ${final}`);
   }
 
-  const stale = [
-    ["Caddyfile", "caddy"],
+  // Caddyfile is stale in every mode: caddy mode now inlines it in
+  // compose.yaml, so a copy on disk is from an older generation.
+  const stale = ([
+    ["Caddyfile", null],
     ["ts-serve.json", "tailscale"],
-  ].filter(([f, forMode]) =>
+  ] as [string, Mode | null][]).filter(([f, forMode]) =>
     answers.mode !== forMode && !(f in files) && readIfExists(p(f)) !== null
   );
   if (stale.length) {
     note();
     for (const [f] of stale) {
-      warn(`${p(f)} is left over from a previous mode and is no longer used.`);
+      warn(`${p(f)} is left over from a previous run and is no longer used.`);
     }
     warn("Left in place in case you edited it — delete it when you are sure.");
   }
