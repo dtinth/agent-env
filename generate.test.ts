@@ -14,7 +14,6 @@ const BASIC: Answers = {
   authMode: "basic",
   gatewayUser: "dev",
   opencodeEnable: true,
-  dashboard: true,
   rootlessDocker: false,
   sshKeys: "",
   sshPort: 2222,

@@ -264,9 +264,6 @@ ENV TZ=UTC \
     DESKTOP_DISPLAY=:1 \
     TTYD_ENABLE=true \
     TTYD_WRITABLE=true \
-    AB_DASHBOARD_ENABLE=true \
-    AB_DASHBOARD_PORT=4848 \
-    DASHBOARD_GATEWAY_PORT=8081 \
     USER_SUPERVISOR_ENABLE=true \
     USER_WEB_ENABLE=true \
     USER_WEB_PORT=4747 \
@@ -283,13 +280,13 @@ ENV TZ=UTC \
     CHROME_BIN=/usr/bin/chromium \
     XDG_RUNTIME_DIR=/run/user/1000
 
-# 8080/8081 gateway, 22 ssh, 60000-60010/udp mosh
+# 8080 gateway, 22 ssh, 60000-60010/udp mosh
 # /var/lib/agent-env holds the generated SSH host keys. Deliberately NOT a
 # declared VOLUME: that would create an anonymous volume, which still dies with
 # the container on an image update, while making it impossible to tell whether
 # the operator actually persisted anything. The entrypoint warns instead.
 
-EXPOSE 8080 8081 22 60000-60010/udp
+EXPOSE 8080 22 60000-60010/udp
 
 # The probe follows the configuration rather than assuming it: the gateway
 # always, plus the OpenCode server only when OPENCODE_ENABLE says it should be

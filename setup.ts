@@ -39,7 +39,6 @@ import {
   ANSWERS_FILE,
   type AuthMode,
   CHECKS,
-  dashboardRoomProblem,
   generate,
   hostPathFor,
   type Mode,
@@ -475,17 +474,6 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
 
   // 4. Extras. Each of these costs something, so they are asked rather than
   //    assumed.
-  const dashboard = await yesNo(
-    "dashboard",
-    mode === "caddy"
-      ? `Serve the agent-browser dashboard too? (needs a second port, ${(httpsPort ?? 8443) + 1})`
-      : "Serve the agent-browser dashboard too? (needs a second port)",
-    prev.dashboard ?? mode !== "caddy",
-  );
-
-  const room = dashboardRoomProblem({ dashboard, httpsPort });
-  if (room) fail(room);
-
   const rootlessDocker = await yesNo(
     "rootlessDocker",
     "Let the agent run its own containers (rootless Docker)?",
@@ -590,7 +578,6 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
     mode,
     behindProxy,
     publicUrl,
-    dashboard,
     sshPort,
   });
   if (clash) fail(clash);
@@ -615,7 +602,6 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
     gatewayUser,
     opencodeEnable,
     primaryPort,
-    dashboard,
     rootlessDocker,
     sshKeys,
     sshPort,

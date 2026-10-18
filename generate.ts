@@ -50,7 +50,6 @@ export interface Answers {
   gatewayUser?: string;
   opencodeEnable: boolean;
   primaryPort?: number;
-  dashboard: boolean;
   rootlessDocker: boolean;
   sshKeys: string;
   sshPort?: number;
@@ -174,8 +173,8 @@ export const CHECKS: {
       return "needs to look like https://host or http://host:port";
     }
     if (!/^https?:$/.test(u.protocol)) return "http or https only";
-    // Everything downstream appends to this: the redirect URI, the
-    // dashboard origin. A query or fragment is inherited by all of them.
+    // Everything downstream appends to this, the redirect URI among it. A query
+    // or fragment would be inherited by all of them.
     if (u.pathname !== "/" || u.search || u.hash) {
       return "just the origin — no path, query or fragment";
     }
@@ -307,30 +306,11 @@ export function allowListProblem(
 }
 
 /**
- * Only the dashboard needs the port above, so this is a limit on that
- * combination, not on the port itself.
- */
-export function dashboardRoomProblem(a: Pick<Answers, "dashboard" | "httpsPort">): Problem | null {
-  const maxMain = 65535 - DASHBOARD_PORT_OFFSET;
-  if (!a.dashboard || a.httpsPort === undefined || a.httpsPort <= maxMain) {
-    return null;
-  }
-  return {
-    field: "httpsPort",
-    message: `Port ${a.httpsPort} leaves no room for the dashboard.`,
-    detail: [
-      `It is served on the next port up, and ${a.httpsPort + DASHBOARD_PORT_OFFSET} is not a port.`,
-      `Pick ${maxMain} or lower, or turn the dashboard off.`,
-    ],
-  };
-}
-
-/**
  * Docker will happily accept two mappings on one host port and then fail to
  * bind at `up`. Nothing downstream catches it, so check it here.
  */
 export function portClashProblem(
-  a: Pick<Answers, "mode" | "behindProxy" | "publicUrl" | "dashboard" | "sshPort">,
+  a: Pick<Answers, "mode" | "behindProxy" | "publicUrl" | "sshPort">,
 ): Problem | null {
   const claims: [number, string][] = [];
   const claim = (port: number | undefined, what: string) => {
@@ -340,16 +320,10 @@ export function portClashProblem(
   const extPort = u.port ? Number(u.port) : u.protocol === "https:" ? 443 : 80;
   if (a.mode === "local") {
     claim(a.behindProxy ? 8080 : extPort, "the gateway");
-    if (a.dashboard) {
-      claim(a.behindProxy ? 8081 : extPort + DASHBOARD_PORT_OFFSET, "the dashboard");
-    }
   }
   if (a.mode === "caddy") {
     claim(80, "ACME validation");
     claim(extPort, "the gateway, through caddy");
-    if (a.dashboard) {
-      claim(extPort + DASHBOARD_PORT_OFFSET, "the dashboard, through caddy");
-    }
   }
   claim(a.sshPort, "SSH");
   const seen = new Map<number, string>();
@@ -443,7 +417,7 @@ export function validate(a: Answers): Problem[] {
   // The cross-answer checks assume the answers they read are well-formed.
   if (out.length) return out;
 
-  for (const p of [refusal(a), allowListProblem(a), dashboardRoomProblem(a), portClashProblem(a)]) {
+  for (const p of [refusal(a), allowListProblem(a), portClashProblem(a)]) {
     if (p) out.push(p);
   }
   return out;
@@ -465,25 +439,8 @@ export class InvalidAnswers extends Error {
 /** Keys belonging to a sidecar service, not to the agent-env container. */
 const SIDECAR_KEYS = new Set(["TS_AUTHKEY"]);
 
-export const DASHBOARD_PORT_OFFSET = 1;
 /** What the image documents for mosh, and what the client is told to ask for. */
 const MOSH_PORTS = "60000-60010:60000-60010/udp";
-
-/** The port the dashboard is reached on. Everything that needs it asks here. */
-function dashboardPort(a: Answers): number {
-  const u = new URL(a.publicUrl);
-  const base = u.port ? Number(u.port) : u.protocol === "https:" ? 443 : 80;
-  return base + DASHBOARD_PORT_OFFSET;
-}
-
-function dashboardUrl(a: Answers): string {
-  // Same hostname, different port. The oauth2-proxy session cookie is
-  // host-scoped and ignores the port, so one sign-in covers both and only one
-  // redirect URI is ever registered with the provider.
-  const u = new URL(a.publicUrl);
-  u.port = String(dashboardPort(a));
-  return u.toString().replace(/\/$/, "");
-}
 
 export interface RenderedEnv {
   text: string;
@@ -545,7 +502,6 @@ export function renderEnv(
   L.push("");
   L.push("# --- Where it lives ---");
   put("PUBLIC_URL", a.publicUrl);
-  if (a.dashboard) put("DASHBOARD_PUBLIC_URL", dashboardUrl(a));
   put("TZ", a.timezone);
   L.push("");
 
@@ -599,7 +555,6 @@ export function renderEnv(
   L.push("");
 
   L.push("# --- Services ---");
-  put("AB_DASHBOARD_ENABLE", bool(a.dashboard));
   put("DOCKER_ROOTLESS_ENABLE", bool(a.rootlessDocker));
   L.push("");
 
@@ -676,7 +631,6 @@ function yamlString(v: string): string {
 
 export function renderCompose(a: Answers, envKeys: string[]): string {
   const gp = 8080;
-  const dp = 8081;
   const pub = new URL(a.publicUrl);
   const extPort = pub.port ? Number(pub.port) : pub.protocol === "https:" ? 443 : 80;
   const L: string[] = [];
@@ -714,7 +668,6 @@ export function renderCompose(a: Answers, envKeys: string[]): string {
     L.push("    # published directly, or there would be no way in but the browser.");
     L.push("    expose:");
     L.push(`      - "${gp}"`);
-    if (a.dashboard) L.push(`      - "${dp}"`);
     L.push("    ports:");
     L.push(`      - "${a.sshPort ?? 2222}:22"`);
     L.push("      # One UDP port per mosh session; ssh alone is not enough.");
@@ -725,7 +678,6 @@ export function renderCompose(a: Answers, envKeys: string[]): string {
     // the two fight over 443. Bind the gateway's own ports and let the proxy
     // forward to them.
     const hostPort = a.behindProxy ? gp : extPort;
-    const hostDash = a.behindProxy ? dp : extPort + DASHBOARD_PORT_OFFSET;
     L.push(
       a.behindProxy
         ? "    # Bound to loopback for the proxy in front to forward to."
@@ -733,7 +685,6 @@ export function renderCompose(a: Answers, envKeys: string[]): string {
     );
     L.push("    ports:");
     L.push(`      - "127.0.0.1:${hostPort}:${gp}"`);
-    if (a.dashboard) L.push(`      - "127.0.0.1:${hostDash}:${dp}"`);
     L.push(`      - "127.0.0.1:${a.sshPort ?? 2222}:22"`);
     L.push("      # mosh picks one UDP port per session out of this range.");
     L.push("      # Without it ssh connects and every mosh session times out.");
@@ -784,9 +735,6 @@ export function renderCompose(a: Answers, envKeys: string[]): string {
     L.push(`      # ${extPort}.`);
     L.push('      - "80:80"');
     L.push(`      - "${extPort}:${extPort}"`);
-    if (a.dashboard) {
-      L.push(`      - "${extPort + DASHBOARD_PORT_OFFSET}:${extPort + DASHBOARD_PORT_OFFSET}"`);
-    }
     L.push("    configs:");
     L.push("      - source: caddyfile");
     L.push("        target: /etc/caddy/Caddyfile");
@@ -872,20 +820,12 @@ export function renderCaddyfile(a: Answers): string {
   L.push(`${a.domain}:${extPort} {`);
   L.push("\treverse_proxy agent-env:8080");
   L.push("}");
-  if (a.dashboard) {
-    L.push("");
-    L.push("# Same hostname, second port: the session cookie is host-scoped and");
-    L.push("# ignores the port, so one sign-in covers both.");
-    L.push(`${a.domain}:${extPort + DASHBOARD_PORT_OFFSET} {`);
-    L.push("\treverse_proxy agent-env:8081");
-    L.push("}");
-  }
   return L.join("\n") + "\n";
 }
 
 export function renderTsServe(a: Answers): string {
   const port = 443;
-  const cfg: Record<string, unknown> = {
+  const cfg = {
     TCP: { [port]: { HTTPS: true } },
     Web: {
       [`${a.tsHostname}:${port}`]: {
@@ -893,13 +833,6 @@ export function renderTsServe(a: Answers): string {
       },
     },
   };
-  if (a.dashboard) {
-    const dash = dashboardPort(a);
-    (cfg.TCP as Record<number, unknown>)[dash] = { HTTPS: true };
-    (cfg.Web as Record<string, unknown>)[`${a.tsHostname}:${dash}`] = {
-      Handlers: { "/": { Proxy: "http://127.0.0.1:8081" } },
-    };
-  }
   return JSON.stringify(cfg, null, 2) + "\n";
 }
 
