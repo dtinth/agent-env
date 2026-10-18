@@ -15,10 +15,7 @@ export MISE_CACHE_DIR="${MISE_CACHE_DIR:-/opt/mise/cache}"
 # reads as system config regardless of this. This is where *your* `mise use -g`
 # declarations go, and it is on the persisted home volume.
 export MISE_CONFIG_DIR="${MISE_CONFIG_DIR:-${HOME}/.config/mise}"
-# ~/.local/bin sits behind the shims. Debian's /etc/profile resets PATH for a login
-# shell, and ~/.profile only adds it if the directory exists when the shell
-# starts, so ask for it here too: ssh and the web terminal are both login shells.
-for _mise_shims in "${HOME}/.local/bin" /opt/mise/shims "${MISE_DATA_DIR}/shims"; do
+for _mise_shims in /opt/mise/shims "${MISE_DATA_DIR}/shims"; do
   case ":${PATH}:" in
     *":${_mise_shims}:"*) ;;
     *) export PATH="${_mise_shims}:${PATH}" ;;
