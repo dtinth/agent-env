@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Generate a compose.yaml and .env for agent-env, in your browser."
+    />
+    <title>agent-env configurator</title>
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./style.css" />
+    <script type="module" src="./main.ts"></script>
+  </head>
+  <body>
+    <header class="masthead">
+      <h1>agent-env configurator</h1>
+      <p>
+        Answer a few questions, get a <code>compose.yaml</code> and a <code>.env</code> you can hand
+        to Docker Compose, Dockge or Dokploy. Everything runs in this page; nothing you type is sent
+        anywhere.
+      </p>
+      <p class="aside">
+        Prefer a terminal? Clone the repository and run <code>node setup.ts</code> — it asks the
+        same questions and writes the same files.
+      </p>
+    </header>
+
+    <main class="layout">
+      <form id="form" class="questions" autocomplete="off" novalidate>
+        <fieldset>
+          <legend>1. Where will this run?</legend>
+          <div class="choices">
+            <label class="choice">
+              <input type="radio" name="mode" value="local" checked />
+              <span
+                ><strong>This machine only</strong>
+                <small
+                  >Ports bound to 127.0.0.1. Put your own proxy in front to expose it.</small
+                ></span
+              >
+            </label>
+            <label class="choice">
+              <input type="radio" name="mode" value="caddy" />
+              <span
+                ><strong>A public domain, TLS handled here</strong>
+                <small>A Caddy sidecar gets a certificate from Let's Encrypt.</small></span
+              >
+            </label>
+            <label class="choice">
+              <input type="radio" name="mode" value="tailscale" />
+              <span
+                ><strong>A tailnet, via Tailscale</strong>
+                <small>The tailnet is the boundary; SSH and mosh just work.</small></span
+              >
+            </label>
+          </div>
+
+          <div data-show="mode=local">
+            <label class="check">
+              <input type="checkbox" name="behindProxy" />
+              Something else terminates TLS in front of this (nginx, an ingress, a tunnel)
+            </label>
+            <label class="field" data-show="behindProxy">
+              <span>The URL people will actually type</span>
+              <input name="publicUrl" placeholder="https://agent.example.com" />
+              <em class="error" data-error="publicUrl"></em>
+            </label>
+          </div>
+
+          <div data-show="mode=caddy" class="row">
+            <label class="field grow">
+              <span>Domain name</span>
+              <input name="domain" placeholder="agent.example.com" />
+              <em class="error" data-error="domain"></em>
+            </label>
+            <label class="field narrow">
+              <span>HTTPS port</span>
+              <input name="httpsPort" inputmode="numeric" value="8443" />
+              <em class="error" data-error="httpsPort"></em>
+            </label>
+            <label class="field grow">
+              <span>Email for Let's Encrypt <small>(optional)</small></span>
+              <input name="acmeEmail" type="email" placeholder="you@example.com" />
+              <em class="error" data-error="acmeEmail"></em>
+            </label>
+          </div>
+
+          <label class="field" data-show="mode=tailscale">
+            <span>Full MagicDNS name of this machine</span>
+            <input name="tsHostname" placeholder="work.tail1234.ts.net" />
+            <em class="error" data-error="tsHostname"></em>
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>2. Who can get in?</legend>
+          <div class="choices">
+            <label class="choice">
+              <input type="radio" name="authMode" value="google" />
+              <span
+                ><strong>Google sign-in</strong
+                ><small>oauth2-proxy, restricted to an allow list.</small></span
+              >
+            </label>
+            <label class="choice">
+              <input type="radio" name="authMode" value="github" />
+              <span
+                ><strong>GitHub sign-in</strong
+                ><small>Restricted to accounts, orgs or teams.</small></span
+              >
+            </label>
+            <label class="choice">
+              <input type="radio" name="authMode" value="basic" checked />
+              <span
+                ><strong>Username and password</strong
+                ><small>Fine on localhost or behind a VPN.</small></span
+              >
+            </label>
+            <label class="choice">
+              <input type="radio" name="authMode" value="none" />
+              <span
+                ><strong>No authentication</strong
+                ><small>Only when something else is the boundary.</small></span
+              >
+            </label>
+          </div>
+          <em class="error" data-error="authMode"></em>
+
+          <div data-show="authMode=google">
+            <label class="field">
+              <span>Google OAuth client ID</span>
+              <input name="googleClientId" placeholder="1234-abc.apps.googleusercontent.com" />
+              <em class="error" data-error="googleClientId"></em>
+            </label>
+          </div>
+          <div data-show="authMode=github">
+            <label class="field">
+              <span>GitHub OAuth app client ID</span>
+              <input name="githubClientId" placeholder="Iv1.0123456789abcdef" />
+              <em class="error" data-error="githubClientId"></em>
+            </label>
+            <div class="row">
+              <label class="field grow">
+                <span>Allowed usernames <small>(comma-separated)</small></span>
+                <input name="githubUsers" />
+                <em class="error" data-error="githubUsers"></em>
+              </label>
+              <label class="field grow">
+                <span>Allowed organisation</span>
+                <input name="githubOrg" />
+              </label>
+            </div>
+            <label class="field">
+              <span>Allowed teams <small id="team-hint">(each one org:team)</small></span>
+              <input name="githubTeam" />
+              <em class="error" data-error="githubTeam"></em>
+            </label>
+          </div>
+          <div data-show="authMode=google,github" class="row">
+            <label class="field grow">
+              <span>Allowed emails <small>(comma-separated)</small></span>
+              <input name="allowedEmails" />
+              <em class="error" data-error="allowedEmails"></em>
+            </label>
+            <label class="field grow">
+              <span>Allowed email domains <small>(comma-separated)</small></span>
+              <input name="allowedEmailDomains" />
+            </label>
+          </div>
+          <p class="hint" data-show="authMode=google,github">
+            Register this redirect URI with the OAuth client:
+            <code id="redirect-uri"></code>
+          </p>
+          <label class="field narrow" data-show="authMode=basic">
+            <span>Username</span>
+            <input name="gatewayUser" value="opencode" />
+          </label>
+          <p class="hint warn" data-show="authMode=none">
+            Anyone who can reach this gets a root-capable shell in the container.
+          </p>
+        </fieldset>
+
+        <fieldset>
+          <legend>3. What runs</legend>
+          <label class="check">
+            <input type="checkbox" name="opencodeEnable" checked /> Run OpenCode at <code>/</code>
+          </label>
+          <label class="field narrow" data-show="!opencodeEnable">
+            <span>Port inside the container that <code>/</code> proxies to</span>
+            <input name="primaryPort" inputmode="numeric" value="3000" />
+            <em class="error" data-error="primaryPort"></em>
+          </label>
+          <label class="check">
+            <input type="checkbox" name="dashboard" checked />
+            Serve the agent-browser dashboard too <small>(on the next port up)</small>
+          </label>
+          <label class="check">
+            <input type="checkbox" name="rootlessDocker" />
+            Let the agent run its own containers (rootless Docker)
+            <small>— adds host flags that widen the sandbox; read the README first</small>
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>4. Access and storage</legend>
+          <label class="field">
+            <span>SSH public key(s) for the dev user <small>(semicolon-separated)</small></span>
+            <textarea name="sshKeys" rows="2" placeholder="ssh-ed25519 AAAA… you@host"></textarea>
+          </label>
+          <label class="field narrow" data-show="mode=local,caddy">
+            <span>Host port for SSH</span>
+            <input name="sshPort" inputmode="numeric" value="2222" />
+            <em class="error" data-error="sshPort"></em>
+          </label>
+          <div class="choices two">
+            <label class="choice">
+              <input type="radio" name="workspaceKind" value="volume" checked />
+              <span
+                ><strong>/workspace in a Docker volume</strong
+                ><small>Managed by Docker.</small></span
+              >
+            </label>
+            <label class="choice">
+              <input type="radio" name="workspaceKind" value="path" />
+              <span
+                ><strong>/workspace from a host directory</strong
+                ><small>Edit the same files from outside.</small></span
+              >
+            </label>
+          </div>
+          <div data-show="workspaceKind=path" class="row">
+            <label class="field grow">
+              <span>Host directory</span>
+              <input name="workspacePath" placeholder="/srv/code" />
+              <em class="error" data-error="workspacePath"></em>
+            </label>
+            <label class="field narrow">
+              <span>Owner UID</span>
+              <input name="puid" inputmode="numeric" value="1000" />
+            </label>
+            <label class="field narrow">
+              <span>Owner GID</span>
+              <input name="pgid" inputmode="numeric" value="1000" />
+            </label>
+          </div>
+          <p class="hint" data-show="workspaceKind=path">
+            Use the directory owner's IDs (<code>stat -c '%u %g' DIR</code>) so files stay yours.
+          </p>
+          <label class="field narrow">
+            <span>Time zone</span>
+            <input name="timezone" />
+          </label>
+        </fieldset>
+
+        <details class="fieldset">
+          <summary>Updating an existing deployment?</summary>
+          <label class="field">
+            <span>Your current <code>.env</code> — its secrets and extra keys are kept</span>
+            <textarea name="existingEnv" rows="5" spellcheck="false"></textarea>
+          </label>
+          <label class="field">
+            <span>Load answers from <code>agent-env.setup.json</code></span>
+            <input type="file" id="load-answers" accept=".json,application/json" />
+          </label>
+        </details>
+      </form>
+
+      <section class="output" aria-live="polite">
+        <div id="problems" class="problems" hidden></div>
+        <div class="tabs" role="tablist">
+          <button type="button" role="tab" data-file="compose.yaml" aria-selected="true">
+            compose.yaml
+          </button>
+          <button type="button" role="tab" data-file=".env">.env</button>
+          <button type="button" role="tab" data-file="agent-env.setup.json">
+            agent-env.setup.json
+          </button>
+        </div>
+        <div class="file">
+          <div class="actions">
+            <button type="button" id="copy">Copy</button>
+            <button type="button" id="download">Download</button>
+            <button
+              type="button"
+              id="regenerate"
+              title="Mint new secrets for keys not in your existing .env"
+            >
+              New secrets
+            </button>
+          </div>
+          <pre><code id="code"></code></pre>
+        </div>
+        <ol id="next" class="next"></ol>
+      </section>
+    </main>
+  </body>
+</html>

@@ -6,3 +6,7 @@
 /agent-env.setup.json
 /Caddyfile
 /ts-serve.json
+
+# The web configurator's toolchain and build output.
+node_modules/
+/dist/

@@ -43,14 +43,22 @@ docker pull ghcr.io/dtinth/agent-env:latest
 that image — it declares its ports with `expose` for an ingress controller to
 route, and documents the direct-publish and tailscale-serve variants.
 
-### The quickest way: let setup.ts write it
+### The quickest way: let the configurator write it
+
+**In the browser:** [dtinth.github.io/agent-env](https://dtinth.github.io/agent-env/).
+Fill in the form, then copy or download the files. Nothing you type leaves the
+page.
+
+**In a terminal:** clone the repository and run the wizard. It needs Node 22.18
+or newer, and nothing else installed:
 
 ```bash
-deno run -A https://raw.githubusercontent.com/dtinth/agent-env/main/setup.ts
+git clone https://github.com/dtinth/agent-env && cd agent-env
+node setup.ts --out ~/agent-env-deploy
 ```
 
-It asks about eight things and writes `compose.yaml` and `.env` for you. The
-first question decides the rest:
+Both ask about eight things and produce `compose.yaml` and `.env`, using the
+same code, so they agree. The first question decides the rest:
 
 | Where it runs | What you get |
 |---|---|
@@ -77,14 +85,17 @@ inlined in `compose.yaml` as `configs:` content (Docker Compose 2.23.1 or newer)
 So the pair can be pasted into Dockge, Dokploy, or anything else that takes a
 compose stack and an env file. The generation logic is `generate.ts`, a pure,
 dependency-free module (`generate(answers, { existingEnv })` returns the files)
-that a web UI can use as well as the wizard.
+that both the wizard and the configurator call.
+
+In the browser, paste your current `.env` under "Updating an existing
+deployment?" for the same effect.
 
 **Re-running it is the point.** It reads back what it wrote, offers those as the
 defaults, and keeps the secrets already in `.env` — so it upgrades a deployment
 as well as creating one.
 
 ```bash
-deno run -A .../setup.ts   # again, later: answers pre-filled, secrets kept
+node setup.ts --out ~/agent-env-deploy   # again, later: answers pre-filled, secrets kept
 ```
 
 `.env.example` stays the reference for the fifty-odd keys it does not ask about;

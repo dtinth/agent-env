@@ -5,3 +5,6 @@
 *.png
 docker-compose*.yml
 scripts/
+node_modules/
+dist/
+web/

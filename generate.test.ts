@@ -1,16 +1,11 @@
 /**
  * Tests for generate.ts as a library: the contract a web UI relies on.
- * setup_test.ts covers the wizard end to end; this covers what it calls.
+ * setup.test.ts covers the wizard end to end; this covers what it calls.
  */
 
-import { assert, assertEquals, assertThrows } from "@std/assert";
-import {
-  type Answers,
-  generate,
-  InvalidAnswers,
-  validate,
-  VERSION,
-} from "./generate.ts";
+import { test } from "vite-plus/test";
+import { assert, assertEquals, assertThrows } from "./test-assert.ts";
+import { type Answers, generate, InvalidAnswers, validate, VERSION } from "./generate.ts";
 
 const BASIC: Answers = {
   version: VERSION,
@@ -29,18 +24,20 @@ const BASIC: Answers = {
 
 const fixed = (bytes: number) => "x".repeat(bytes);
 
-Deno.test("the same answers give the same files", () => {
+test("the same answers give the same files", () => {
   const a = generate(BASIC, { randomSecret: fixed });
   const b = generate(BASIC, { randomSecret: fixed });
+  // Every secret is asked for by the key it is for, so a UI can hold it still.
+  const keys: string[] = [];
+  generate(BASIC, {
+    randomSecret: (n, key) => (keys.push(key), fixed(n)),
+  });
+  assertEquals(keys, ["GATEWAY_PASSWORD"]);
   assertEquals(a, b);
-  assertEquals(Object.keys(a).sort(), [
-    ".env",
-    "agent-env.setup.json",
-    "compose.yaml",
-  ]);
+  assertEquals(Object.keys(a).sort(), [".env", "agent-env.setup.json", "compose.yaml"]);
 });
 
-Deno.test("an existing .env keeps its secrets", () => {
+test("an existing .env keeps its secrets", () => {
   const files = generate(BASIC, {
     existingEnv: "GATEWAY_PASSWORD=kept-as-is\nMISE_TOOLS=node\n",
     randomSecret: () => {
@@ -51,26 +48,24 @@ Deno.test("an existing .env keeps its secrets", () => {
   assert(files[".env"].includes("MISE_TOOLS=node\n"));
 });
 
-Deno.test("only compose.yaml and .env are needed in every mode", () => {
-  for (
-    const a of [
-      BASIC,
-      {
-        ...BASIC,
-        mode: "caddy",
-        domain: "agent.example.com",
-        httpsPort: 8443,
-        publicUrl: "https://agent.example.com:8443",
-      },
-      {
-        ...BASIC,
-        mode: "tailscale",
-        tsHostname: "work.tail1234.ts.net",
-        publicUrl: "https://work.tail1234.ts.net",
-        sshPort: undefined,
-      },
-    ] as Answers[]
-  ) {
+test("only compose.yaml and .env are needed in every mode", () => {
+  for (const a of [
+    BASIC,
+    {
+      ...BASIC,
+      mode: "caddy",
+      domain: "agent.example.com",
+      httpsPort: 8443,
+      publicUrl: "https://agent.example.com:8443",
+    },
+    {
+      ...BASIC,
+      mode: "tailscale",
+      tsHostname: "work.tail1234.ts.net",
+      publicUrl: "https://work.tail1234.ts.net",
+      sshPort: undefined,
+    },
+  ] as Answers[]) {
     const files = generate(a, { randomSecret: fixed });
     // Nothing in compose.yaml may point at a file beside it, or a stack UI
     // that takes only the compose text cannot deploy it.
@@ -81,7 +76,7 @@ Deno.test("only compose.yaml and .env are needed in every mode", () => {
   }
 });
 
-Deno.test("invalid answers are reported per field and refused", () => {
+test("invalid answers are reported per field and refused", () => {
   const bad: Answers = {
     ...BASIC,
     mode: "caddy",
@@ -89,9 +84,15 @@ Deno.test("invalid answers are reported per field and refused", () => {
     domain: "not a domain",
     publicUrl: "https://x",
   };
-  assertEquals(validate(bad).map((p) => p.field), ["domain"]);
+  assertEquals(
+    validate(bad).map((p) => p.field),
+    ["domain"],
+  );
   const refused = { ...bad, domain: "agent.example.com" };
-  assertEquals(validate(refused).map((p) => p.field), ["authMode"]);
+  assertEquals(
+    validate(refused).map((p) => p.field),
+    ["authMode"],
+  );
   const e = assertThrows(() => generate(refused), InvalidAnswers);
   assertEquals(e.problems[0].message, "Refusing to generate that.");
 });

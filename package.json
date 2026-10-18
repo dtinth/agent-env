@@ -1,0 +1,25 @@
+{
+  "name": "agent-env",
+  "private": true,
+  "description": "Setup wizard and web configurator for the agent-env image. The image itself needs none of this.",
+  "type": "module",
+  "scripts": {
+    "setup": "node setup.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "~6.0.2",
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "12.14.0",
+      "onFail": "download"
+    }
+  },
+  "engines": {
+    "node": "^22.18.0 || >=24.11.0"
+  }
+}
