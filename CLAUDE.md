@@ -11,7 +11,8 @@ Google-authenticated workstation. The moving parts:
   directory (`preset.env`, `tools.toml`, and optionally `run`, `auth`,
   `login.sh`, `environment`, `commands/`); the entrypoint knows nothing about
   OpenCode and just runs whatever the active `AGENT_ENV_PRESET` provides.
-  `opencode` is the default, `vanilla` installs no agent.
+  `opencode` is the default, `vanilla` installs no agent. Tools every preset gets
+  (agent-browser) are separate, in `rootfs/opt/agent-env/mise.d/`.
 - `rootfs/` — everything baked into the image's filesystem. The entrypoint is
   `rootfs/usr/local/bin/entrypoint.sh`; it validates configuration, renders the
   Caddyfile and the pitchfork daemon definitions, then execs pitchfork as PID 1.

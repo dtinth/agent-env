@@ -1371,12 +1371,20 @@ mise_user() {
     MISE_CONFIG_DIR="${USER_HOME}/.config/mise" "$@"
 }
 
-# The preset's tools. Copied over on every start, so switching preset switches the
-# tools; the file is the image's, not yours. To pin a version, declare the tool in
-# ~/.config/mise/config.toml, which takes precedence over anything in conf.d.
+# The tools every preset gets (mise.d), then the active preset's own. Copied over
+# on every start and the old copies removed first, so switching preset switches the
+# tools; these files are the image's, not yours. To pin a version, declare the tool
+# in ~/.config/mise/config.toml, which takes precedence over anything in conf.d.
 mise_conf_d="${USER_HOME}/.config/mise/conf.d"
 install -d -o "${PUID}" -g "${PGID}" "${mise_conf_d}"
-install -m 644 -o "${PUID}" -g "${PGID}" "${PRESET_DIR}/tools.toml" "${mise_conf_d}/00-agent-env-preset.toml"
+rm -f "${mise_conf_d}"/00-agent-env-*.toml
+for f in /opt/agent-env/mise.d/*.toml; do
+  [[ -f "${f}" ]] || continue
+  install -m 644 -o "${PUID}" -g "${PGID}" "${f}" "${mise_conf_d}/00-agent-env-${f##*/}"
+done
+if [[ -f "${PRESET_DIR}/tools.toml" ]]; then
+  install -m 644 -o "${PUID}" -g "${PGID}" "${PRESET_DIR}/tools.toml" "${mise_conf_d}/00-agent-env-preset.toml"
+fi
 # An earlier release seeded these two tools into a file of the volume's own. If it
 # was never touched, it would keep installing OpenCode under the vanilla preset.
 old_seed="${mise_conf_d}/agent-env.toml"
