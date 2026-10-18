@@ -32,6 +32,9 @@ case "${terminal}" in
   *) exec bash -lc "exec ${terminal}" ;;
 esac
 
+port="$(value PRIMARY_PORT)"
+port="${port:-${PRIMARY_PORT:-3000}}"
+
 # The server is a daemon of the user's own supervisor now, so it may still be
 # coming up when a browser opens the terminal. Wait for it rather than showing a
 # connection error that needs a page reload.
