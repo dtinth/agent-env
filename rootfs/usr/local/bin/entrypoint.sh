@@ -757,9 +757,12 @@ case "${AUTH_MODE,,}" in
       legacy_secret_file="${USER_HOME}/.config/opencode/.cookie-secret"
       install -d -m 700 -o "${PUID}" -g "${PGID}" "${secret_dir}"
       if [[ ! -s "${secret_file}" && -s "${legacy_secret_file}" ]]; then
-        mv "${legacy_secret_file}" "${secret_file}"
+        # Copied, then removed if possible: the old file may be a read-only
+        # mount, and failing to delete it must not stop the gateway.
+        cp "${legacy_secret_file}" "${secret_file}"
         chown "${PUID}:${PGID}" "${secret_file}"; chmod 600 "${secret_file}"
-        log "moved the OAuth cookie secret to ${secret_file}"
+        rm -f "${legacy_secret_file}" 2>/dev/null || true
+        log "copied the OAuth cookie secret to ${secret_file}"
       fi
       if [[ -s "${secret_file}" ]]; then
         cookie_secret="$(< "${secret_file}")"
