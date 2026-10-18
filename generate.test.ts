@@ -12,7 +12,7 @@ const BASIC: Answers = {
   mode: "local",
   publicUrl: "http://localhost:8080",
   authMode: "basic",
-  gatewayUser: "opencode",
+  gatewayUser: "dev",
   opencodeEnable: true,
   dashboard: true,
   rootlessDocker: false,

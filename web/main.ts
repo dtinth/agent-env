@@ -135,7 +135,7 @@ function readAnswers(): Answers {
     a.allowedEmails = text("allowedEmails");
     a.allowedEmailDomains = text("allowedEmailDomains");
   }
-  if (authMode === "basic") a.gatewayUser = text("gatewayUser") || "opencode";
+  if (authMode === "basic") a.gatewayUser = text("gatewayUser") || "dev";
   a.publicUrl = publicUrlFor({ ...a, publicUrl: behindProxy ? text("publicUrl") : "" });
   return a;
 }

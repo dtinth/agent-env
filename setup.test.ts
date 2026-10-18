@@ -102,7 +102,7 @@ const LOCAL = {
   mode: "local",
   behindProxy: false,
   authMode: "basic",
-  gatewayUser: "opencode",
+  gatewayUser: "dev",
 };
 const CADDY = {
   ...BASE,

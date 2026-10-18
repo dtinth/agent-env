@@ -11,8 +11,8 @@ export TERM="${TERM:-xterm-256color}"
 env_file=/run/agent-env/env
 value() { sed -n "s/^$1=//p" "${env_file}" 2>/dev/null | head -1; }
 
-workdir="$(value OPENCODE_WORKDIR)"
-workdir="${workdir:-${OPENCODE_WORKDIR:-/workspace}}"
+workdir="$(value WORKSPACE_DIR)"
+workdir="${workdir:-${WORKSPACE_DIR:-/workspace}}"
 cd "${workdir}" || cd "${HOME}"
 
 # shellcheck disable=SC1091

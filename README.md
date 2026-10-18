@@ -157,6 +157,8 @@ balancer, Cloudflare, Caddy/nginx on the host) and point it at port 8080.
   `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, and an allow list — see below.
 - **`basic`** — HTTP basic auth (`GATEWAY_USER` / `GATEWAY_PASSWORD`). Good for
   local runs. A password is generated and printed to the log if you omit it.
+  The username defaults to `dev`; while `GATEWAY_USER` is unset, the old default
+  `opencode` is accepted as well.
 - **`none`** — no gate at all. Only sane behind your own authenticating proxy.
 
 Optionally restrict `google` further by Google Workspace group with
@@ -386,7 +388,7 @@ See [`.env.example`](.env.example) for the annotated list. The essentials:
 | `ALLOWED_EMAILS`, `ALLOWED_EMAIL_DOMAINS` | — | Who may sign in |
 | `OAUTH2_PROXY_COOKIE_SECRET` | generated | Set it to survive restarts cleanly |
 | `OPENCODE_ENABLE` | `true` | Whether OpenCode occupies `/` at all |
-| `OPENCODE_WORKDIR` | `/workspace` | Where the server and TUI start |
+| `WORKSPACE_DIR` | `/workspace` | Where the agent, terminals and file manager start (formerly `OPENCODE_WORKDIR`, still read) |
 | `PRIMARY_PORT` | `3000` | What `/` proxies to when OpenCode is off |
 | `SSH_AUTHORIZED_KEYS` | — | Newline- or `;`-separated public keys |
 | `SSH_PASSWORD` | — | Enables password auth (prefer keys) |
@@ -500,7 +502,7 @@ prefixed with `[global/<daemon>]`.
 Run `scripts/smoke-test.sh` against a live container to check the whole thing:
 
 ```bash
-./scripts/smoke-test.sh http://localhost:8080 opencode:changeme
+./scripts/smoke-test.sh http://localhost:8080 dev:changeme
 ```
 
 ### Your own daemons — including the OpenCode server

@@ -112,7 +112,16 @@ PUBLIC_URL="${PUBLIC_URL%/}"
 # and falls back to the environment index when nothing is listening there.
 OPENCODE_ENABLE="${OPENCODE_ENABLE:-true}"
 OPENCODE_PORT="${OPENCODE_PORT:-4096}"
-OPENCODE_WORKDIR="${OPENCODE_WORKDIR:-/workspace}"
+# Where everything starts: the agent, the terminals, the file manager, the
+# user's own daemons. It used to be spelled OPENCODE_WORKDIR, which is still
+# honoured, but it was never OpenCode's alone.
+if [[ -z "${WORKSPACE_DIR:-}" && -n "${OPENCODE_WORKDIR:-}" ]]; then
+  warn "OPENCODE_WORKDIR is deprecated; set WORKSPACE_DIR=${OPENCODE_WORKDIR} instead"
+  WORKSPACE_DIR="${OPENCODE_WORKDIR}"
+fi
+WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
+unset OPENCODE_WORKDIR
+
 # Where / points when OpenCode is off. 3000 is what Next, Rails, Vite preview and
 # most `npm start` templates pick, so the default is right more often than not.
 PRIMARY_PORT="${PRIMARY_PORT:-3000}"
@@ -171,7 +180,7 @@ USER_WEB_PATH="${USER_WEB_PATH:-pitchfork}"
 DUFS_ENABLE="${DUFS_ENABLE:-true}"
 DUFS_PORT="${DUFS_PORT:-5000}"
 DUFS_PATH="${DUFS_PATH:-${ENV_PREFIX}/files}"
-DUFS_ROOT="${DUFS_ROOT:-${OPENCODE_WORKDIR}}"
+DUFS_ROOT="${DUFS_ROOT:-${WORKSPACE_DIR}}"
 
 # A rootless Docker engine for the dev user, so an agent can bring up a
 # database or any other container without the host's docker socket. Off by
@@ -252,11 +261,12 @@ if [[ -d /opt/agent-env/skel ]]; then
   shopt -u dotglob nullglob
 fi
 
-mkdir -p "${OPENCODE_WORKDIR}" \
+mkdir -p "${WORKSPACE_DIR}" \
          "${USER_HOME}/.ssh" \
          "${USER_HOME}/.config/opencode" \
          "${USER_HOME}/.local/share/opencode" \
          "${USER_HOME}/.local/share/agent-browser" \
+         "${USER_HOME}/.local/state" \
          "${USER_HOME}/.cache"
 chmod 700 "${USER_HOME}/.ssh"
 
@@ -267,7 +277,7 @@ for d in .ssh .config .local .cache .agent-browser Desktop; do
   [[ -e "${USER_HOME}/${d}" ]] && chown -R "${PUID}:${PGID}" "${USER_HOME}/${d}" || true
 done
 if is_true "${CHOWN_WORKSPACE:-true}"; then
-  chown "${PUID}:${PGID}" "${OPENCODE_WORKDIR}" || true
+  chown "${PUID}:${PGID}" "${WORKSPACE_DIR}" || true
 fi
 
 # Anything the agent installs into the home directory — a tool in ~/.local/bin,
@@ -432,7 +442,7 @@ if is_true "${OPENCODE_ENABLE}"; then
   pf_opencode="
 [daemons.opencode]
 run = \"/opt/agent-env/bin/run-opencode\"
-dir = \"${OPENCODE_WORKDIR}\"
+dir = \"${WORKSPACE_DIR}\"
 ready_port = { port = ${OPENCODE_PORT}, timeout = \"120s\" }
 retry = true
 boot_start = true
@@ -501,7 +511,7 @@ unset OPENCODE_SERVER_PASSWORD
   echo "OPENCODE_ENABLE=$(canon "${OPENCODE_ENABLE}")"
   echo "OPENCODE_PORT=${OPENCODE_PORT}"
   echo "PRIMARY_PORT=${PRIMARY_PORT}"
-  echo "OPENCODE_WORKDIR=${OPENCODE_WORKDIR}"
+  echo "WORKSPACE_DIR=${WORKSPACE_DIR}"
   echo "SSH_PORT=${SSH_PORT}"
   echo "DESKTOP_DISPLAY=${DESKTOP_DISPLAY}"
   echo "AB_DASHBOARD_PORT=${AB_DASHBOARD_PORT}"
@@ -739,8 +749,17 @@ case "${AUTH_MODE,,}" in
 
     cookie_secret="${OAUTH2_PROXY_COOKIE_SECRET:-}"
     if [[ -z "${cookie_secret}" ]]; then
-      # Reused across restarts so existing sessions survive.
-      secret_file="${USER_HOME}/.config/opencode/.cookie-secret"
+      # Reused across restarts so existing sessions survive. It is the
+      # gateway's, not OpenCode's, so it no longer lives in OpenCode's config
+      # directory; one left there by an older image is moved, not orphaned.
+      secret_dir="${USER_HOME}/.local/state/agent-env"
+      secret_file="${secret_dir}/cookie-secret"
+      legacy_secret_file="${USER_HOME}/.config/opencode/.cookie-secret"
+      install -d -m 700 -o "${PUID}" -g "${PGID}" "${secret_dir}"
+      if [[ ! -s "${secret_file}" && -s "${legacy_secret_file}" ]]; then
+        mv "${legacy_secret_file}" "${secret_file}"
+        log "moved the OAuth cookie secret to ${secret_file}"
+      fi
       if [[ -s "${secret_file}" ]]; then
         cookie_secret="$(< "${secret_file}")"
       else
@@ -911,7 +930,14 @@ else:
     ;;
 
   basic)
-    GATEWAY_USER="${GATEWAY_USER:-opencode}"
+    # The default used to be `opencode`. A deployment that never chose a name
+    # has that one saved in its browsers and password managers, so while the
+    # name is still the default, the old one keeps working alongside it.
+    gateway_legacy_user=''
+    if [[ -z "${GATEWAY_USER:-}" ]]; then
+      GATEWAY_USER=dev
+      gateway_legacy_user=opencode
+    fi
     if [[ -z "${GATEWAY_PASSWORD:-}" ]]; then
       GATEWAY_PASSWORD="$(rand_secret)"
       log "AUTH_MODE=basic with no GATEWAY_PASSWORD set; generated one for this boot:"
@@ -919,6 +945,10 @@ else:
       log "    password: ${GATEWAY_PASSWORD}"
     fi
     GATEWAY_BASIC_HASH="$(caddy hash-password --plaintext "${GATEWAY_PASSWORD}")"
+    # One `user hash` line per account, indented for the basic_auth block.
+    GATEWAY_BASIC_ACCOUNTS="${GATEWAY_USER} ${GATEWAY_BASIC_HASH}"
+    [[ -n "${gateway_legacy_user}" ]] &&
+      GATEWAY_BASIC_ACCOUNTS+=$'\n\t\t\t\t'"${gateway_legacy_user} ${GATEWAY_BASIC_HASH}"
     ;;
 
   none)
@@ -1056,7 +1086,7 @@ EOF
       basic)
         cat <<EOF
 			basic_auth {
-				${GATEWAY_USER} ${GATEWAY_BASIC_HASH}
+				${GATEWAY_BASIC_ACCOUNTS}
 			}
 EOF
         ;;
@@ -1379,7 +1409,7 @@ XAUTHORITY = "${XAUTHORITY_FILE}"
 XDG_RUNTIME_DIR = "${XDG_RUNTIME_DIR}"
 TZ = "${TZ}"
 OPENCODE_PORT = "${OPENCODE_PORT}"
-OPENCODE_WORKDIR = "${OPENCODE_WORKDIR}"
+WORKSPACE_DIR = "${WORKSPACE_DIR}"
 DESKTOP_DISPLAY = "${DESKTOP_DISPLAY}"
 DESKTOP_RESOLUTION = "${DESKTOP_RESOLUTION}"
 VNC_PORT = "${VNC_PORT}"
@@ -1440,7 +1470,7 @@ EOF
     if is_true "${TTYD_ENABLE}"; then
       emit_daemon ttyd "/opt/agent-env/bin/run-ttyd" \
         "user = \"${USER_NAME}\"" \
-        "dir = \"${OPENCODE_WORKDIR}\"" \
+        "dir = \"${WORKSPACE_DIR}\"" \
         'retry = true' \
         "ready_port = ${TTYD_PORT}"
     fi
@@ -1448,7 +1478,7 @@ EOF
     if is_true "${AB_DASHBOARD_ENABLE}"; then
       emit_daemon agent-browser-dashboard "/opt/agent-env/bin/run-ab-dashboard" \
         "user = \"${USER_NAME}\"" \
-        "dir = \"${OPENCODE_WORKDIR}\"" \
+        "dir = \"${WORKSPACE_DIR}\"" \
         'retry = true' \
         "ready_http = { url = \"http://127.0.0.1:${AB_DASHBOARD_PORT}/\", timeout = \"60s\" }"
     fi
@@ -1485,7 +1515,7 @@ EOF
       fi
       emit_daemon user-supervisor "/opt/agent-env/bin/run-user-supervisor" \
         "user = \"${USER_NAME}\"" \
-        "dir = \"${OPENCODE_WORKDIR}\"" \
+        "dir = \"${WORKSPACE_DIR}\"" \
         'retry = true' \
         "${user_sup_ready}" \
         "env = { PITCHFORK_STATE_DIR = \"${XDG_RUNTIME_DIR}/pitchfork\" }"
@@ -1532,7 +1562,7 @@ fi
 is_true "${DUFS_ENABLE}" && log " files       : ${PUBLIC_URL}/${DUFS_PATH}/"
 is_true "${DOCKER_ROOTLESS_ENABLE}" && log " docker      : rootless, as ${USER_NAME} (docker compose available)"
 is_true "${SSH_ENABLE}"         && log " ssh         : ${USER_NAME}@<host> -p ${SSH_PORT}"
-log " workspace   : ${OPENCODE_WORKDIR}"
+log " workspace   : ${WORKSPACE_DIR}"
 log "----------------------------------------------------------------"
 
 # The gateway's credentials are in root-owned files by now, and oauth2-proxy

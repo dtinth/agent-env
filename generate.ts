@@ -588,7 +588,7 @@ export function renderEnv(
     secret("OAUTH2_PROXY_COOKIE_SECRET", () => rand(32, "OAUTH2_PROXY_COOKIE_SECRET"));
   }
   if (a.authMode === "basic") {
-    put("GATEWAY_USER", a.gatewayUser ?? "opencode");
+    put("GATEWAY_USER", a.gatewayUser ?? "dev");
     secret("GATEWAY_PASSWORD", () => rand(18, "GATEWAY_PASSWORD"));
   }
   L.push("");
