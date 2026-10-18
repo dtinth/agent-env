@@ -36,4 +36,4 @@ for _ in $(seq 1 120); do
 done
 printf '\r\033[K'
 
-exec opencode2 --server "http://127.0.0.1:${port}" "${workdir}"
+exec opencode --server "http://127.0.0.1:${port}" "${workdir}"

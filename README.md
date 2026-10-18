@@ -11,7 +11,7 @@ One container gives you:
 
 | What | Where | Notes |
 |---|---|---|
-| **OpenCode v2 web UI + API** | `<PUBLIC_URL>/` | `opencode2 serve`; optional — see below |
+| **OpenCode v2 web UI + API** | `<PUBLIC_URL>/` | `opencode serve`; optional — see below |
 | **OpenCode v2 TUI** in the browser | `<PUBLIC_URL>/~env/terminal` | the real TUI, over ttyd |
 | **XFCE desktop** in the browser | `<PUBLIC_URL>/~env/desktop` | noVNC over x11vnc |
 | **agent-browser dashboard** | `<DASHBOARD_PUBLIC_URL>` | own port; live browser viewports |
@@ -290,8 +290,8 @@ be listening on it.
 
 ### How the OpenCode server itself is protected
 
-`opencode2 serve --service` registers the server as OpenCode's shared service, so
-the `opencode2` CLI's default discovery finds it instead of spawning a second
+`opencode serve --service` registers the server as OpenCode's shared service, so
+the `opencode` CLI's default discovery finds it instead of spawning a second
 one. The service has its own HTTP basic auth (user `opencode`) with a password it
 generates itself and records in `~/.local/state/opencode/service.json`; the
 gateway reads it from there and injects it on the way through, so users
@@ -582,7 +582,7 @@ sessions:
 
 ```bash
 ssh -p 2222 dev@host
-ssh -p 2222 dev@host 'opencode2 run "summarise this repo"'
+ssh -p 2222 dev@host 'opencode run "summarise this repo"'
 ```
 
 The image carries one locale, `C.UTF-8`, and PAM hands it to every session.
@@ -692,10 +692,34 @@ copies in anything missing without touching what is already there.
 
 ### Toolchains
 
-The mise toolchain lives in `/opt/mise`, deliberately *outside* the home volume:
-node, `opencode2` and `agent-browser` are the image's business, so pulling a new
-image is what updates them. If they lived in the volume, the first version you
-ever ran would be frozen there.
+mise keeps two sets of installs. The image's own — node and dufs — live in
+`/opt/mise`, locked and read as shared, read-only installs. Everything else
+lives in the home volume (`~/.local/share/mise`): the agent tools described
+below, and anything you add with `mise use -g`. So a pulled image updates the
+image's tools, and the volume keeps yours.
+
+#### The agent tools
+
+OpenCode and agent-browser are not in the image. They move faster than it does,
+so they are declared in `~/.config/mise/conf.d/agent-env.toml` on the home
+volume — seeded from [`mise/agent-tools.toml`](mise/agent-tools.toml) the first
+time it is missing — and the entrypoint installs them and runs `mise upgrade` on
+them at every start:
+
+```toml
+[tools]
+"npm:@opencode/cli" = { version = "latest", allow_builds = ["@opencode/cli"] }
+"npm:agent-browser" = { version = "latest", allow_builds = ["agent-browser"] }
+```
+
+That file is yours; the image never overwrites it. Pin a version
+(`version = "2.0.32"`) to stop upgrading, or delete a line to stop installing the
+tool. With `OPENCODE_ENABLE=false`, OpenCode is not installed at all.
+
+The first start on a new volume downloads them, which takes a minute or so, and
+needs the npm registry. If a later start cannot reach it, the tools already in
+the volume are used and the entrypoint logs a warning. If a *first* start cannot,
+OpenCode has nothing to run; `agent-env logs opencode` says so, and it retries.
 
 The image's own tools are declared in [`mise/config.toml`](mise/config.toml) and
 pinned in [`mise/mise.lock`](mise/mise.lock), which records an exact version and
@@ -710,21 +734,20 @@ mise lock --global --bump --platform linux-x64,linux-arm64
 mise reads that file as its *system* config, so it never collides with what you
 declare in `~/.config/mise` on the home volume.
 
-The consequence is that tool *installs* do not survive recreation — but the
-*declarations* do, because `mise use -g` writes to `~/.config/mise/config.toml`
-on the home volume, and the entrypoint reinstalls from it at boot:
+Your own tools persist with the volume, and the entrypoint runs `mise install`
+at every start, so a tool that is declared but missing (a new volume, say) is
+fetched again:
 
 ```bash
-$ mise use -g jq@1.7        # declared in the home volume
+$ mise use -g jq@1.7        # declared and installed in the home volume
 $ jq --version              # jq-1.7
 # ...recreate the container on a new image...
-$ jq --version              # jq-1.7, reinstalled at boot
+$ jq --version              # jq-1.7, still there
 ```
 
-`MISE_TOOLS` does the same thing declaratively from your compose file. Either
-way, the first boot after a recreate spends time reinstalling, so heavyweight
-toolchains are better put in the image with a `FROM ghcr.io/dtinth/agent-env` of
-your own.
+`MISE_TOOLS` does the same thing declaratively from your compose file. Heavyweight
+toolchains are still better put in the image with a `FROM ghcr.io/dtinth/agent-env`
+of your own, so a fresh volume does not have to download them.
 
 #### Shims, and where they stop
 
@@ -909,17 +932,19 @@ Chromium needs a large `/dev/shm`: keep `--shm-size=2g` (compose already sets it
 
 ## Notes and limits
 
-- **OpenCode v2 is beta.** It installs as `opencode2` from
-  `@opencode-ai/cli@beta`; the image pins the tag, not a version. Set the
-  `OPENCODE_VERSION` build arg to pin an exact one, and `OPENCODE_DISABLE_AUTOUPDATE=1`
-  is already set so the container never self-updates under you.
+- **OpenCode is installed on first start, not built in.** It comes from
+  `@opencode/cli` through mise into the home volume and is upgraded at every
+  start (see [The agent tools](#the-agent-tools)); pin a version in
+  `~/.config/mise/conf.d/agent-env.toml` to stop that.
+  `OPENCODE_DISABLE_AUTOUPDATE=1` is set so OpenCode never self-updates in
+  between.
 - **The dashboard needs its own port.** It's a Next.js app that serves assets
   from absolute paths, so it can't live under a path prefix like `/~env/desktop` does.
   It gets port 8081 with the same authentication. Set `DASHBOARD_PUBLIC_URL` if
   your host port differs from the container's, or `AB_DASHBOARD_ENABLE=false` to
   turn it off.
-- **Image size is ~3 GB.** Most of it is XFCE, Chromium, a compiler toolchain and
-  the ~150 MB OpenCode binary. Drop `DESKTOP_ENABLE`-related packages from the
+- **Image size is ~3 GB.** Most of it is XFCE, Chromium and a compiler toolchain.
+  Drop `DESKTOP_ENABLE`-related packages from the
   Dockerfile if you don't need the desktop.
 - **pitchfork's container mode is marked experimental** by its own docs. It has
   behaved correctly here — PID 1, reaping, ordered graceful shutdown — but that
@@ -943,8 +968,8 @@ builds each architecture on its own runner (`ubuntu-latest` and `ubuntu-24.04-ar
 pushes it to GHCR *by digest and untagged*, runs `scripts/smoke-test.sh` against
 the pushed artifact, and only merges the digests into a tagged manifest list once
 both pass. A failed test therefore can't leave a broken `:latest` behind. Pull
-requests build and test without pushing, and a weekly run picks up new OpenCode
-v2 beta builds.
+requests build and test without pushing, and a weekly run catches anything the
+base image or the pinned tools have broken.
 
 ---
 
@@ -954,7 +979,7 @@ v2 beta builds.
                     ┌─── container (pitchfork = PID 1) ──────────────┐
    browser ──8080──►│ Caddy ──forward_auth──► oauth2-proxy ──► IdP   │
                     │   │                                            │
-                    │   ├─ /            ──► opencode2 serve  :3000   │
+                    │   ├─ /            ──► opencode serve   :3000   │
                     │   ├─ /pitchfork   ──► pitchfork web    :4747   │
                     │   ├─ /~env/files    ──► dufs           :5000   │
                     │   ├─ /~env/terminal ──► ttyd :7681 ──► TUI     │
