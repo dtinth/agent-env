@@ -8,7 +8,7 @@ Google-authenticated workstation. The moving parts:
 - `Dockerfile` — the image. Debian trixie, XFCE + noVNC, Chromium, mise, and
   four fetched static binaries (pitchfork, ttyd, oauth2-proxy, caddy).
 - `rootfs/opt/agent-env/presets/` — what the environment is *for*. A preset is a
-  directory (`preset.env`, `tools.toml`, and optionally `run`, `auth`,
+  directory (`preset.env`, `tools.toml`, and optionally `run`,
   `login.sh`, `environment`, `commands/`); the entrypoint knows nothing about
   OpenCode and just runs whatever the active `AGENT_ENV_PRESET` provides.
   `vanilla` is the default and installs no agent; `opencode` installs OpenCode. Tools every preset gets
