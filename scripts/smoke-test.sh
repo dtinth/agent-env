@@ -9,7 +9,7 @@
 set -uo pipefail
 
 BASE="${1:-http://localhost:8080}"
-AUTH="${2:-opencode:changeme}"
+AUTH="${2:-dev:changeme}"
 CONTAINER="${CONTAINER:-agent-env}"
 
 pass=0; fail=0; skipped=0
@@ -181,6 +181,18 @@ if [ "${auth_mode}" != none ]; then
     || bad "/${ENV_PREFIX}/ answered $c without credentials"
 else
   skip "that the environment index is gated (AUTH_MODE=none asks for no gate)"
+fi
+
+# The basic-auth username defaulted to `opencode` before it became `dev`. A
+# deployment that never set one keeps both, or every saved login breaks.
+if [[ "${auth_mode}" == basic ]] && have_container \
+    && [[ -z "$(docker exec "${CONTAINER}" printenv GATEWAY_USER 2>/dev/null)" ]]; then
+  c=$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' \
+    -u "opencode:${AUTH#*:}" "${BASE}/${ENV_PREFIX}/")
+  [[ "$c" == 200 ]] && ok "the old default username still signs in ($c)" \
+                    || bad "opencode:<password> answered $c with GATEWAY_USER unset"
+else
+  skip "the old default username (only accepted under basic auth with GATEWAY_USER unset)"
 fi
 
 head_ "Primary service at /"

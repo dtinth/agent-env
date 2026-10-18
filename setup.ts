@@ -452,7 +452,7 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
   }
 
   if (authMode === "basic") {
-    gatewayUser = await ask("gatewayUser", "Username", prev.gatewayUser ?? "opencode");
+    gatewayUser = await ask("gatewayUser", "Username", prev.gatewayUser ?? "dev");
   }
 
   // 3. What lives at /.

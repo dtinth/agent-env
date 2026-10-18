@@ -6,7 +6,7 @@
 # only way in, and --path-prefix makes its UI work under one.
 set -euo pipefail
 
-root="${DUFS_ROOT:-${OPENCODE_WORKDIR:-/workspace}}"
+root="${DUFS_ROOT:-${WORKSPACE_DIR:-/workspace}}"
 mkdir -p "${root}"
 
 args=(

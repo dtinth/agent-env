@@ -3,7 +3,7 @@
 # public entrance. --service registers it as the shared service, so the CLI's
 # own discovery lands here instead of on a second server.
 set -euo pipefail
-cd "${OPENCODE_WORKDIR:-/workspace}"
+cd "${WORKSPACE_DIR:-/workspace}"
 exec opencode2 serve --service \
   --hostname 127.0.0.1 \
   --port "${OPENCODE_PORT:-4096}" \

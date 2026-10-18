@@ -62,7 +62,7 @@ jobs:
           for mode in local caddy github tailscale; do
             dir="$(mktemp -d)"
             case "${mode}" in
-              local) answers='{"mode":"local","behindProxy":false,"authMode":"basic","gatewayUser":"opencode"}' ;;
+              local) answers='{"mode":"local","behindProxy":false,"authMode":"basic","gatewayUser":"dev"}' ;;
               caddy) answers='{"mode":"caddy","domain":"agent.example.com","httpsPort":8443,"authMode":"google","googleClientId":"1.apps.googleusercontent.com","allowedEmails":"me@example.com"}' ;;
               github) answers='{"mode":"caddy","domain":"gh.example.com","httpsPort":8443,"authMode":"github","githubClientId":"Iv1.0123456789abcdef","githubOrg":"acme","githubTeam":"platform"}' ;;
               tailscale) answers='{"mode":"tailscale","tsHostname":"work.tail1234.ts.net","authMode":"none"}' ;;
@@ -191,7 +191,7 @@ jobs:
           done
 
           CONTAINER=agent-env ./scripts/smoke-test.sh \
-            http://localhost:8080 "opencode:${password}"
+            http://localhost:8080 "dev:${password}"
 
       # OPENCODE_ENABLE=false is a supported deployment, and it is the one the
       # default run cannot reach: a different handler at /, no credential
@@ -235,7 +235,7 @@ jobs:
           done
 
           CONTAINER=agent-env-noc ./scripts/smoke-test.sh \
-            http://localhost:8082 "opencode:${password}"
+            http://localhost:8082 "dev:${password}"
 
       # The smoke suite tests one running container, so it can only ever see
       # one way of configuring the gate. What varies between the rest is how
