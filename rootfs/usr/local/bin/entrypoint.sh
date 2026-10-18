@@ -1302,7 +1302,9 @@ mise_user() {
 # tools; these files are the image's, not yours. To pin a version, declare the tool
 # in ~/.config/mise/config.toml, which takes precedence over anything in conf.d.
 mise_conf_d="${USER_HOME}/.config/mise/conf.d"
-install -d -o "${PUID}" -g "${PGID}" "${mise_conf_d}"
+# Both levels, not just conf.d: `install -d` creates the missing parents as root,
+# and a root-owned ~/.config/mise is why `mise use -g` could not write config.toml.
+install -d -o "${PUID}" -g "${PGID}" "${mise_conf_d%/*}" "${mise_conf_d}"
 rm -f "${mise_conf_d}"/00-agent-env-*.toml
 for f in /opt/agent-env/mise.d/*.toml; do
   [[ -f "${f}" ]] || continue
