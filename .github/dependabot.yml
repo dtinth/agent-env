@@ -24,6 +24,12 @@ updates:
     groups:
       toolchain:
         patterns: ["*"]
+    ignore:
+      # The types describe the oldest Node the wizard promises to run on
+      # (`engines` in package.json), not the newest. Newer majors would let
+      # the type check pass on APIs that Node 22 does not have.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
 
   # Watches the Dockerfile's base image.
   - package-ecosystem: docker
