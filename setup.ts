@@ -591,7 +591,7 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
       );
     } catch {
       warn(
-        `Cannot stat ${path} — defaulting PUID/PGID to 1000:1000, fix in .env if that is wrong.`,
+        `Cannot stat ${path} — defaulting PUID/PGID to 1000:1000, fix in compose.yaml if that is wrong.`,
       );
     }
     workspace = { kind: "path", path, puid, pgid };
