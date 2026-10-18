@@ -11,7 +11,7 @@ Google-authenticated workstation. The moving parts:
   directory (`preset.env`, `tools.toml`, and optionally `run`, `auth`,
   `login.sh`, `environment`, `commands/`); the entrypoint knows nothing about
   OpenCode and just runs whatever the active `AGENT_ENV_PRESET` provides.
-  `opencode` is the default, `vanilla` installs no agent. Tools every preset gets
+  `vanilla` is the default and installs no agent; `opencode` installs OpenCode. Tools every preset gets
   (agent-browser) are separate, in `rootfs/opt/agent-env/mise.d/`.
 - `rootfs/` — everything baked into the image's filesystem. The entrypoint is
   `rootfs/usr/local/bin/entrypoint.sh`; it validates configuration, renders the
@@ -46,6 +46,7 @@ docker run -d --name agent-env --shm-size=2g \
   -p 8080:8080 -p 2222:22 \
   -e AUTH_MODE=basic -e "GATEWAY_PASSWORD=${password}" \
   -e PUBLIC_URL=http://localhost:8080 \
+  -e AGENT_ENV_PRESET=opencode \
   agent-env:smoke
 
 # Wait for the image's own HEALTHCHECK before testing anything. Give up on
@@ -66,12 +67,12 @@ done
 CONTAINER=agent-env ./scripts/smoke-test.sh http://localhost:8080 "dev:${password}"
 ```
 
-The second run is the same with `-e AGENT_ENV_PRESET=vanilla` on a different port
+The second run is the same without it (vanilla is the default) on a different port
 and container name, and a third adds a supplied command (`-e 'PRIMARY_COMMAND=python3
 -m http.server "$PORT" --bind 127.0.0.1' -e 'SMOKE_PRIMARY_EXPECT=Directory listing'`) —
 see the `Smoke test, vanilla preset` steps in `.github/workflows/docker.yml`.
 
-A clean run reports 75 passed (opencode preset) and 78 (vanilla), 0 failed,
+A clean run reports 74 passed (opencode preset) and 77 (vanilla), 0 failed,
 and one skip each — the oversized `*_FILE` guard when the container was not
 given one, and the credential-isolation check when there is no primary service
 to inspect. Skips are counted and printed rather than dropped, so a total that

@@ -123,15 +123,11 @@ PUBLIC_URL="${PUBLIC_URL%/}"
 #   login.sh       sourced by login shells;  environment: lines for /etc/environment
 #   commands/      extra `agent-env` subcommands
 #
-# opencode is the default. vanilla installs no agent and supervises nothing: / goes
-# to whatever the workspace runs on PRIMARY_PORT.
+# vanilla is the default: it installs no agent and supervises nothing, so / goes to
+# whatever the workspace runs on PRIMARY_PORT. opencode installs OpenCode and serves
+# its web UI at /.
 PRESETS_DIR=/opt/agent-env/presets
-if [[ -z "${AGENT_ENV_PRESET:-}" && -n "${OPENCODE_ENABLE:-}" ]]; then
-  if is_true "${OPENCODE_ENABLE}"; then AGENT_ENV_PRESET=opencode; else AGENT_ENV_PRESET=vanilla; fi
-  warn "OPENCODE_ENABLE is deprecated; set AGENT_ENV_PRESET=${AGENT_ENV_PRESET} instead"
-fi
-unset OPENCODE_ENABLE
-AGENT_ENV_PRESET="${AGENT_ENV_PRESET:-opencode}"
+AGENT_ENV_PRESET="${AGENT_ENV_PRESET:-vanilla}"
 AGENT_ENV_PRESET="${AGENT_ENV_PRESET,,}"
 PRESET_DIR="${PRESETS_DIR}/${AGENT_ENV_PRESET}"
 [[ "${AGENT_ENV_PRESET}" =~ ^[a-z0-9_-]+$ && -f "${PRESET_DIR}/preset.env" ]] \
@@ -163,31 +159,14 @@ PRIMARY_INJECTS=false
 if [[ "${PRIMARY_SUPERVISED}" == true && -z "${PRIMARY_COMMAND}" && -x "${PRESET_DIR}/auth" ]]; then PRIMARY_INJECTS=true; fi
 
 # Where everything starts: the agent, the terminals, the file manager, the
-# user's own daemons. It used to be spelled OPENCODE_WORKDIR, which is still
-# honoured, but it was never OpenCode's alone.
-if [[ -z "${WORKSPACE_DIR:-}" && -n "${OPENCODE_WORKDIR:-}" ]]; then
-  warn "OPENCODE_WORKDIR is deprecated; set WORKSPACE_DIR=${OPENCODE_WORKDIR} instead"
-  WORKSPACE_DIR="${OPENCODE_WORKDIR}"
-fi
+# user's own daemons.
 WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
-unset OPENCODE_WORKDIR
 
 # The port the primary service listens on, and so where / points. A preset's
 # server, or PRIMARY_COMMAND, is told to listen here; with neither, whatever the
-# workspace runs there takes its place. 3000 is what Next, Rails, Vite preview and most
-# `npm start` templates pick. OPENCODE_PORT was this before the two merged.
-# It only carries over for the opencode preset: otherwise it never
-# said where the primary service was, and 3000 is where that always was.
-if [[ -n "${OPENCODE_PORT:-}" ]]; then
-  if [[ "${AGENT_ENV_PRESET}" == opencode && -z "${PRIMARY_PORT:-}" ]]; then
-    warn "OPENCODE_PORT is deprecated; set PRIMARY_PORT=${OPENCODE_PORT} instead"
-    PRIMARY_PORT="${OPENCODE_PORT}"
-  else
-    warn "OPENCODE_PORT is deprecated and ignored here; PRIMARY_PORT decides"
-  fi
-fi
+# workspace runs there takes its place. 3000 is what Next, Rails, Vite preview and
+# most `npm start` templates pick.
 PRIMARY_PORT="${PRIMARY_PORT:-3000}"
-unset OPENCODE_PORT
 
 SSH_ENABLE="${SSH_ENABLE:-true}"
 SSH_PORT="${SSH_PORT:-22}"
@@ -207,12 +186,6 @@ NOVNC_PORT="${NOVNC_PORT:-6080}"
 TTYD_ENABLE="${TTYD_ENABLE:-true}"
 TTYD_PORT="${TTYD_PORT:-7681}"
 TTYD_WRITABLE="${TTYD_WRITABLE:-true}"
-# The browser terminal is always a login shell. It used to be configurable
-# (TTYD_COMMAND=tui for the OpenCode TUI); run `agent-env tui` from it instead.
-if [[ -n "${TTYD_COMMAND:-}" ]]; then
-  warn "TTYD_COMMAND is ignored: the terminal is always a login shell; run 'agent-env tui' or any command from it"
-fi
-unset TTYD_COMMAND
 # ttyd and dufs are told their own prefix so their UIs work under one; noVNC is
 # not, because the gateway strips the prefix before proxying to it.
 TTYD_PATH="${ENV_PREFIX}/terminal"
@@ -800,21 +773,10 @@ case "${AUTH_MODE,,}" in
 
     cookie_secret="${OAUTH2_PROXY_COOKIE_SECRET:-}"
     if [[ -z "${cookie_secret}" ]]; then
-      # Reused across restarts so existing sessions survive. It is the
-      # gateway's, not OpenCode's, so it no longer lives in OpenCode's config
-      # directory; one left there by an older image is moved, not orphaned.
+      # Reused across restarts so existing sessions survive.
       secret_dir="${USER_HOME}/.local/state/agent-env"
       secret_file="${secret_dir}/cookie-secret"
-      legacy_secret_file="${USER_HOME}/.config/opencode/.cookie-secret"
       install -d -m 700 -o "${PUID}" -g "${PGID}" "${secret_dir}"
-      if [[ ! -s "${secret_file}" && -s "${legacy_secret_file}" ]]; then
-        # Copied, then removed if possible: the old file may be a read-only
-        # mount, and failing to delete it must not stop the gateway.
-        cp "${legacy_secret_file}" "${secret_file}"
-        chown "${PUID}:${PGID}" "${secret_file}"; chmod 600 "${secret_file}"
-        rm -f "${legacy_secret_file}" 2>/dev/null || true
-        log "copied the OAuth cookie secret to ${secret_file}"
-      fi
       if [[ -s "${secret_file}" ]]; then
         cookie_secret="$(< "${secret_file}")"
       else
@@ -980,14 +942,7 @@ else:
     ;;
 
   basic)
-    # The default used to be `opencode`. A deployment that never chose a name
-    # has that one saved in its browsers and password managers, so while the
-    # name is still the default, the old one keeps working alongside it.
-    gateway_legacy_user=''
-    if [[ -z "${GATEWAY_USER:-}" ]]; then
-      GATEWAY_USER=dev
-      gateway_legacy_user=opencode
-    fi
+    GATEWAY_USER="${GATEWAY_USER:-dev}"
     if [[ -z "${GATEWAY_PASSWORD:-}" ]]; then
       GATEWAY_PASSWORD="$(rand_secret)"
       log "AUTH_MODE=basic with no GATEWAY_PASSWORD set; generated one for this boot:"
@@ -997,8 +952,6 @@ else:
     GATEWAY_BASIC_HASH="$(caddy hash-password --plaintext "${GATEWAY_PASSWORD}")"
     # One `user hash` line per account, indented for the basic_auth block.
     GATEWAY_BASIC_ACCOUNTS="${GATEWAY_USER} ${GATEWAY_BASIC_HASH}"
-    [[ -n "${gateway_legacy_user}" ]] &&
-      GATEWAY_BASIC_ACCOUNTS+=$'\n\t\t\t\t'"${gateway_legacy_user} ${GATEWAY_BASIC_HASH}"
     ;;
 
   none)
@@ -1384,14 +1337,6 @@ for f in /opt/agent-env/mise.d/*.toml; do
 done
 if [[ -f "${PRESET_DIR}/tools.toml" ]]; then
   install -m 644 -o "${PUID}" -g "${PGID}" "${PRESET_DIR}/tools.toml" "${mise_conf_d}/00-agent-env-preset.toml"
-fi
-# An earlier release seeded these two tools into a file of the volume's own. If it
-# was never touched, it would keep installing OpenCode under the vanilla preset.
-old_seed="${mise_conf_d}/agent-env.toml"
-if [[ -f "${old_seed}" ]] && [[ "$(grep -vE '^[[:space:]]*(#|$)' "${old_seed}")" == '[tools]
-"npm:@opencode/cli" = { version = "latest", allow_builds = ["@opencode/cli"] }
-"npm:agent-browser" = { version = "latest", allow_builds = ["agent-browser"] }' ]]; then
-  rm -f "${old_seed}"
 fi
 
 # Install what the volume declares, then move each tool to the newest version it

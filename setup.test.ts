@@ -239,14 +239,6 @@ test("a command that cannot be quoted for Compose is refused", () => {
   assertStringIncludes(r.stdout, "cannot contain both");
 });
 
-test("an answers file from before presets still means what it said", () => {
-  const dir = tmp();
-  const { preset: _, ...old } = LOCAL;
-  const r = run({ ...old, opencodeEnable: false, primaryPort: 3000 } as never, dir);
-  assertEquals(r.code, 0);
-  assertEquals(envOf(dir).AGENT_ENV_PRESET, "vanilla");
-});
-
 test("a public domain with no authentication is refused", () => {
   const dir = tmp();
   const r = run({ ...CADDY, authMode: "none" }, dir);

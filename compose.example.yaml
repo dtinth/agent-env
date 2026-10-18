@@ -59,8 +59,9 @@ services:
       - GATEWAY_PASSWORD
 
       # --- What lives at / ------------------------------------------------
-      # AGENT_ENV_PRESET=vanilla installs no agent and hands / to whatever is
-      # on PRIMARY_PORT (or runs PRIMARY_COMMAND there).
+      # AGENT_ENV_PRESET=opencode installs OpenCode and serves it at /. The default,
+      # vanilla, installs no agent and hands / to whatever is on PRIMARY_PORT
+      # (or runs PRIMARY_COMMAND there).
       - AGENT_ENV_PRESET
       - PRIMARY_COMMAND
       - PRIMARY_PORT

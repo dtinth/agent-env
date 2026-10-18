@@ -165,7 +165,9 @@ jobs:
             echo "image=agent-env:ci" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Smoke test
+      # The default preset is vanilla, so the OpenCode integration — the server
+      # under its own supervisor, the credential injected at / — needs asking for.
+      - name: Smoke test, opencode preset
         env:
           IMAGE: ${{ steps.ref.outputs.image }}
         run: |
@@ -177,6 +179,7 @@ jobs:
             -e AUTH_MODE=basic \
             -e "GATEWAY_PASSWORD=${password}" \
             -e PUBLIC_URL=http://localhost:8080 \
+            -e AGENT_ENV_PRESET=opencode \
             "${IMAGE}"
 
           # The image's own HEALTHCHECK is the readiness signal.
@@ -192,11 +195,10 @@ jobs:
           CONTAINER=agent-env ./scripts/smoke-test.sh \
             http://localhost:8080 "dev:${password}"
 
-      # The vanilla preset is a supported deployment, and it is the one the
-      # default run cannot reach: a different handler at /, no credential
-      # injection, no agent installed, and a healthcheck that has to stop probing
-      # a port that is deliberately not there. Untested, it would only break for
-      # whoever chose it first.
+      # The vanilla preset is the default, and it is the one the run above cannot
+      # reach: a different handler at /, no credential injection, no agent
+      # installed, and a healthcheck that has to stop probing a port that is
+      # deliberately not there.
       - name: Smoke test, vanilla preset
         env:
           IMAGE: ${{ steps.ref.outputs.image }}
