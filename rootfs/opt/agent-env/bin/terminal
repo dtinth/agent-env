@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# What the browser terminal runs: a login shell in the workspace. Whatever you
+# want to run in it — `agent-env tui`, `claude`, anything — you run from there.
+set -uo pipefail
+export TERM="${TERM:-xterm-256color}"
+
+# The runtime configuration, the way the healthcheck reads it. A login shell
+# inherits neither the container's environment nor the daemon's.
+env_file=/run/agent-env/env
+value() { sed -n "s/^$1=//p" "${env_file}" 2>/dev/null | head -1; }
+
+workdir="$(value WORKSPACE_DIR)"
+workdir="${workdir:-${WORKSPACE_DIR:-/workspace}}"
+cd "${workdir}" || cd "${HOME}"
+
+exec bash -l
