@@ -522,7 +522,7 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
 
   const sshKeys = await ask(
     "sshKeys",
-    "SSH public key(s) for the dev user, semicolon-separated",
+    "SSH public key(s) for the dev user (separate several with ;)",
     prev.sshKeys ?? "",
     { optional: true },
   );

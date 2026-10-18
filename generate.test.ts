@@ -5,7 +5,14 @@
 
 import { test } from "vite-plus/test";
 import { assert, assertEquals, assertThrows } from "./test-assert.ts";
-import { type Answers, generate, InvalidAnswers, validate, VERSION } from "./generate.ts";
+import {
+  type Answers,
+  generate,
+  InvalidAnswers,
+  normaliseSshKeys,
+  validate,
+  VERSION,
+} from "./generate.ts";
 
 const BASIC: Answers = {
   version: VERSION,
@@ -116,4 +123,16 @@ test("a bare relative path is a bind mount for any caller", () => {
     { randomSecret: fixed },
   );
   assert(files["compose.yaml"].includes('"./code:/workspace"'));
+});
+
+test("authorized_keys text is accepted as pasted", () => {
+  assertEquals(
+    normaliseSshKeys("# work\nssh-ed25519 AAAA a@b\r\n\n  ssh-rsa BBBB c@d  \n"),
+    "ssh-ed25519 AAAA a@b\nssh-rsa BBBB c@d",
+  );
+  const files = generate({ ...BASIC, sshKeys: "ssh-ed25519 AAAA a@b\nssh-rsa BBBB c@d" });
+  assert(
+    files["compose.yaml"].includes('"SSH_AUTHORIZED_KEYS=ssh-ed25519 AAAA a@b\\nssh-rsa BBBB c@d"'),
+  );
+  assert(!files[".env"].includes("SSH_AUTHORIZED_KEYS"));
 });

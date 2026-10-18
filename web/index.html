@@ -218,8 +218,16 @@
         <fieldset>
           <legend>4. Access and storage</legend>
           <label class="field">
-            <span>SSH public key(s) for the dev user <small>(semicolon-separated)</small></span>
-            <textarea name="sshKeys" rows="2" placeholder="ssh-ed25519 AAAA… you@host"></textarea>
+            <span
+              >SSH public key(s) for the dev user
+              <small>(authorized_keys format, one per line)</small></span
+            >
+            <textarea
+              name="sshKeys"
+              rows="3"
+              spellcheck="false"
+              placeholder="ssh-ed25519 AAAA… you@host"
+            ></textarea>
           </label>
           <label class="field narrow" data-show="mode=local,caddy">
             <span>Host port for SSH</span>
@@ -304,9 +312,9 @@
             <button
               type="button"
               id="regenerate"
-              title="Mint new secrets for keys not in your existing .env"
+              title="Pick fresh random values for the generated password and cookie secret. Keys you pasted from an existing .env are left alone."
             >
-              New secrets
+              Re-roll generated secrets
             </button>
           </div>
           <pre><code id="code"></code></pre>

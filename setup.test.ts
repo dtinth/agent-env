@@ -65,13 +65,28 @@ function tmp(): string {
 }
 
 /**
+ * The non-secret settings, hardcoded in compose.yaml as `- "KEY=value"` — what
+ * the container receives, after Compose has turned $$ back into $.
+ */
+function settingsOf(dir: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [, quoted] of readText(`${dir}/compose.yaml`).matchAll(
+    /^ {6}- ("[A-Z][A-Z0-9_]*=.*")$/gm,
+  )) {
+    const [k, ...v] = (JSON.parse(quoted) as string).split("=");
+    out[k] = v.join("=").replaceAll("$$", "$");
+  }
+  return out;
+}
+
+/**
  * The *effective* value of each key, the way dotenv reads it — an unquoted
  * value ends at an unescaped #, and a quoted one is unwrapped. Comparing raw
  * file text instead would fail the wizard for preserving a line exactly, which
  * is the behaviour that keeps exotic values intact.
  */
 function envOf(dir: string): Record<string, string> {
-  const out: Record<string, string> = {};
+  const out: Record<string, string> = settingsOf(dir);
   for (const line of readText(`${dir}/.env`).split("\n")) {
     const m = /^([A-Z][A-Z0-9_]*)=(.*)$/.exec(line);
     if (!m) continue;
@@ -188,8 +203,8 @@ test("booleans are emitted canonically", () => {
 });
 
 test("the vanilla preset takes a command, and $PORT survives Compose", () => {
-  // Compose expands $VAR in a double-quoted .env value, which would hand the
-  // command an empty port. It has to come out single-quoted.
+  // Compose expands $VAR in a value, which would hand the command an empty
+  // port. It has to come out as $$PORT in compose.yaml.
   const dir = tmp();
   const r = run(
     {
@@ -202,8 +217,11 @@ test("the vanilla preset takes a command, and $PORT survives Compose", () => {
   );
   assertEquals(r.code, 0);
   const env = readText(`${dir}/.env`);
-  assertStringIncludes(env, "AGENT_ENV_PRESET=vanilla");
-  assertStringIncludes(env, "PRIMARY_COMMAND='npm run dev -- --port $PORT'");
+  assert(!env.includes("PRIMARY_COMMAND"), "a setting, not a secret, landed in .env");
+  assertStringIncludes(
+    readText(`${dir}/compose.yaml`),
+    "PRIMARY_COMMAND=npm run dev -- --port $$PORT",
+  );
   assertEquals(envOf(dir).PRIMARY_COMMAND, "npm run dev -- --port $PORT");
 });
 
@@ -227,16 +245,6 @@ test("the opencode preset runs its own server, so a command is refused", () => {
   const r = run({ ...LOCAL, preset: "opencode", primaryCommand: "node app.js" }, dir);
   assertEquals(r.code, 2);
   assert(!existsSync(`${dir}/compose.yaml`));
-});
-
-test("a command that cannot be quoted for Compose is refused", () => {
-  const dir = tmp();
-  const r = run(
-    { ...LOCAL, preset: "vanilla", primaryPort: 3000, primaryCommand: `sh -c 'echo $PORT'` },
-    dir,
-  );
-  assertEquals(r.code, 1);
-  assertStringIncludes(r.stdout, "cannot contain both");
 });
 
 test("a public domain with no authentication is refused", () => {
