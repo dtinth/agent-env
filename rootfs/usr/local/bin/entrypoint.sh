@@ -1373,25 +1373,33 @@ if [[ ! -e "${agent_tools}" ]]; then
   install -m 644 -o "${PUID}" -g "${PGID}" /etc/agent-env/agent-tools.toml "${agent_tools}"
 fi
 
-# Install what is declared, then move what is declared in the volume to the
-# newest version it allows. Tools the image itself declares are left to the
-# image: they are locked on purpose, and a rebuild is how they move.
+# Install what the volume declares, then move each tool to the newest version it
+# allows. Tools the image itself declares are left to the image: they are locked
+# on purpose, and a rebuild is how they move. Each tool is handled on its own, so
+# one that cannot be fetched blocks neither the others nor their upgrades.
 log "installing and upgrading mise tools (${USER_HOME}/.config/mise)"
 # Without a network mise retries for minutes before giving up, and the gateway
-# would wait on it. Ask the registry once, briefly, and skip the whole step if
-# it does not answer: what is already in the volume is still used.
-if ! curl -fsS --max-time 8 -o /dev/null https://registry.npmjs.org/ 2>/dev/null; then
-  warn "the npm registry is unreachable; skipping mise install/upgrade and using what is installed"
-elif mise_user timeout 600 mise install --yes >/dev/null 2>&1; then
-  mapfile -t upgradable < <(mise_user mise ls --json 2>/dev/null \
-    | jq -r 'to_entries[] | select(any(.value[]; (.source.path // "") | startswith("/etc/mise") | not)) | .key' 2>/dev/null)
-  if (( ${#upgradable[@]} )); then
-    mise_user timeout 600 mise upgrade --yes "${upgradable[@]}" >/dev/null 2>&1 \
-      || warn "could not upgrade mise tools; using what is installed"
-  fi
-else
-  warn "some mise tools could not be installed; run 'mise install' to retry"
+# would wait on it. Ask the npm registry once, briefly: if it does not answer, the
+# npm-backed tools are skipped and whatever is already in the volume is used.
+npm_registry="${npm_config_registry:-${NPM_CONFIG_REGISTRY:-https://registry.npmjs.org/}}"
+npm_up=true
+if ! curl -fsS --max-time 8 -o /dev/null "${npm_registry}" 2>/dev/null; then
+  npm_up=false
+  warn "the npm registry (${npm_registry}) is unreachable; skipping npm-backed mise tools and using what is installed"
 fi
+# One "<tool> <installed>" line per tool declared outside the image's config.
+mapfile -t declared < <(mise_user mise ls --json 2>/dev/null \
+  | jq -r 'to_entries[] | select(any(.value[]; (.source.path // "") | startswith("/etc/mise") | not)) | "\(.key) \(all(.value[]; .installed))"' 2>/dev/null)
+for entry in "${declared[@]}"; do
+  tool="${entry% *}"; present="${entry##* }"
+  [[ "${tool}" == npm:* ]] && ! "${npm_up}" && continue
+  if [[ "${present}" != true ]]; then
+    mise_user timeout 300 mise install --yes "${tool}" >/dev/null 2>&1 \
+      || { warn "could not install mise tool ${tool}"; continue; }
+  fi
+  mise_user timeout 300 mise upgrade --yes "${tool}" >/dev/null 2>&1 \
+    || warn "could not upgrade mise tool ${tool}; using what is installed"
+done
 mise_user mise reshim >/dev/null 2>&1 || true
 
 if [[ -n "${MISE_TOOLS:-}" ]]; then
