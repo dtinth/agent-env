@@ -5,9 +5,9 @@
  *   const files = generate(answers, { existingEnv });
  *   // { ".env": "...", "compose.yaml": "...", "agent-env.setup.json": "..." }
  *
- * A pure function of its input: no filesystem, no prompts, no Deno APIs, no
- * imports. The same module backs the setup.ts wizard and can be bundled into a
- * web page. The one source of variation is the secrets it mints when
+ * A pure function of its input: no filesystem, no prompts, no runtime APIs, no
+ * imports — it runs unchanged in Node and in a browser. The same module backs
+ * the setup.ts wizard and the web configurator in web/. The one source of variation is the secrets it mints when
  * `existingEnv` has none; pass `randomSecret` to make that deterministic too.
  *
  * The output is a compose.yaml and a .env and nothing else: sidecar config is
@@ -67,14 +67,16 @@ export interface Answers {
  * to start.
  */
 export function cleanList(v: string | undefined): string {
-  return (v ?? "").split(",").map((x) => x.replace(/\s+/g, "")).filter((x) =>
-    x.length > 0
-  ).join(",");
+  return (v ?? "")
+    .split(",")
+    .map((x) => x.replace(/\s+/g, ""))
+    .filter((x) => x.length > 0)
+    .join(",");
 }
 
 /**
  * Matches the entrypoint's own rand_secret: 32 random bytes, base64url,
- * unpadded. Web Crypto, so it runs in a browser as well as in Deno.
+ * unpadded. Web Crypto, so it runs in a browser as well as in Node.
  */
 export function randomSecret(bytes = 32): string {
   const buf = new Uint8Array(bytes);
@@ -222,12 +224,17 @@ export const CHECKS: {
     /[\n\r]/.test(v) ? "a path cannot contain a newline" : null,
 };
 
+/**
+ * Compose reads a bare relative path as a named volume, and there is no such
+ * volume, so it rejects the file. "./" is what was meant.
+ */
+export function hostPathFor(path: string): string {
+  return path.startsWith("/") || path.startsWith(".") ? path : `./${path}`;
+}
+
 /** The URL people type, derived from the answers that decide it. */
 export function publicUrlFor(
-  a: Pick<
-    Answers,
-    "mode" | "behindProxy" | "publicUrl" | "domain" | "httpsPort" | "tsHostname"
-  >,
+  a: Pick<Answers, "mode" | "behindProxy" | "publicUrl" | "domain" | "httpsPort" | "tsHostname">,
 ): string {
   if (a.mode === "caddy") {
     const port = a.httpsPort ?? 8443;
@@ -282,9 +289,7 @@ export function allowListProblem(
   // The image counts an email rule as an allow list for GitHub too.
   if (
     a.authMode === "github" &&
-    ![a.githubUsers, a.githubOrg, a.githubTeam, ...emails].some((v) =>
-      cleanList(v)
-    )
+    ![a.githubUsers, a.githubOrg, a.githubTeam, ...emails].some((v) => cleanList(v))
   ) {
     return {
       field: "githubUsers",
@@ -303,9 +308,7 @@ export function allowListProblem(
  * Only the dashboard needs the port above, so this is a limit on that
  * combination, not on the port itself.
  */
-export function dashboardRoomProblem(
-  a: Pick<Answers, "dashboard" | "httpsPort">,
-): Problem | null {
+export function dashboardRoomProblem(a: Pick<Answers, "dashboard" | "httpsPort">): Problem | null {
   const maxMain = 65535 - DASHBOARD_PORT_OFFSET;
   if (!a.dashboard || a.httpsPort === undefined || a.httpsPort <= maxMain) {
     return null;
@@ -314,9 +317,7 @@ export function dashboardRoomProblem(
     field: "httpsPort",
     message: `Port ${a.httpsPort} leaves no room for the dashboard.`,
     detail: [
-      `It is served on the next port up, and ${
-        a.httpsPort + DASHBOARD_PORT_OFFSET
-      } is not a port.`,
+      `It is served on the next port up, and ${a.httpsPort + DASHBOARD_PORT_OFFSET} is not a port.`,
       `Pick ${maxMain} or lower, or turn the dashboard off.`,
     ],
   };
@@ -327,10 +328,7 @@ export function dashboardRoomProblem(
  * bind at `up`. Nothing downstream catches it, so check it here.
  */
 export function portClashProblem(
-  a: Pick<
-    Answers,
-    "mode" | "behindProxy" | "publicUrl" | "dashboard" | "sshPort"
-  >,
+  a: Pick<Answers, "mode" | "behindProxy" | "publicUrl" | "dashboard" | "sshPort">,
 ): Problem | null {
   const claims: [number, string][] = [];
   const claim = (port: number | undefined, what: string) => {
@@ -341,10 +339,7 @@ export function portClashProblem(
   if (a.mode === "local") {
     claim(a.behindProxy ? 8080 : extPort, "the gateway");
     if (a.dashboard) {
-      claim(
-        a.behindProxy ? 8081 : extPort + DASHBOARD_PORT_OFFSET,
-        "the dashboard",
-      );
+      claim(a.behindProxy ? 8081 : extPort + DASHBOARD_PORT_OFFSET, "the dashboard");
     }
   }
   if (a.mode === "caddy") {
@@ -436,14 +431,7 @@ export function validate(a: Answers): Problem[] {
   // The cross-answer checks assume the answers they read are well-formed.
   if (out.length) return out;
 
-  for (
-    const p of [
-      refusal(a),
-      allowListProblem(a),
-      dashboardRoomProblem(a),
-      portClashProblem(a),
-    ]
-  ) {
+  for (const p of [refusal(a), allowListProblem(a), dashboardRoomProblem(a), portClashProblem(a)]) {
     if (p) out.push(p);
   }
   return out;
@@ -451,9 +439,11 @@ export function validate(a: Answers): Problem[] {
 
 /** Thrown by `generate` for answers `validate` would report on. */
 export class InvalidAnswers extends Error {
-  constructor(readonly problems: Problem[]) {
+  readonly problems: Problem[];
+  constructor(problems: Problem[]) {
     super(problems.map((p) => p.message).join("\n"));
     this.name = "InvalidAnswers";
+    this.problems = problems;
   }
 }
 // ---------------------------------------------------------------------------
@@ -492,7 +482,7 @@ export interface RenderedEnv {
 export function renderEnv(
   a: Answers,
   keep: Record<string, EnvEntry>,
-  rand: (bytes: number) => string = randomSecret,
+  rand: (bytes: number, key: string) => string = randomSecret,
 ): RenderedEnv {
   const L: string[] = [];
   const emitted = new Set<string>();
@@ -538,12 +528,8 @@ export function renderEnv(
     if (cleaned) put(k, cleaned);
   };
 
-  L.push(
-    "# Generated by setup.ts — safe to edit; re-running keeps your secrets.",
-  );
-  L.push(
-    "# .env.example documents every key, including the ones not set here.",
-  );
+  L.push("# Generated by setup.ts — safe to edit; re-running keeps your secrets.");
+  L.push("# .env.example documents every key, including the ones not set here.");
   L.push("");
   L.push("# --- Where it lives ---");
   put("PUBLIC_URL", a.publicUrl);
@@ -560,10 +546,8 @@ export function renderEnv(
     }
     putList("ALLOWED_EMAILS", a.allowedEmails);
     putList("ALLOWED_EMAIL_DOMAINS", a.allowedEmailDomains);
-    L.push(
-      "# Persisted so sessions survive a restart instead of silently rotating.",
-    );
-    secret("OAUTH2_PROXY_COOKIE_SECRET", () => rand(32));
+    L.push("# Persisted so sessions survive a restart instead of silently rotating.");
+    secret("OAUTH2_PROXY_COOKIE_SECRET", () => rand(32, "OAUTH2_PROXY_COOKIE_SECRET"));
   }
   if (a.authMode === "github") {
     put("GITHUB_CLIENT_ID", a.githubClientId ?? "");
@@ -575,14 +559,12 @@ export function renderEnv(
     putList("GITHUB_TEAM", a.githubTeam);
     putList("ALLOWED_EMAILS", a.allowedEmails);
     putList("ALLOWED_EMAIL_DOMAINS", a.allowedEmailDomains);
-    L.push(
-      "# Persisted so sessions survive a restart instead of silently rotating.",
-    );
-    secret("OAUTH2_PROXY_COOKIE_SECRET", () => rand(32));
+    L.push("# Persisted so sessions survive a restart instead of silently rotating.");
+    secret("OAUTH2_PROXY_COOKIE_SECRET", () => rand(32, "OAUTH2_PROXY_COOKIE_SECRET"));
   }
   if (a.authMode === "basic") {
     put("GATEWAY_USER", a.gatewayUser ?? "opencode");
-    secret("GATEWAY_PASSWORD", () => rand(18));
+    secret("GATEWAY_PASSWORD", () => rand(18, "GATEWAY_PASSWORD"));
   }
   L.push("");
 
@@ -602,9 +584,7 @@ export function renderEnv(
   L.push("");
 
   L.push("# --- Model providers ---");
-  L.push(
-    "# Or sign in interactively with /connect in the TUI; it persists on the home volume.",
-  );
+  L.push("# Or sign in interactively with /connect in the TUI; it persists on the home volume.");
   for (const k of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]) {
     if (carry(k)) {
       // reused as written
@@ -625,9 +605,7 @@ export function renderEnv(
 
   if (a.mode === "tailscale") {
     L.push("# --- Tailscale ---");
-    L.push(
-      "# Tag the key and make it reusable, or an unattended restart after it",
-    );
+    L.push("# Tag the key and make it reusable, or an unattended restart after it");
     L.push("# expires (90 days at most) will fail to come back.");
     if (!carry("TS_AUTHKEY")) put("TS_AUTHKEY", "tskey-auth-CHANGEME");
     L.push("");
@@ -637,9 +615,9 @@ export function renderEnv(
   // MISE_TOOLS list, a DESKTOP_RESOLUTION. This file is theirs to edit, and a
   // generator that silently drops what it does not recognise makes "re-run it"
   // advice you cannot follow.
-  const carried = Object.keys(keep).filter((k) =>
-    !emitted.has(k) && !decided.has(k)
-  ).sort();
+  const carried = Object.keys(keep)
+    .filter((k) => !emitted.has(k) && !decided.has(k))
+    .sort();
   if (carried.length) {
     L.push("# --- Kept from your previous .env ---");
     // Carried through as written: re-quoting someone else's value is how a
@@ -673,11 +651,7 @@ export function renderCompose(a: Answers, envKeys: string[]): string {
   const gp = 8080;
   const dp = 8081;
   const pub = new URL(a.publicUrl);
-  const extPort = pub.port
-    ? Number(pub.port)
-    : pub.protocol === "https:"
-    ? 443
-    : 80;
+  const extPort = pub.port ? Number(pub.port) : pub.protocol === "https:" ? 443 : 80;
   const L: string[] = [];
 
   L.push("# Generated by setup.ts. Re-run it to regenerate, or edit freely —");
@@ -701,24 +675,16 @@ export function renderCompose(a: Answers, envKeys: string[]): string {
     // Sharing the sidecar's network namespace means this service cannot declare
     // ports of its own — tailscale serve is the only way in, and SSH is reached
     // on the tailnet address directly.
-    L.push(
-      "    # Shares the Tailscale container's network namespace, so it has no",
-    );
-    L.push(
-      "    # ports of its own: `tailscale serve` is the way in, and SSH is",
-    );
+    L.push("    # Shares the Tailscale container's network namespace, so it has no");
+    L.push("    # ports of its own: `tailscale serve` is the way in, and SSH is");
     L.push("    # reachable on the tailnet address with nothing published.");
     L.push("    network_mode: service:tailscale");
     L.push("    depends_on:");
     L.push("      - tailscale");
   } else if (a.mode === "caddy") {
-    L.push(
-      "    # HTTP is not published: the caddy service in front is the only",
-    );
+    L.push("    # HTTP is not published: the caddy service in front is the only");
     L.push("    # way in. SSH is raw TCP, which Caddy cannot proxy, so it is");
-    L.push(
-      "    # published directly, or there would be no way in but the browser.",
-    );
+    L.push("    # published directly, or there would be no way in but the browser.");
     L.push("    expose:");
     L.push(`      - "${gp}"`);
     if (a.dashboard) L.push(`      - "${dp}"`);
@@ -753,22 +719,14 @@ export function renderCompose(a: Answers, envKeys: string[]): string {
   L.push("");
 
   if (a.rootlessDocker) {
-    L.push(
-      "    # DOCKER_ROOTLESS_ENABLE=true needs all five of these. The entrypoint",
-    );
+    L.push("    # DOCKER_ROOTLESS_ENABLE=true needs all five of these. The entrypoint");
     L.push("    # names any that are missing and leaves the daemon down.");
     L.push("    cap_add:");
     L.push("      - SYS_ADMIN # setuid newuidmap, to map the subuid range");
     L.push("    security_opt:");
-    L.push(
-      "      - seccomp=unconfined # runc's per-container session keyring (keyctl)",
-    );
-    L.push(
-      "      - apparmor=unconfined # docker-default denies mount; rootlesskit remounts /",
-    );
-    L.push(
-      "      - systempaths=unconfined # writable /proc/sys, for net.ipv4.ip_forward",
-    );
+    L.push("      - seccomp=unconfined # runc's per-container session keyring (keyctl)");
+    L.push("      - apparmor=unconfined # docker-default denies mount; rootlesskit remounts /");
+    L.push("      - systempaths=unconfined # writable /proc/sys, for net.ipv4.ip_forward");
     L.push("    devices:");
     L.push("      - /dev/net/tun # slirp4netns' tap device");
     L.push("");
@@ -780,9 +738,7 @@ export function renderCompose(a: Answers, envKeys: string[]): string {
   } else {
     L.push("      - workspace:/workspace");
   }
-  L.push(
-    "      # The whole home directory, so a tool the agent installs survives",
-  );
+  L.push("      # The whole home directory, so a tool the agent installs survives");
   L.push("      # being recreated on a new image.");
   L.push("      - home:/home/dev");
   L.push("      # Keeps the generated SSH host keys across image updates.");
@@ -794,29 +750,19 @@ export function renderCompose(a: Answers, envKeys: string[]): string {
     L.push("    image: caddy:2-alpine");
     L.push("    restart: unless-stopped");
     L.push("    ports:");
-    L.push(
-      "      # ACME validates on 80 (HTTP-01) or 443 (TLS-ALPN-01) and nowhere",
-    );
-    L.push(
-      "      # else, so this stays published even though the site is served on",
-    );
+    L.push("      # ACME validates on 80 (HTTP-01) or 443 (TLS-ALPN-01) and nowhere");
+    L.push("      # else, so this stays published even though the site is served on");
     L.push(`      # ${extPort}.`);
     L.push('      - "80:80"');
     L.push(`      - "${extPort}:${extPort}"`);
     if (a.dashboard) {
-      L.push(
-        `      - "${extPort + DASHBOARD_PORT_OFFSET}:${
-          extPort + DASHBOARD_PORT_OFFSET
-        }"`,
-      );
+      L.push(`      - "${extPort + DASHBOARD_PORT_OFFSET}:${extPort + DASHBOARD_PORT_OFFSET}"`);
     }
     L.push("    configs:");
     L.push("      - source: caddyfile");
     L.push("        target: /etc/caddy/Caddyfile");
     L.push("    volumes:");
-    L.push(
-      "      # Without this every recreate re-issues the certificate and you",
-    );
+    L.push("      # Without this every recreate re-issues the certificate and you");
     L.push("      # hit Let's Encrypt's duplicate-certificate limit.");
     L.push("      - caddy_data:/data");
     L.push("      - caddy_config:/config");
@@ -837,9 +783,7 @@ export function renderCompose(a: Answers, envKeys: string[]): string {
     L.push("      - source: ts-serve");
     L.push("        target: /config/serve.json");
     L.push("    volumes:");
-    L.push(
-      "      # Without persistent state every restart burns a fresh auth key.",
-    );
+    L.push("      # Without persistent state every restart burns a fresh auth key.");
     L.push("      - ts-state:/var/lib/tailscale");
     L.push("    devices:");
     L.push("      - /dev/net/tun");
@@ -886,12 +830,8 @@ export function renderCaddyfile(a: Answers): string {
   const L: string[] = [];
   L.push("# Generated by setup.ts.");
   L.push("#");
-  L.push(
-    "# This terminates TLS and nothing else. Authentication and the /~env/",
-  );
-  L.push(
-    "# routing belong to the gateway inside the container, so they behave",
-  );
+  L.push("# This terminates TLS and nothing else. Authentication and the /~env/");
+  L.push("# routing belong to the gateway inside the container, so they behave");
   L.push("# identically whether or not this config is in play.");
   if (a.acmeEmail) {
     L.push("");
@@ -905,9 +845,7 @@ export function renderCaddyfile(a: Answers): string {
   L.push("}");
   if (a.dashboard) {
     L.push("");
-    L.push(
-      "# Same hostname, second port: the session cookie is host-scoped and",
-    );
+    L.push("# Same hostname, second port: the session cookie is host-scoped and");
     L.push("# ignores the port, so one sign-in covers both.");
     L.push(`${a.domain}:${extPort + DASHBOARD_PORT_OFFSET} {`);
     L.push("\treverse_proxy agent-env:8081");
@@ -947,8 +885,12 @@ export interface GenerateOptions {
    * through as written.
    */
   existingEnv?: string;
-  /** Mints a base64url secret from `bytes` random bytes. Web Crypto by default. */
-  randomSecret?: (bytes: number) => string;
+  /**
+   * Mints a base64url secret from `bytes` random bytes, for the .env key named
+   * `key`. Web Crypto by default. A UI that re-renders on every keystroke can
+   * memoise by `key` so the secrets it shows hold still.
+   */
+  randomSecret?: (bytes: number, key: string) => string;
 }
 
 /**
@@ -956,10 +898,7 @@ export interface GenerateOptions {
  * for anything `validate` reports, rather than write a deployment the image
  * would refuse, or one that should not exist at all.
  */
-export function generate(
-  answers: Answers,
-  options: GenerateOptions = {},
-): Record<string, string> {
+export function generate(answers: Answers, options: GenerateOptions = {}): Record<string, string> {
   const problems = validate(answers);
   if (problems.length) throw new InvalidAnswers(problems);
   const env = renderEnv(

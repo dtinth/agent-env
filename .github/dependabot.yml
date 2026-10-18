@@ -13,6 +13,18 @@ updates:
       actions:
         patterns: ["*"]
 
+  # Vite+ and the rest of the web configurator's toolchain. The setup wizard
+  # itself depends on none of it.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: build
+    groups:
+      toolchain:
+        patterns: ["*"]
+
   # Watches the Dockerfile's base image.
   - package-ecosystem: docker
     directory: /

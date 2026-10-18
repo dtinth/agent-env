@@ -11,11 +11,18 @@ workstation. The moving parts:
   `rootfs/usr/local/bin/entrypoint.sh`; it validates configuration, renders the
   Caddyfile and the pitchfork daemon definitions, then execs pitchfork as PID 1.
 - `scripts/smoke-test.sh` — end-to-end check against a *running* container.
-- `setup.ts` / `setup_test.ts` — the Deno deployment wizard: prompts, files,
-  exit codes. `generate.ts` / `generate_test.ts` — the pure module it calls,
-  answers in, `compose.yaml` + `.env` out, no Deno APIs, so a web UI can reuse
-  it. `deno task check` and `deno task test` cover all four; they need no
-  container.
+- `setup.ts` — the deployment wizard: prompts, files, exit codes. Runs on plain
+  Node ≥ 22.18 (`node setup.ts`) with nothing installed, through Node's built-in
+  type stripping — so it may import only `node:` builtins and `generate.ts`, and
+  only erasable TypeScript (no enums, namespaces or parameter properties).
+- `generate.ts` — the pure module both front ends call: answers in,
+  `compose.yaml` + `.env` out, no runtime APIs.
+- `web/` — the browser configurator, a form over `generate.ts`, built with
+  Vite+ (`vite.config.ts`) and published to GitHub Pages by
+  `.github/workflows/pages.yml`.
+- `vp check` (format, lint, typecheck) and `vp test` (`*.test.ts`, Vitest) cover
+  all of the above; `vp build` builds the page to `dist/`, `vp dev` serves it.
+  None of them need a container. Run `vp install` first.
 - `.github/workflows/docker.yml` — builds per-arch, smoke-tests each, then
   publishes.
 
@@ -166,5 +173,5 @@ If you meet the old error on an older image, that is the cause. The bound is
   failing with "no space left on device" while `df` still shows low usage.
 - The container, the image and the daemon do not survive the session. Anything
   worth keeping must be committed and pushed.
-- `deno` is not preinstalled, so `deno task check` / `deno task test` need it
-  installed first — they are unrelated to the smoke test and need no container.
+- `vp` is not preinstalled. `npm i -g vite-plus` from outside the repo (inside
+  it, `npx` trips over the `devEngines` pin), then `vp install`.

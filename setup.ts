@@ -1,4 +1,4 @@
-#!/usr/bin/env -S deno run --allow-read --allow-write --allow-env
+#!/usr/bin/env node
 /**
  * agent-env setup — generate a compose.yaml and .env for this workstation.
  *
@@ -23,6 +23,17 @@
  *   --force            overwrite without asking
  */
 import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import process from "node:process";
+import { createInterface, type Interface } from "node:readline";
+import {
   allowListProblem,
   type Answers,
   ANSWERS_FILE,
@@ -30,6 +41,7 @@ import {
   CHECKS,
   dashboardRoomProblem,
   generate,
+  hostPathFor,
   type Mode,
   portClashProblem,
   type Problem,
@@ -57,6 +69,42 @@ let preset: Record<string, unknown> = {};
 /** Where the generated files land; relative answers resolve against it. */
 let outDir = ".";
 
+const args = process.argv.slice(2);
+
+let rl: Interface | undefined;
+let stdinClosed = false;
+let pending: ((answer: string | null) => void) | undefined;
+
+/**
+ * One line from the terminal, or null once stdin has closed — the same
+ * contract as the browser's prompt(), which the questions were written for.
+ */
+function prompt(question: string): Promise<string | null> {
+  if (!rl) {
+    rl = createInterface({ input: process.stdin, output: process.stdout });
+    rl.on("close", () => {
+      stdinClosed = true;
+      pending?.(null);
+      pending = undefined;
+    });
+    // Without a listener readline swallows Ctrl-C and just pauses, which
+    // leaves the wizard hanging at a prompt nobody can answer.
+    rl.on("SIGINT", () => {
+      note();
+      process.exit(130);
+    });
+  }
+  const r = rl;
+  return new Promise((resolve) => {
+    if (stdinClosed) return resolve(null);
+    pending = resolve;
+    r.question(`${question} `, (answer) => {
+      pending = undefined;
+      resolve(answer);
+    });
+  });
+}
+
 function note(s = "") {
   console.log(s);
 }
@@ -66,7 +114,7 @@ function warn(s: string) {
 
 function bad(key: string, why: string): never {
   note(`${C.r("Invalid answer")} for ${C.b(key)}: ${why}`);
-  Deno.exit(2);
+  process.exit(2);
 }
 
 /** Report a problem with the answers as a whole, and stop. */
@@ -74,25 +122,22 @@ function fail(p: Problem): never {
   note();
   note(C.r(p.message));
   for (const line of p.detail ?? []) note(`  ${line}`);
-  Deno.exit(1);
+  process.exit(1);
 }
 
 /** A numbered menu. Written by hand so the script stays dependency-free. */
-function select<T extends string>(
+async function select<T extends string>(
   key: string,
   question: string,
   options: { value: T; label: string; hint?: string }[],
   fallback: T,
-): T {
+): Promise<T> {
   if (key in preset) {
     const v = preset[key] as T;
     // An --answers file is automation input, and automation is exactly where a
     // silently-wrong value turns into a broken deployment nobody typed.
     if (!options.some((o) => o.value === v)) {
-      bad(
-        key,
-        `expected one of ${options.map((o) => o.value).join(", ")}, got "${v}"`,
-      );
+      bad(key, `expected one of ${options.map((o) => o.value).join(", ")}, got "${v}"`);
     }
     return v;
   }
@@ -106,9 +151,7 @@ function select<T extends string>(
     if (o.hint) note(`       ${C.dim(o.hint)}`);
   });
   while (true) {
-    const raw = prompt(
-      `  choice [${options.findIndex((o) => o.value === fallback) + 1}]:`,
-    );
+    const raw = await prompt(`  choice [${options.findIndex((o) => o.value === fallback) + 1}]:`);
     if (raw === null || raw.trim() === "") return fallback;
     const n = Number(raw.trim());
     if (Number.isInteger(n) && n >= 1 && n <= options.length) {
@@ -118,17 +161,22 @@ function select<T extends string>(
   }
 }
 
-function ask(
+async function ask(
   key: string,
   question: string,
   fallback = "",
   opts: { optional?: boolean; validate?: (v: string) => string | null } = {},
-): string {
+): Promise<string> {
   if (key in preset) {
     // Typed answers are trimmed; an answers file should behave the same, and
     // new URL() trims for its own parsing while the raw value goes on to be
     // written verbatim.
-    const v = String(preset[key] ?? "").trim();
+    const given = preset[key];
+    // A number is a fine answer to a port question; anything stranger is
+    // shown as written, for the validator to turn away.
+    const v = (
+      typeof given === "string" ? given : given == null ? "" : JSON.stringify(given)
+    ).trim();
     if (!v && !opts.optional) bad(key, "required");
     const err = v && opts.validate ? opts.validate(v) : null;
     if (err) bad(key, err);
@@ -137,12 +185,8 @@ function ask(
   if (!interactive) return fallback;
 
   while (true) {
-    const suffix = fallback
-      ? ` [${fallback}]`
-      : opts.optional
-      ? ` ${C.dim("(optional)")}`
-      : "";
-    const raw = prompt(`${C.b(question)}${suffix}:`);
+    const suffix = fallback ? ` [${fallback}]` : opts.optional ? ` ${C.dim("(optional)")}` : "";
+    const raw = await prompt(`${C.b(question)}${suffix}:`);
     const value = raw === null || raw.trim() === "" ? fallback : raw.trim();
     if (!value && !opts.optional) {
       warn("required");
@@ -160,7 +204,7 @@ function ask(
   }
 }
 
-function yesNo(key: string, question: string, fallback: boolean): boolean {
+async function yesNo(key: string, question: string, fallback: boolean): Promise<boolean> {
   if (key in preset) {
     const v = preset[key];
     if (typeof v === "boolean") return v;
@@ -172,7 +216,7 @@ function yesNo(key: string, question: string, fallback: boolean): boolean {
   }
   if (!interactive) return fallback;
   while (true) {
-    const raw = prompt(`${C.b(question)} ${fallback ? "[Y/n]" : "[y/N]"}:`);
+    const raw = await prompt(`${C.b(question)} ${fallback ? "[Y/n]" : "[y/N]"}:`);
     if (raw === null || raw.trim() === "") return fallback;
     const v = raw.trim().toLowerCase();
     if (["y", "yes"].includes(v)) return true;
@@ -184,41 +228,38 @@ function yesNo(key: string, question: string, fallback: boolean): boolean {
 // Questions
 // ---------------------------------------------------------------------------
 
-function collect(prev: Partial<Answers>): Answers {
+async function collect(prev: Partial<Answers>): Promise<Answers> {
   note(C.b("\nagent-env setup"));
-  note(
-    C.dim("A hosted agent workstation: OpenCode, a desktop, a terminal, SSH."),
-  );
+  note(C.dim("A hosted agent workstation: OpenCode, a desktop, a terminal, SSH."));
   if (Object.keys(prev).length) {
-    note(
-      C.dim(
-        `Re-running — previous answers are the defaults, and secrets in .env are kept.`,
-      ),
-    );
+    note(C.dim(`Re-running — previous answers are the defaults, and secrets in .env are kept.`));
   }
 
   // 1. Where it runs. This is the top-level branch: it decides the ports, the
   //    sidecars, the PUBLIC_URL and the sensible auth mode. Everything else
   //    follows from it.
-  const mode = select<Mode>("mode", "Where will this run?", [
-    {
-      value: "local",
-      label: "This machine only",
-      hint:
-        "Ports bound to 127.0.0.1. Nothing is exposed; put your own proxy in front if you want it reachable.",
-    },
-    {
-      value: "caddy",
-      label: "A public domain, with TLS handled here",
-      hint: "Adds a Caddy sidecar that gets a certificate from Let's Encrypt.",
-    },
-    {
-      value: "tailscale",
-      label: "A tailnet, via Tailscale",
-      hint:
-        "Adds a Tailscale sidecar. The tailnet is the boundary; SSH and mosh just work.",
-    },
-  ], prev.mode ?? "local");
+  const mode = await select<Mode>(
+    "mode",
+    "Where will this run?",
+    [
+      {
+        value: "local",
+        label: "This machine only",
+        hint: "Ports bound to 127.0.0.1. Nothing is exposed; put your own proxy in front if you want it reachable.",
+      },
+      {
+        value: "caddy",
+        label: "A public domain, with TLS handled here",
+        hint: "Adds a Caddy sidecar that gets a certificate from Let's Encrypt.",
+      },
+      {
+        value: "tailscale",
+        label: "A tailnet, via Tailscale",
+        hint: "Adds a Tailscale sidecar. The tailnet is the boundary; SSH and mosh just work.",
+      },
+    ],
+    prev.mode ?? "local",
+  );
 
   let publicUrl = "";
   let behindProxy: boolean | undefined;
@@ -228,39 +269,36 @@ function collect(prev: Partial<Answers>): Answers {
   let tsHostname: string | undefined;
 
   if (mode === "local") {
-    behindProxy = yesNo(
+    behindProxy = await yesNo(
       "behindProxy",
       "Will something else terminate TLS in front of this (nginx, an ingress, a tunnel)?",
       prev.behindProxy ?? false,
     );
     publicUrl = behindProxy
-      ? ask(
-        "publicUrl",
-        "The URL people will actually type",
-        prev.publicUrl ?? "https://agent.example.com",
-        {
-          validate: CHECKS.publicUrl,
-        },
-      )
+      ? await ask(
+          "publicUrl",
+          "The URL people will actually type",
+          prev.publicUrl ?? "https://agent.example.com",
+          {
+            validate: CHECKS.publicUrl,
+          },
+        )
       : "http://localhost:8080";
   }
 
   if (mode === "caddy") {
-    domain = ask("domain", "Domain name", prev.domain ?? "agent.example.com", {
+    domain = await ask("domain", "Domain name", prev.domain ?? "agent.example.com", {
       validate: CHECKS.domain,
     });
     // A non-standard HTTPS port is fine — Google allows ports in redirect URIs,
     // and one hostname across several ports shares the session cookie, which is
     // host-scoped. Port 443 is offered but not assumed: it is often taken.
     httpsPort = Number(
-      ask(
-        "httpsPort",
-        "HTTPS port to serve on",
-        String(prev.httpsPort ?? 8443),
-        { validate: CHECKS.port },
-      ),
+      await ask("httpsPort", "HTTPS port to serve on", String(prev.httpsPort ?? 8443), {
+        validate: CHECKS.port,
+      }),
     );
-    acmeEmail = ask(
+    acmeEmail = await ask(
       "acmeEmail",
       "Email for Let's Encrypt (expiry notices)",
       prev.acmeEmail ?? "",
@@ -272,7 +310,7 @@ function collect(prev: Partial<Answers>): Answers {
   if (mode === "tailscale") {
     // Google forbids raw IPs in redirect URIs, so the MagicDNS name is the only
     // address that works for the OAuth modes — and it is nicer anyway.
-    tsHostname = ask(
+    tsHostname = await ask(
       "tsHostname",
       "Full MagicDNS name of this machine (e.g. work.tailXXXX.ts.net)",
       prev.tsHostname ?? "agent-env.example.ts.net",
@@ -283,49 +321,48 @@ function collect(prev: Partial<Answers>): Answers {
 
   // 2. Who gets in. The mode decides what is reasonable here, which is the
   //    single best reason for this script to exist.
-  const authDefault: AuthMode = prev.authMode ??
-    (mode === "tailscale" ? "none" : mode === "caddy" ? "google" : "basic");
+  const authDefault: AuthMode =
+    prev.authMode ?? (mode === "tailscale" ? "none" : mode === "caddy" ? "google" : "basic");
 
   if (mode === "tailscale" && authDefault === "none") {
     note();
-    warn(
-      "On a tailnet the usual answer is no extra auth: the tailnet is the boundary.",
-    );
-    warn(
-      "Anyone on your tailnet then gets a root-capable shell in this container.",
-    );
+    warn("On a tailnet the usual answer is no extra auth: the tailnet is the boundary.");
+    warn("Anyone on your tailnet then gets a root-capable shell in this container.");
     warn("If that is not what you want, pick one of the sign-ins below.");
   }
 
-  const authMode = select<AuthMode>("authMode", "Who can get in?", [
-    {
-      value: "google",
-      label: "Google sign-in",
-      hint: "oauth2-proxy, restricted to an allow list.",
-    },
-    {
-      value: "github",
-      label: "GitHub sign-in",
-      hint: "oauth2-proxy, restricted to accounts, orgs or teams.",
-    },
-    {
-      value: "basic",
-      label: "A username and password",
-      hint: "Fine on localhost or behind a VPN.",
-    },
-    {
-      value: "none",
-      label: "No authentication",
-      hint: "Only sane when something else is the boundary.",
-    },
-  ], authDefault);
+  const authMode = await select<AuthMode>(
+    "authMode",
+    "Who can get in?",
+    [
+      {
+        value: "google",
+        label: "Google sign-in",
+        hint: "oauth2-proxy, restricted to an allow list.",
+      },
+      {
+        value: "github",
+        label: "GitHub sign-in",
+        hint: "oauth2-proxy, restricted to accounts, orgs or teams.",
+      },
+      {
+        value: "basic",
+        label: "A username and password",
+        hint: "Fine on localhost or behind a VPN.",
+      },
+      {
+        value: "none",
+        label: "No authentication",
+        hint: "Only sane when something else is the boundary.",
+      },
+    ],
+    authDefault,
+  );
 
   const refused = refusal({ mode, authMode });
   if (refused) fail(refused);
   if (authMode === "none" && mode === "local" && behindProxy) {
-    warn(
-      "AUTH_MODE=none with a proxy in front: make sure the proxy is the one authenticating.",
-    );
+    warn("AUTH_MODE=none with a proxy in front: make sure the proxy is the one authenticating.");
   }
 
   let googleClientId: string | undefined;
@@ -338,24 +375,20 @@ function collect(prev: Partial<Answers>): Answers {
   let gatewayUser: string | undefined;
 
   if (authMode === "google") {
-    googleClientId = ask(
+    googleClientId = await ask(
       "googleClientId",
       "Google OAuth client ID",
       prev.googleClientId ?? "",
       { validate: CHECKS.googleClientId },
     );
-    note(
-      C.dim(
-        `  Register this redirect URI with that client: ${publicUrl}/oauth2/callback`,
-      ),
-    );
-    allowedEmails = ask(
+    note(C.dim(`  Register this redirect URI with that client: ${publicUrl}/oauth2/callback`));
+    allowedEmails = await ask(
       "allowedEmails",
       "Allowed emails (comma-separated)",
       prev.allowedEmails ?? "",
       { optional: true },
     );
-    allowedEmailDomains = ask(
+    allowedEmailDomains = await ask(
       "allowedEmailDomains",
       "Allowed email domains (comma-separated)",
       prev.allowedEmailDomains ?? "",
@@ -370,29 +403,22 @@ function collect(prev: Partial<Answers>): Answers {
   }
 
   if (authMode === "github") {
-    githubClientId = ask(
+    githubClientId = await ask(
       "githubClientId",
       "GitHub OAuth app client ID",
       prev.githubClientId ?? "",
     );
-    note(
-      C.dim(
-        `  Register this callback URL with that app: ${publicUrl}/oauth2/callback`,
-      ),
-    );
-    githubUsers = ask(
+    note(C.dim(`  Register this callback URL with that app: ${publicUrl}/oauth2/callback`));
+    githubUsers = await ask(
       "githubUsers",
       "Allowed GitHub usernames (comma-separated)",
       prev.githubUsers ?? "",
       { optional: true },
     );
-    githubOrg = ask(
-      "githubOrg",
-      "Allowed GitHub organisation",
-      prev.githubOrg ?? "",
-      { optional: true },
-    );
-    githubTeam = ask(
+    githubOrg = await ask("githubOrg", "Allowed GitHub organisation", prev.githubOrg ?? "", {
+      optional: true,
+    });
+    githubTeam = await ask(
       "githubTeam",
       githubOrg
         ? "Allowed teams in that org (comma-separated slugs)"
@@ -408,13 +434,13 @@ function collect(prev: Partial<Answers>): Answers {
     // The image counts an email rule as an allow list for GitHub too, so the
     // wizard has to be able to write one — otherwise an email-only deployment
     // the container would accept cannot be generated here at all.
-    allowedEmails = ask(
+    allowedEmails = await ask(
       "allowedEmails",
       "Allowed emails (comma-separated)",
       prev.allowedEmails ?? "",
       { optional: true },
     );
-    allowedEmailDomains = ask(
+    allowedEmailDomains = await ask(
       "allowedEmailDomains",
       "Allowed email domains (comma-separated)",
       prev.allowedEmailDomains ?? "",
@@ -432,15 +458,11 @@ function collect(prev: Partial<Answers>): Answers {
   }
 
   if (authMode === "basic") {
-    gatewayUser = ask(
-      "gatewayUser",
-      "Username",
-      prev.gatewayUser ?? "opencode",
-    );
+    gatewayUser = await ask("gatewayUser", "Username", prev.gatewayUser ?? "opencode");
   }
 
   // 3. What lives at /.
-  const opencodeEnable = yesNo(
+  const opencodeEnable = await yesNo(
     "opencodeEnable",
     "Run OpenCode at / ?",
     prev.opencodeEnable ?? true,
@@ -448,7 +470,7 @@ function collect(prev: Partial<Answers>): Answers {
   let primaryPort: number | undefined;
   if (!opencodeEnable) {
     primaryPort = Number(
-      ask(
+      await ask(
         "primaryPort",
         "Port inside the container that / should proxy to",
         String(prev.primaryPort ?? 3000),
@@ -459,12 +481,10 @@ function collect(prev: Partial<Answers>): Answers {
 
   // 4. Extras. Each of these costs something, so they are asked rather than
   //    assumed.
-  const dashboard = yesNo(
+  const dashboard = await yesNo(
     "dashboard",
     mode === "caddy"
-      ? `Serve the agent-browser dashboard too? (needs a second port, ${
-        (httpsPort ?? 8443) + 1
-      })`
+      ? `Serve the agent-browser dashboard too? (needs a second port, ${(httpsPort ?? 8443) + 1})`
       : "Serve the agent-browser dashboard too? (needs a second port)",
     prev.dashboard ?? mode !== "caddy",
   );
@@ -472,28 +492,22 @@ function collect(prev: Partial<Answers>): Answers {
   const room = dashboardRoomProblem({ dashboard, httpsPort });
   if (room) fail(room);
 
-  const rootlessDocker = yesNo(
+  const rootlessDocker = await yesNo(
     "rootlessDocker",
     "Let the agent run its own containers (rootless Docker)?",
     prev.rootlessDocker ?? false,
   );
   if (rootlessDocker) {
     note(
-      C.dim(
-        "  Adds five host flags that widen the sandbox. See the README before shipping this.",
-      ),
+      C.dim("  Adds five host flags that widen the sandbox. See the README before shipping this."),
     );
     if (mode === "tailscale") {
-      warn(
-        "Rootless Docker inside the Tailscale network namespace is UNTESTED.",
-      );
-      warn(
-        "Inner published ports land in the tailnet namespace and need serve config.",
-      );
+      warn("Rootless Docker inside the Tailscale network namespace is UNTESTED.");
+      warn("Inner published ports land in the tailnet namespace and need serve config.");
     }
   }
 
-  const sshKeys = ask(
+  const sshKeys = await ask(
     "sshKeys",
     "SSH public key(s) for the dev user, semicolon-separated",
     prev.sshKeys ?? "",
@@ -509,7 +523,7 @@ function collect(prev: Partial<Answers>): Answers {
   let sshPort: number | undefined;
   if (mode !== "tailscale") {
     sshPort = Number(
-      ask("sshPort", "Host port for SSH", String(prev.sshPort ?? 2222), {
+      await ask("sshPort", "Host port for SSH", String(prev.sshPort ?? 2222), {
         validate: CHECKS.port,
       }),
     );
@@ -517,7 +531,7 @@ function collect(prev: Partial<Answers>): Answers {
 
   // 5. Where the code lives. A host path needs PUID/PGID to match, which is
   //    the classic thing to get wrong by hand.
-  const wsKind = select<"volume" | "path">(
+  const wsKind = await select<"volume" | "path">(
     "workspaceKind",
     "Where should /workspace come from?",
     [
@@ -537,35 +551,30 @@ function collect(prev: Partial<Answers>): Answers {
 
   let workspace: Workspace = { kind: "volume" };
   if (wsKind === "path") {
-    let path = ask(
+    let path = await ask(
       "workspacePath",
       "Host directory to mount at /workspace",
       prev.workspace?.path ?? "",
       { validate: CHECKS.workspacePath },
     );
-    // Compose reads a bare relative path as a named volume, and there is no
-    // such volume, so it rejects the file. "./" is what was meant.
-    if (!path.startsWith("/") && !path.startsWith(".")) {
+    if (hostPathFor(path) !== path) {
       note(
         C.dim(
-          `  Reading "${path}" as "./${path}" — compose treats a bare name as a volume.`,
+          `  Reading "${path}" as "${hostPathFor(path)}" — compose treats a bare name as a volume.`,
         ),
       );
-      path = `./${path}`;
+      path = hostPathFor(path);
     }
-    let puid = 1000, pgid = 1000;
+    let puid = 1000,
+      pgid = 1000;
     try {
       // Relative paths in the compose file resolve against the compose file,
       // which lives in --out — not against wherever this was run from.
-      const st = Deno.statSync(
-        path.startsWith("/") ? path : `${outDir.replace(/\/$/, "")}/${path}`,
-      );
+      const st = statSync(path.startsWith("/") ? path : `${outDir.replace(/\/$/, "")}/${path}`);
       if (typeof st.uid === "number") puid = st.uid;
       if (typeof st.gid === "number") pgid = st.gid;
       note(
-        C.dim(
-          `  Owned by ${puid}:${pgid} — the container will run as that, so files stay yours.`,
-        ),
+        C.dim(`  Owned by ${puid}:${pgid} — the container will run as that, so files stay yours.`),
       );
     } catch {
       warn(
@@ -575,7 +584,7 @@ function collect(prev: Partial<Answers>): Answers {
     workspace = { kind: "path", path, puid, pgid };
   }
 
-  const timezone = ask(
+  const timezone = await ask(
     "timezone",
     "Time zone",
     prev.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC",
@@ -626,40 +635,38 @@ function collect(prev: Partial<Answers>): Answers {
 // ---------------------------------------------------------------------------
 
 function arg(name: string): string | undefined {
-  const i = Deno.args.indexOf(`--${name}`);
-  return i >= 0 ? Deno.args[i + 1] : undefined;
+  const i = args.indexOf(`--${name}`);
+  return i >= 0 ? args[i + 1] : undefined;
 }
 
 function readIfExists(path: string): string | null {
   try {
-    return Deno.readTextFileSync(path);
+    return readFileSync(path, "utf8");
   } catch {
     return null;
   }
 }
 
-function main() {
+async function main() {
   outDir = arg("out") ?? ".";
-  const force = Deno.args.includes("--force");
+  const force = args.includes("--force");
   const answersArg = arg("answers");
 
   if (answersArg) {
-    preset = JSON.parse(Deno.readTextFileSync(answersArg));
+    preset = JSON.parse(readFileSync(answersArg, "utf8"));
     interactive = false;
-  } else if (!Deno.stdin.isTerminal()) {
+  } else if (!process.stdin.isTTY) {
     // Falling back to defaults here would generate a deployment nobody chose,
     // and write it over whatever was there.
     note(C.r("No terminal to ask questions on."));
     note("  Run this interactively, or pass --answers <file.json> to say what");
     note("  you want. It will not guess.");
-    Deno.exit(2);
+    process.exit(2);
   }
 
   const p = (f: string) => `${outDir.replace(/\/$/, "")}/${f}`;
-  const prev: Partial<Answers> = JSON.parse(
-    readIfExists(p(ANSWERS_FILE)) ?? "{}",
-  );
-  const answers = collect(prev);
+  const prev: Partial<Answers> = JSON.parse(readIfExists(p(ANSWERS_FILE)) ?? "{}");
+  const answers = await collect(prev);
   // collect() has already asked about everything validate() checks, one
   // question at a time; this is the backstop, not the first line.
   for (const problem of validate(answers)) fail(problem);
@@ -668,30 +675,28 @@ function main() {
   });
 
   note();
-  const clobber = Object.keys(files).filter((f) =>
-    f !== ANSWERS_FILE && readIfExists(p(f)) !== null
+  const clobber = Object.keys(files).filter(
+    (f) => f !== ANSWERS_FILE && readIfExists(p(f)) !== null,
   );
   if (clobber.length && !force && !interactive) {
     note(C.r("These already exist, and this is not an interactive run:"));
     note(`  ${clobber.join(", ")}`);
     note("  Pass --force to overwrite them.");
-    Deno.exit(1);
+    process.exit(1);
   }
   if (clobber.length && !force && interactive) {
-    note(
-      `${C.y("These already exist and will be overwritten:")} ${
-        clobber.join(", ")
-      }`,
-    );
-    if (!yesNo("__overwrite", "Overwrite them?", true)) {
+    note(`${C.y("These already exist and will be overwritten:")} ${clobber.join(", ")}`);
+    if (!(await yesNo("__overwrite", "Overwrite them?", true))) {
       note("Nothing written.");
-      Deno.exit(1);
+      process.exit(1);
     }
   }
 
   try {
-    Deno.mkdirSync(outDir, { recursive: true });
-  } catch { /* already there */ }
+    mkdirSync(outDir, { recursive: true });
+  } catch {
+    /* already there */
+  }
   // Write beside, then rename: an interruption partway through used to leave
   // .env from one generation next to a compose file from another, which is a
   // deployment that never existed.
@@ -699,27 +704,29 @@ function main() {
   try {
     for (const [name, body] of Object.entries(files)) {
       const tmp = p(`.${name}.tmp`);
-      Deno.writeTextFileSync(tmp, body);
-      if (name === ".env") Deno.chmodSync(tmp, 0o600);
+      writeFileSync(tmp, body);
+      if (name === ".env") chmodSync(tmp, 0o600);
       staged.push([tmp, p(name)]);
     }
   } catch (e) {
     for (const [tmp] of staged) {
       try {
-        Deno.removeSync(tmp);
-      } catch { /* nothing to clean up */ }
+        rmSync(tmp);
+      } catch {
+        /* nothing to clean up */
+      }
     }
     throw e;
   }
   for (const [tmp, final] of staged) {
-    Deno.renameSync(tmp, final);
+    renameSync(tmp, final);
     note(`${C.g("wrote")} ${final}`);
   }
 
   // Both are inlined in compose.yaml now, so a copy on disk is from an older
   // generation whatever the mode.
-  const stale = ["Caddyfile", "ts-serve.json"].filter((f) =>
-    !(f in files) && readIfExists(p(f)) !== null
+  const stale = ["Caddyfile", "ts-serve.json"].filter(
+    (f) => !(f in files) && readIfExists(p(f)) !== null,
   );
   if (stale.length) {
     note();
@@ -734,13 +741,9 @@ function main() {
   const oauth = answers.authMode === "google" || answers.authMode === "github";
   if (oauth) {
     const which = answers.authMode === "google" ? "Google" : "GitHub";
-    const key = answers.authMode === "google"
-      ? "GOOGLE_CLIENT_SECRET"
-      : "GITHUB_CLIENT_SECRET";
+    const key = answers.authMode === "google" ? "GOOGLE_CLIENT_SECRET" : "GITHUB_CLIENT_SECRET";
     note(`  1. Put your ${which} client secret in .env (${key}).`);
-    note(
-      `  2. Register this redirect URI: ${answers.publicUrl}/oauth2/callback`,
-    );
+    note(`  2. Register this redirect URI: ${answers.publicUrl}/oauth2/callback`);
   }
   if (answers.mode === "caddy") {
     note(
@@ -750,28 +753,17 @@ function main() {
     );
   }
   if (answers.mode === "tailscale") {
-    note(
-      `  ${
-        oauth ? "3" : "1"
-      }. Put a tagged, reusable auth key in .env (TS_AUTHKEY).`,
-    );
+    note(`  ${oauth ? "3" : "1"}. Put a tagged, reusable auth key in .env (TS_AUTHKEY).`);
   }
   note(`  ${"docker compose up -d"}`);
   note(`  ${"docker compose exec agent-env agent-env urls"}`);
   note();
   note(`Reachable at ${C.b(answers.publicUrl)}`);
   if (answers.sshPort) {
-    note(
-      `SSH on host port ${
-        C.b(String(answers.sshPort))
-      } — change it here if that is taken.`,
-    );
+    note(`SSH on host port ${C.b(String(answers.sshPort))} — change it here if that is taken.`);
   }
-  note(
-    `The environment's own pages live under ${
-      C.b(answers.publicUrl + "/~env/")
-    }`,
-  );
+  note(`The environment's own pages live under ${C.b(answers.publicUrl + "/~env/")}`);
 }
 
-if (import.meta.main) main();
+await main();
+rl?.close();
