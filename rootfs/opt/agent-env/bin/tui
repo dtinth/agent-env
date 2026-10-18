@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Login shell wrapper that drops the user straight into the OpenCode v2 TUI,
-# attached to the same server the web UI talks to.
+# Login shell wrapper for the terminal: the OpenCode v2 TUI (attached to the
+# same server the web UI talks to), a plain shell, or whatever TERMINAL names.
 set -uo pipefail
 export TERM="${TERM:-xterm-256color}"
 
@@ -19,17 +19,18 @@ cd "${workdir}" || cd "${HOME}"
 [[ -r /etc/profile ]] && . /etc/profile
 
 # What to run is the entrypoint's decision, not this script's guess.
-command_="$(value TTYD_COMMAND)"
-command_="${command_:-${TTYD_COMMAND:-tui}}"
+terminal="$(value TERMINAL)"
+terminal="${terminal:-${TERMINAL:-opencode}}"
 # With OpenCode off there is nothing to attach to, whatever anything else says.
-[[ "$(value OPENCODE_ENABLE)" == false ]] && command_=shell
+[[ "$(value OPENCODE_ENABLE)" == false && "${terminal}" == opencode ]] && terminal=shell
 
-if [[ "${command_}" == "shell" ]]; then
-  exec bash -l
-fi
-
-port="$(value OPENCODE_PORT)"
-port="${port:-${OPENCODE_PORT:-4096}}"
+case "${terminal}" in
+  shell) exec bash -l ;;
+  opencode) ;;
+  # Anything else is a command line, run the way a shell would run it, with the
+  # login environment already loaded above. When it exits, so does the terminal.
+  *) exec bash -lc "exec ${terminal}" ;;
+esac
 
 # The server is a daemon of the user's own supervisor now, so it may still be
 # coming up when a browser opens the terminal. Wait for it rather than showing a

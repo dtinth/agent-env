@@ -272,7 +272,6 @@ ENV TZ=UTC \
     GATEWAY_PORT=8080 \
     AUTH_MODE=google \
     PUBLIC_URL=http://localhost:8080 \
-    OPENCODE_PORT=4096 \
     OPENCODE_DISABLE_AUTOUPDATE=1 \
     SSH_ENABLE=true \
     SSH_PORT=22 \

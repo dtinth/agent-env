@@ -2,7 +2,7 @@
 # The image's HEALTHCHECK.
 #
 # This has to follow the configuration, not assume it. It used to be a fixed
-# `curl /healthz && probe OPENCODE_PORT`, which was fine only while OpenCode was
+# `curl /healthz && probe the OpenCode port`, which was fine only while OpenCode was
 # mandatory: the moment it can be turned off, an unconditional probe of its port
 # marks a perfectly good container unhealthy forever — and an orchestrator then
 # restarts it in a loop. So read what the entrypoint actually decided.
@@ -21,6 +21,6 @@ curl -fsS --max-time 4 "http://127.0.0.1:${gateway_port}/${health_path}" >/dev/n
 # primary-service port when OpenCode is off: nothing is required to be listening
 # there, and the gateway already answers with the environment index if it isn't.
 if [[ "$(value OPENCODE_ENABLE)" == true ]]; then
-  opencode_port="$(value OPENCODE_PORT)"; opencode_port="${opencode_port:-4096}"
+  opencode_port="$(value PRIMARY_PORT)"; opencode_port="${opencode_port:-3000}"
   exec 3<>"/dev/tcp/127.0.0.1/${opencode_port}"
 fi

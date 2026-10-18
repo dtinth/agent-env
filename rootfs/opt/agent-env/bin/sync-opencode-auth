@@ -7,7 +7,7 @@ set -uo pipefail
 env_file=/run/agent-env/env
 value() { sed -n "s/^$1=//p" "${env_file}" | head -1; }
 user="$(value USER_NAME)"
-port="$(value OPENCODE_PORT)"
+port="$(value PRIMARY_PORT)"
 state="/home/${user}/.local/state/opencode/service.json"
 snippet=/run/agent-env/opencode-auth.caddy
 current=""

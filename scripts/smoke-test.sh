@@ -283,31 +283,25 @@ fi
 # to it would sit on a connect loop instead of giving you a usable terminal.
 if have_container; then
   # The entrypoint's rule, restated from what the container was *asked* for:
-  # a shell when TTYD_COMMAND says so, and a shell regardless once OpenCode is
+  # a shell when TERMINAL says so, and a shell regardless once OpenCode is
   # off. Comparing the published value against itself would prove nothing, and
   # assuming the default would fail a container that legitimately asked for a
-  # shell with OpenCode still on.
-  want_cmd=tui
+  # shell with OpenCode still on. TTYD_COMMAND and `tui` are the old spellings.
+  want_cmd=opencode
   requested=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER}" 2>/dev/null \
-    | sed -n 's/^TTYD_COMMAND=//p' | head -1 | tr -d '\r')
+    | sed -n -e 's/^TERMINAL=//p' -e 's/^TTYD_COMMAND=//p' | head -1 | tr -d '\r')
   [ "${requested}" = shell ] && want_cmd=shell
   [ "${OPENCODE_ENABLE}" = true ] || want_cmd=shell
 
-  ttyd_cmd=$(docker exec "${CONTAINER}" \
-    sed -n 's/^TTYD_COMMAND = "\(.*\)"/\1/p' /opt/agent-env/pitchfork/config.toml 2>/dev/null | tr -d '\r')
-  [[ "${ttyd_cmd}" == "${want_cmd}" ]] \
-    && ok "the ttyd daemon is told to run the ${want_cmd}" \
-    || bad "TTYD_COMMAND in the daemon config is '${ttyd_cmd:-unset}', expected ${want_cmd}"
-
-  # The daemon's environment is not the only reader: `agent-env tui` runs from
-  # an SSH login shell, which inherits neither the container's environment nor
-  # pitchfork's. Both take the answer from the published file, so it has to say
-  # the same thing — a terminal that waits for a server nobody started is the
+  # `agent-env tui` runs from an SSH login shell, which inherits neither the
+  # container's environment nor pitchfork's, and the ttyd daemon reads the same
+  # file. Both take the answer from the published file, so it has to say what
+  # was decided — a terminal that waits for a server nobody started is the
   # failure this catches.
-  pub_cmd=$(runtime_var TTYD_COMMAND)
+  pub_cmd=$(runtime_var TERMINAL)
   [[ "${pub_cmd}" == "${want_cmd}" ]] \
-    && ok "TTYD_COMMAND is published as ${want_cmd} for every reader" \
-    || bad "published TTYD_COMMAND is '${pub_cmd:-unset}', expected ${want_cmd}"
+    && ok "TERMINAL is published as ${want_cmd} for every reader" \
+    || bad "published TERMINAL is '${pub_cmd:-unset}', expected ${want_cmd}"
 else
   skip "what the browser terminal runs (no container to look inside)"
 fi

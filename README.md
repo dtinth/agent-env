@@ -256,7 +256,8 @@ make this table wrong.
 
 OpenCode is the default occupant of `/`, not a requirement of the image. Set
 `OPENCODE_ENABLE=false` and `/` proxies to `PRIMARY_PORT` (default `3000`)
-instead — whatever the workspace is running:
+instead — whatever the workspace is running. OpenCode itself listens on that
+same port when enabled, so `PRIMARY_PORT` is the one knob for "what is at `/`":
 
 ```
 OPENCODE_ENABLE=false
@@ -277,9 +278,11 @@ papered over.
 
 Two other things follow `OPENCODE_ENABLE`:
 
-- **The browser terminal becomes a login shell.** `/~env/terminal` exists to run
-  the OpenCode TUI; with no server to attach to it would sit on a connect loop,
-  so it gives you a shell instead.
+- **The browser terminal becomes a login shell.** The default `TERMINAL=opencode`
+  runs the OpenCode TUI; with no server to attach to it would sit on a connect
+  loop, so it gives you a shell instead. Set `TERMINAL` to any command (say
+  `claude`) to run that in the terminal under a login shell, in the workspace,
+  whether or not OpenCode is on.
 - **No credential is injected at `/`.** The gateway normally adds the OpenCode
   server's own basic-auth header on the way through. That credential exists to
   reach OpenCode and nothing else — it is never sent to a primary service that
@@ -389,13 +392,13 @@ See [`.env.example`](.env.example) for the annotated list. The essentials:
 | `OAUTH2_PROXY_COOKIE_SECRET` | generated | Set it to survive restarts cleanly |
 | `OPENCODE_ENABLE` | `true` | Whether OpenCode occupies `/` at all |
 | `WORKSPACE_DIR` | `/workspace` | Where the agent, terminals and file manager start (formerly `OPENCODE_WORKDIR`, still read) |
-| `PRIMARY_PORT` | `3000` | What `/` proxies to when OpenCode is off |
+| `PRIMARY_PORT` | `3000` | The port `/` proxies to. OpenCode listens here when enabled (formerly `OPENCODE_PORT`, still read) |
 | `SSH_AUTHORIZED_KEYS` | — | Newline- or `;`-separated public keys |
 | `SSH_PASSWORD` | — | Enables password auth (prefer keys) |
 | `DESKTOP_ENABLE` | `true` | XFCE + noVNC |
 | `DESKTOP_RESOLUTION` | `1920x1080x24` | Virtual display geometry, `WxH` or `WxHxD` |
 | `TTYD_ENABLE` | `true` | Browser TUI at `/~env/terminal` |
-| `TTYD_COMMAND` | `tui` | `shell` for a plain login shell instead of the TUI |
+| `TERMINAL` | `opencode` | What the browser terminal runs: `opencode` (the TUI), `shell`, or any command such as `claude`. Formerly `TTYD_COMMAND` (`tui`), still read |
 | `AB_DASHBOARD_ENABLE` | `true` | agent-browser dashboard on its own port |
 | `MISE_TOOLS` | — | Extra global tools, e.g. `python@3.13 go@latest` |
 | `USER_SUPERVISOR_ENABLE` | `true` | Run the dev user's own pitchfork at boot |
@@ -957,7 +960,7 @@ v2 beta builds.
                     ┌─── container (pitchfork = PID 1) ──────────────┐
    browser ──8080──►│ Caddy ──forward_auth──► oauth2-proxy ──► IdP   │
                     │   │                                            │
-                    │   ├─ /            ──► opencode2 serve  :4096   │
+                    │   ├─ /            ──► opencode2 serve  :3000   │
                     │   ├─ /pitchfork   ──► pitchfork web    :4747   │
                     │   ├─ /~env/files    ──► dufs           :5000   │
                     │   ├─ /~env/terminal ──► ttyd :7681 ──► TUI     │
