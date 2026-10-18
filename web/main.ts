@@ -107,7 +107,6 @@ function readAnswers(): Answers {
     authMode,
     opencodeEnable,
     primaryPort: opencodeEnable ? undefined : num("primaryPort"),
-    dashboard: checked("dashboard"),
     rootlessDocker: checked("rootlessDocker"),
     sshKeys: text("sshKeys"),
     sshPort: mode === "tailscale" ? undefined : num("sshPort"),
@@ -177,7 +176,6 @@ function writeAnswers(a: Partial<Answers>): void {
     "gatewayUser",
     "opencodeEnable",
     "primaryPort",
-    "dashboard",
     "rootlessDocker",
     "sshKeys",
     "sshPort",
@@ -202,10 +200,6 @@ function applyModeDefaults(): void {
   if (!touched.has("authMode")) {
     const auth = mode === "tailscale" ? "none" : mode === "caddy" ? "google" : "basic";
     form.querySelector<HTMLInputElement>(`input[name="authMode"][value="${auth}"]`)!.checked = true;
-  }
-  // The dashboard needs a second public port, which on a domain is a cost.
-  if (!touched.has("dashboard")) {
-    (el("dashboard") as HTMLInputElement).checked = mode !== "caddy";
   }
 }
 

@@ -208,17 +208,6 @@ AGENT_ENV_STATE_DIR="${AGENT_ENV_STATE_DIR:-/var/lib/agent-env}"
 # and inject keystrokes into the dev user's terminal.
 XAUTHORITY_FILE="${XAUTHORITY_FILE:-${USER_HOME}/.Xauthority}"
 
-AB_DASHBOARD_ENABLE="${AB_DASHBOARD_ENABLE:-true}"
-AB_DASHBOARD_PORT="${AB_DASHBOARD_PORT:-4848}"
-# The dashboard is a Next.js app that serves its assets from absolute paths, so
-# it cannot live under a path prefix. It gets its own gateway port instead,
-# behind the same authentication.
-DASHBOARD_GATEWAY_PORT="${DASHBOARD_GATEWAY_PORT:-8081}"
-if [[ -z "${DASHBOARD_PUBLIC_URL:-}" ]]; then
-  DASHBOARD_PUBLIC_URL="$(sed -E "s#^([a-zA-Z]+://[^/:]+).*#\1#" <<<"${PUBLIC_URL}"):${DASHBOARD_GATEWAY_PORT}"
-fi
-DASHBOARD_PUBLIC_URL="${DASHBOARD_PUBLIC_URL%/}"
-
 OAUTH2_PROXY_PORT="${OAUTH2_PROXY_PORT:-4180}"
 
 # The system supervisor keeps its config outside /etc/pitchfork. pitchfork
@@ -524,9 +513,6 @@ unset OPENCODE_SERVER_PASSWORD
   echo "WORKSPACE_DIR=${WORKSPACE_DIR}"
   echo "SSH_PORT=${SSH_PORT}"
   echo "DESKTOP_DISPLAY=${DESKTOP_DISPLAY}"
-  echo "AB_DASHBOARD_PORT=${AB_DASHBOARD_PORT}"
-  echo "AB_DASHBOARD_ENABLE=$(canon "${AB_DASHBOARD_ENABLE}")"
-  echo "DASHBOARD_PUBLIC_URL=${DASHBOARD_PUBLIC_URL}"
   echo "DESKTOP_ENABLE=$(canon "${DESKTOP_ENABLE}")"
   echo "TTYD_ENABLE=$(canon "${TTYD_ENABLE}")"
   echo "SSH_ENABLE=$(canon "${SSH_ENABLE}")"
@@ -830,11 +816,6 @@ else:
       --trusted-proxy-ip="::1/128"
     )
 
-    # Allow post-login redirects back to the dashboard's own origin.
-    if is_true "${AB_DASHBOARD_ENABLE}"; then
-      OAUTH2_ARGS+=(--whitelist-domain="$(url_host "${DASHBOARD_PUBLIC_URL}")")
-    fi
-
     # A cleaned list to one repeated flag.
     add_list_args() {
       local flag="$1" item
@@ -1049,8 +1030,6 @@ EOF
     if is_true "${USER_SUPERVISOR_ENABLE}" && is_true "${USER_WEB_ENABLE}"; then
       svc "/${USER_WEB_PATH}" "Daemons" "Start, stop and tail your own background processes"
     fi
-    is_true "${AB_DASHBOARD_ENABLE}" \
-      && svc "${DASHBOARD_PUBLIC_URL}" "Browser dashboard" "Live agent-browser viewports and activity"
 
     cat <<HTMLFOOT
   </ul>
@@ -1304,39 +1283,6 @@ EOF
 }
 EOF
     fi
-
-    if is_true "${AB_DASHBOARD_ENABLE}"; then
-      cat <<EOF
-
-# ---------------------------------------------------------------------------
-# agent-browser observability dashboard, on its own port because it serves its
-# assets from absolute paths and its reverse-proxy scheme is origin-based.
-#
-# Same hostname as the main entrance, different port — so the oauth2-proxy
-# session cookie, which is host-scoped and ignores the port, covers both and
-# only one redirect URI is ever registered with Google. This port has no
-# reserved prefix: the dashboard owns all of it.
-# ---------------------------------------------------------------------------
-:${DASHBOARD_GATEWAY_PORT} {
-${BIND_DIRECTIVE}	route {
-		handle /${HEALTH_PATH} {
-			respond "ok" 200
-		}
-EOF
-      emit_oauth_endpoints
-      echo
-      echo "		route {"
-      emit_auth_gate "${DASHBOARD_PUBLIC_URL}"
-      cat <<EOF
-
-			handle {
-				reverse_proxy 127.0.0.1:${AB_DASHBOARD_PORT}
-			}
-		}
-	}
-}
-EOF
-    fi
   } > "${f}"
 
   chmod 640 "${f}"
@@ -1463,7 +1409,6 @@ TTYD_PORT = "${TTYD_PORT}"
 TTYD_WRITABLE = "${TTYD_WRITABLE}"
 TTYD_PATH = "${TTYD_PATH}"
 DUFS_PATH = "${DUFS_PATH}"
-AB_DASHBOARD_PORT = "${AB_DASHBOARD_PORT}"
 EOF
 
     # Must stay directly under [env]: in TOML everything after a table header
@@ -1517,14 +1462,6 @@ EOF
         "dir = \"${WORKSPACE_DIR}\"" \
         'retry = true' \
         "ready_port = ${TTYD_PORT}"
-    fi
-
-    if is_true "${AB_DASHBOARD_ENABLE}"; then
-      emit_daemon agent-browser-dashboard "/opt/agent-env/bin/run-ab-dashboard" \
-        "user = \"${USER_NAME}\"" \
-        "dir = \"${WORKSPACE_DIR}\"" \
-        'retry = true' \
-        "ready_http = { url = \"http://127.0.0.1:${AB_DASHBOARD_PORT}/\", timeout = \"60s\" }"
     fi
 
     # Caddy is a proxy: it does not need its upstreams to exist at startup, and
@@ -1595,7 +1532,6 @@ if is_true "${TTYD_ENABLE}"; then
   log " terminal    : ${PUBLIC_URL}/${TTYD_PATH}/  (login shell)"
 fi
 is_true "${DESKTOP_ENABLE}"     && log " desktop     : ${PUBLIC_URL}/${DESKTOP_PATH}/"
-is_true "${AB_DASHBOARD_ENABLE}" && log " browser dash: ${DASHBOARD_PUBLIC_URL}"
 if is_true "${USER_SUPERVISOR_ENABLE}" && is_true "${USER_WEB_ENABLE}"; then
   log " daemons     : ${PUBLIC_URL}/${USER_WEB_PATH}"
 fi

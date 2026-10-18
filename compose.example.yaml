@@ -34,7 +34,6 @@ services:
       # must match the redirect URI you register with the OAuth provider, and
       # it decides whether session cookies are marked secure.
       - PUBLIC_URL
-      - DASHBOARD_PUBLIC_URL
       - TZ
 
       # --- Who gets in ----------------------------------------------------
@@ -89,7 +88,6 @@ services:
     # optional extras.
     expose:
       - "8080" # everything web: the app at /, plus /~env/* and /pitchfork
-      - "8081" # agent-browser dashboard (needs its own origin, not a path)
       - "22" # ssh, and mosh's setup connection
       - "60000-60010/udp" # mosh sessions, one port each
 
@@ -140,7 +138,6 @@ volumes:
 #
 #   ports:
 #     - "8080:8080"
-#     - "8081:8081"
 #     - "2222:22"
 #     - "60000-60010:60000-60010/udp"
 #
@@ -156,19 +153,16 @@ volumes:
 #
 #   ports:
 #     - "127.0.0.1:8080:8080"
-#     - "127.0.0.1:8081:8081"
 #     - "2222:22"
 #
 # set AUTH_MODE=none and point PUBLIC_URL at the serve port in .env:
 #
 #   AUTH_MODE=none
 #   PUBLIC_URL=https://<host>.<tailnet>.ts.net:18080
-#   DASHBOARD_PUBLIC_URL=https://<host>.<tailnet>.ts.net:18081
 #
 # then publish it to the tailnet only — serve, not funnel:
 #
 #   sudo tailscale serve --bg --https=18080 http://127.0.0.1:8080
-#   sudo tailscale serve --bg --https=18081 http://127.0.0.1:8081
 #
 # Anyone on the tailnet then has an unauthenticated, root-capable shell in the
 # container, so keep AUTH_MODE=google or github if that is not what you want.

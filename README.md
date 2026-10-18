@@ -12,9 +12,8 @@ One container gives you:
 | What | Where | Notes |
 |---|---|---|
 | **OpenCode v2 web UI + API** | `<PUBLIC_URL>/` | `opencode serve`; optional — see below |
-| **OpenCode v2 TUI** in the browser | `<PUBLIC_URL>/~env/terminal` | the real TUI, over ttyd |
+| **Terminal** in the browser | `<PUBLIC_URL>/~env/terminal` | a login shell over ttyd; `agent-env tui` attaches the OpenCode TUI |
 | **XFCE desktop** in the browser | `<PUBLIC_URL>/~env/desktop` | noVNC over x11vnc |
-| **agent-browser dashboard** | `<DASHBOARD_PUBLIC_URL>` | own port; live browser viewports |
 | **pitchfork dashboard** | `<PUBLIC_URL>/pitchfork` | start/stop/logs for your own daemons |
 | **an index of all of it** | `<PUBLIC_URL>/~env/` | everything the environment serves |
 | **file manager** | `<PUBLIC_URL>/~env/files` | browse, upload, download the workspace |
@@ -107,7 +106,7 @@ a test asserts the wizard never emits one that is missing from it.
 docker build -t agent-env .          # or use ghcr.io/dtinth/agent-env:latest
 
 docker run -d --name agent-env --shm-size=2g \
-  -p 8080:8080 -p 8081:8081 -p 2222:22 \
+  -p 8080:8080 -p 2222:22 \
   -e AUTH_MODE=basic \
   -e GATEWAY_PASSWORD=changeme \
   -e PUBLIC_URL=http://localhost:8080 \
@@ -299,9 +298,9 @@ authenticate once at the gateway and never see it. Inside a login shell the same
 value is exported as `OPENCODE_SERVER_PASSWORD`, and `agent-env password` prints
 it. Setting `OPENCODE_SERVER_PASSWORD` yourself has no effect.
 
-Only ports **8080**, **8081** and **22** listen on external interfaces.
-The OpenCode server, VNC, websockify, ttyd, the dashboard and oauth2-proxy are
-all bound to loopback.
+Only ports **8080** and **22** listen on external interfaces.
+The OpenCode server, VNC, websockify, ttyd and oauth2-proxy are all bound to
+loopback.
 
 ### SSH host keys
 
@@ -393,7 +392,6 @@ See [`.env.example`](.env.example) for the annotated list. The essentials:
 | `DESKTOP_ENABLE` | `true` | XFCE + noVNC |
 | `DESKTOP_RESOLUTION` | `1920x1080x24` | Virtual display geometry, `WxH` or `WxHxD` |
 | `TTYD_ENABLE` | `true` | Browser terminal (a login shell) at `/~env/terminal` |
-| `AB_DASHBOARD_ENABLE` | `true` | agent-browser dashboard on its own port |
 | `MISE_TOOLS` | — | Extra global tools, e.g. `python@3.13 go@latest` |
 | `USER_SUPERVISOR_ENABLE` | `true` | Run the dev user's own pitchfork at boot |
 | `USER_WEB_ENABLE`, `USER_WEB_PATH` | `true`, `pitchfork` | pitchfork's web dashboard |
@@ -919,8 +917,7 @@ docker run -e AGENT_BROWSER_HEADED=false ...    # whole container
 ```
 
 Because it runs headed on display `:1`, you can open `/~env/desktop` and *watch* the
-browser work. The dashboard on port 8081 shows live viewports and the command
-feed.
+browser work.
 
 `--no-sandbox` is the default because Chromium's sandbox needs privileges most
 container runtimes deny. If your runtime allows it, drop that flag and add a
@@ -938,11 +935,6 @@ Chromium needs a large `/dev/shm`: keep `--shm-size=2g` (compose already sets it
   `~/.config/mise/conf.d/agent-env.toml` to stop that.
   `OPENCODE_DISABLE_AUTOUPDATE=1` is set so OpenCode never self-updates in
   between.
-- **The dashboard needs its own port.** It's a Next.js app that serves assets
-  from absolute paths, so it can't live under a path prefix like `/~env/desktop` does.
-  It gets port 8081 with the same authentication. Set `DASHBOARD_PUBLIC_URL` if
-  your host port differs from the container's, or `AB_DASHBOARD_ENABLE=false` to
-  turn it off.
 - **Image size is ~3 GB.** Most of it is XFCE, Chromium and a compiler toolchain.
   Drop `DESKTOP_ENABLE`-related packages from the
   Dockerfile if you don't need the desktop.
@@ -982,13 +974,12 @@ base image or the pinned tools have broken.
                     │   ├─ /            ──► opencode serve   :3000   │
                     │   ├─ /pitchfork   ──► pitchfork web    :4747   │
                     │   ├─ /~env/files    ──► dufs           :5000   │
-                    │   ├─ /~env/terminal ──► ttyd :7681 ──► TUI     │
+                    │   ├─ /~env/terminal ──► ttyd :7681 ──► shell   │
                     │   ├─ /~env/desktop  ──► websockify :6080       │
                     │   │                     └─ x11vnc :5900 ──► Xvfb :1 ──► XFCE
                     │   ├─ /~env/         ──► index                  │
                     │   └─ /~env/healthz                             │
                     │                                                │
-   browser ──8081──►│ Caddy (same auth) ──► agent-browser dash :4848 │
    ssh    ────22───►│ sshd ──► dev                                   │
                     └────────────────────────────────────────────────┘
 ```

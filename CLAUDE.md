@@ -37,10 +37,9 @@ docker build -t agent-env:smoke .
 
 password="ci-$(openssl rand -hex 12)"
 docker run -d --name agent-env --shm-size=2g \
-  -p 8080:8080 -p 8081:8081 -p 2222:22 \
+  -p 8080:8080 -p 2222:22 \
   -e AUTH_MODE=basic -e "GATEWAY_PASSWORD=${password}" \
   -e PUBLIC_URL=http://localhost:8080 \
-  -e DASHBOARD_PUBLIC_URL=http://localhost:8081 \
   agent-env:smoke
 
 # Wait for the image's own HEALTHCHECK before testing anything. Give up on
@@ -61,11 +60,10 @@ done
 CONTAINER=agent-env ./scripts/smoke-test.sh http://localhost:8080 "dev:${password}"
 ```
 
-The second run is the same with `-e OPENCODE_ENABLE=false -e
-AB_DASHBOARD_ENABLE=false` on a different port and container name — see the
+The second run is the same with `-e OPENCODE_ENABLE=false` on a different port and container name — see the
 `Smoke test with OpenCode off` step in `.github/workflows/docker.yml`.
 
-A clean run reports 76 passed (OpenCode on) and 78 (OpenCode off), 0 failed,
+A clean run reports 75 passed (OpenCode on) and 78 (OpenCode off), 0 failed,
 and one skip each — the oversized `*_FILE` guard when the container was not
 given one, and the credential-isolation check when there is no OpenCode server
 to inspect. Skips are counted and printed rather than dropped, so a total that

@@ -89,7 +89,6 @@ function envOf(dir: string): Record<string, string> {
 
 const BASE = {
   opencodeEnable: true,
-  dashboard: true,
   rootlessDocker: false,
   sshKeys: "ssh-ed25519 AAAA test@host",
   sshPort: 2222,
@@ -183,7 +182,7 @@ test("booleans are emitted canonically", () => {
     dir,
   );
   const env = envOf(dir);
-  for (const k of ["OPENCODE_ENABLE", "AB_DASHBOARD_ENABLE", "DOCKER_ROOTLESS_ENABLE"]) {
+  for (const k of ["OPENCODE_ENABLE", "DOCKER_ROOTLESS_ENABLE"]) {
     assertMatch(env[k], /^(true|false)$/, `${k}=${env[k]} is not canonical`);
   }
 });
@@ -306,16 +305,6 @@ test("PUBLIC_URL matches what each mode actually serves", () => {
   }
 });
 
-test("the dashboard shares the hostname and takes the next port", () => {
-  // Host-scoped cookies are why this works: one sign-in covers both ports, and
-  // only one redirect URI is ever registered with Google.
-  const dir = tmp();
-  run(CADDY, dir);
-  const env = envOf(dir);
-  assertEquals(new URL(env.DASHBOARD_PUBLIC_URL).hostname, new URL(env.PUBLIC_URL).hostname);
-  assertEquals(env.DASHBOARD_PUBLIC_URL, "https://agent.example.com:8444");
-});
-
 test(".env is written with restrictive permissions", () => {
   if (process.platform === "win32") return;
   const dir = tmp();
@@ -358,17 +347,6 @@ test("behind a TLS proxy, the container does not bind the proxy's port", () => {
   assertEquals(envOf(dir).PUBLIC_URL, "https://agent.example.com");
 });
 
-test("the tailnet dashboard is served on the port it advertises", () => {
-  const dir = tmp();
-  run(TS, dir);
-  const advertised = Number(new URL(envOf(dir).DASHBOARD_PUBLIC_URL).port);
-  const serve = JSON.parse(inlineConfig(readText(`${dir}/compose.yaml`), "ts-serve"));
-  assert(
-    Object.keys(serve.TCP).includes(String(advertised)),
-    `advertises :${advertised} but serves ${Object.keys(serve.TCP).join(", ")}`,
-  );
-});
-
 test("mosh's UDP range is published wherever SSH is", () => {
   for (const answers of [LOCAL, CADDY]) {
     const dir = tmp();
@@ -395,14 +373,6 @@ test("a workspace path cannot inject compose configuration", () => {
   );
   assert(r.code !== 0, "accepted a path containing a newline");
   assert(!existsSync(`${dir}/compose.yaml`), "wrote a compose file anyway");
-});
-
-test("a port with no room for the dashboard is refused", () => {
-  const dir = tmp();
-  const r = run({ ...CADDY, httpsPort: 65535 }, dir);
-  assertEquals(r.code, 1);
-  assertStringIncludes(r.stdout, "no room for the dashboard");
-  assert(!existsSync(`${dir}/compose.yaml`));
 });
 
 test("answers from a file face the same validators as typed ones", () => {
@@ -455,7 +425,6 @@ test("a carried value keeps its quoting", () => {
 test("two services cannot be given the same host port", () => {
   for (const [answers, why] of [
     [{ ...LOCAL, sshPort: 8080 }, "ssh vs gateway"],
-    [{ ...LOCAL, sshPort: 8081 }, "ssh vs dashboard"],
     [{ ...CADDY, sshPort: 80 }, "ssh vs ACME"],
     [{ ...CADDY, sshPort: 8443 }, "ssh vs gateway through caddy"],
   ] as const) {
@@ -502,11 +471,8 @@ test("a managed value survives an inline comment", () => {
   assertEquals(envOf(dir).GATEWAY_PASSWORD, "hunter2");
 });
 
-test("port 65535 is fine when nothing needs the port above", () => {
-  const withDash = tmp(),
-    without = tmp();
-  assertEquals(run({ ...CADDY, httpsPort: 65535 }, withDash).code, 1);
-  assertEquals(run({ ...CADDY, httpsPort: 65535, dashboard: false }, without).code, 0);
+test("the top port is accepted for the gateway", () => {
+  assertEquals(run({ ...CADDY, httpsPort: 65535 }, tmp()).code, 0);
 });
 
 test("a bare relative workspace path is read as a directory", () => {
@@ -601,7 +567,7 @@ test("a reused credential keeps its exact value", () => {
 
 test("a URL with a query or fragment is rejected", () => {
   // Every derived address appends to PUBLIC_URL, so a suffix here is inherited
-  // by the OAuth redirect URI and the dashboard origin alike.
+  // by the OAuth redirect URI and everything else built on it.
   for (const u of [
     "https://a.example.com?x=1",
     "https://a.example.com#frag",

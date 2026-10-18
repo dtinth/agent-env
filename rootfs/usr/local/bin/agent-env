@@ -94,8 +94,6 @@ case "${1:-help}" in
       printf 'Files           : %s/%s/\n' "${base}" "${DUFS_PATH:-${prefix}/files}"
     [[ "${USER_WEB_ENABLE:-true}" == "true" ]] && \
       printf 'Daemons         : %s/%s\n' "${base}" "${USER_WEB_PATH:-pitchfork}"
-    [[ "${AB_DASHBOARD_ENABLE:-true}" == "true" ]] && \
-      printf 'Browser dash    : %s/\n' "${DASHBOARD_PUBLIC_URL:-http://localhost:8081}"
     printf 'Health          : %s/%s\n' "${base}" "${HEALTH_PATH:-${prefix}/healthz}"
     if [[ "${SSH_ENABLE:-true}" == "true" ]]; then
       printf 'SSH             : ssh %s@<host> -p %s\n' "${USER_NAME:-dev}" "${SSH_PORT:-22}"
