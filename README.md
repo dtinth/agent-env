@@ -2,8 +2,10 @@
 
 [![docker](https://github.com/dtinth/agent-env/actions/workflows/docker.yml/badge.svg)](https://github.com/dtinth/agent-env/actions/workflows/docker.yml)
 
-A ready-to-use Docker image that turns OpenCode v2 into a hosted,
-SSO-authenticated workstation.
+A ready-to-use Docker image that turns an agent workstation — a desktop, a
+terminal, a file manager, SSH, a browser — into a hosted, SSO-authenticated
+service. Pick OpenCode v2 as its agent with `AGENT_ENV_PRESET=opencode`, or bring
+your own.
 
 ![The agent-env desktop over noVNC: fastfetch, btop and a user-owned pitchfork daemon](desktop.png)
 
@@ -21,7 +23,7 @@ One container gives you:
 | **Google or GitHub sign-in** in front of all of it | `<PUBLIC_URL>/oauth2/*` | oauth2-proxy behind Caddy |
 | **mise** | `/opt/mise` | manages node and anything else you add |
 | **a usable shell** | — | git, ripgrep, fd, jq, fastfetch, btop, ncdu, a compiler |
-| **pitchfork** | PID 1, plus one per user | supervises it all; the OpenCode server is yours, not root's |
+| **pitchfork** | PID 1, plus one per user | supervises it all; the primary service (the OpenCode server, under the `opencode` preset) is yours, not root's |
 | **agent-browser + Chromium** | on the virtual display | headed, so you can watch it over noVNC |
 | **rootless Docker** *(opt-in)* | the dev user's own daemon | `docker` + `docker compose` for databases and the like; needs host flags |
 
@@ -110,15 +112,18 @@ docker run -d --name agent-env --shm-size=2g \
   -e AUTH_MODE=basic \
   -e GATEWAY_PASSWORD=changeme \
   -e PUBLIC_URL=http://localhost:8080 \
+  -e AGENT_ENV_PRESET=opencode \
   -e SSH_AUTHORIZED_KEYS="$(cat ~/.ssh/id_ed25519.pub)" \
   -e ANTHROPIC_API_KEY=sk-ant-... \
   -v agent-env-workspace:/workspace \
   agent-env
 ```
 
-Open <http://localhost:8080> and sign in as `opencode` / `changeme`.
-Then <http://localhost:8080/~env/> for an index of everything the environment
-serves — the TUI, the desktop, the files, the daemons.
+Open <http://localhost:8080> and sign in as `dev` / `changeme`. (Leave out
+`AGENT_ENV_PRESET=opencode` for the plain environment: `/` then goes to whatever
+you run on port 3000.) Then <http://localhost:8080/~env/> for an index of
+everything the environment serves — the terminal, the desktop, the files, the
+daemons.
 
 ### For real, with Google sign-in
 
@@ -156,8 +161,7 @@ balancer, Cloudflare, Caddy/nginx on the host) and point it at port 8080.
   `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, and an allow list — see below.
 - **`basic`** — HTTP basic auth (`GATEWAY_USER` / `GATEWAY_PASSWORD`). Good for
   local runs. A password is generated and printed to the log if you omit it.
-  The username defaults to `dev`; while `GATEWAY_USER` is unset, the old default
-  `opencode` is accepted as well.
+  The username defaults to `dev`.
 - **`none`** — no gate at all. Only sane behind your own authenticating proxy.
 
 Optionally restrict `google` further by Google Workspace group with
@@ -223,7 +227,7 @@ does, so whatever answers at `/` owns its entire path space:
 |---|---|
 | `/~env/` | index of what this environment is running |
 | `/~env/healthz` | health probe, never behind auth |
-| `/~env/terminal` | the OpenCode TUI, over ttyd |
+| `/~env/terminal` | a login shell, over ttyd |
 | `/~env/desktop` | XFCE over noVNC |
 | `/~env/files` | the workspace file manager |
 | `/~env/daemons` | redirects to `/pitchfork` (see below) |
@@ -261,12 +265,11 @@ itself knows nothing about OpenCode; it runs whatever the active preset provides
 
 | Preset | Installs | `/` |
 |---|---|---|
-| `opencode` (default) | OpenCode | OpenCode's web UI, supervised on `PRIMARY_PORT`, with its own login handled by the gateway |
-| `vanilla` | nothing of its own | whatever answers on `PRIMARY_PORT` — yours, or `PRIMARY_COMMAND` |
+| `vanilla` (default) | nothing of its own | whatever answers on `PRIMARY_PORT` — yours, or `PRIMARY_COMMAND` |
+| `opencode` | OpenCode | OpenCode's web UI, supervised on `PRIMARY_PORT`, with its own login handled by the gateway |
 
 Both keep the same desktop, terminal (a login shell), file manager, SSH and
-agent-browser. Under
-`opencode`, `agent-env tui` attaches the OpenCode TUI and `agent-env password`
+agent-browser. Under `opencode`, `agent-env tui` attaches the OpenCode TUI and `agent-env password`
 prints the server's password; those commands belong to the preset and do not
 exist elsewhere.
 
@@ -304,9 +307,6 @@ preset itself runs: `PRIMARY_COMMAND` and anything you run on the port yourself
 get no injection, and the smoke suite asserts the import is absent there. The
 container's `HEALTHCHECK` follows the same split: it always probes the gateway,
 and probes `PRIMARY_PORT` only when the container is supervising something there.
-
-`OPENCODE_ENABLE` is gone; while it is set and `AGENT_ENV_PRESET` is not, the
-entrypoint maps it (`true` to `opencode`, `false` to `vanilla`) and warns.
 
 ### How the OpenCode server itself is protected
 
@@ -405,10 +405,10 @@ See [`.env.example`](.env.example) for the annotated list. The essentials:
 | `GITHUB_USERS` / `GITHUB_ORG` / `GITHUB_TEAM` | — | The `github` allow list; at least one, or an `ALLOWED_EMAIL*` |
 | `ALLOWED_EMAILS`, `ALLOWED_EMAIL_DOMAINS` | — | Who may sign in |
 | `OAUTH2_PROXY_COOKIE_SECRET` | generated | Set it to survive restarts cleanly |
-| `AGENT_ENV_PRESET` | `opencode` | What the environment is for: `opencode` or `vanilla` (see [Presets](#presets-and-what-lives-at-)) |
+| `AGENT_ENV_PRESET` | `vanilla` | What the environment is for: `vanilla` or `opencode` (see [Presets](#presets-and-what-lives-at-)) |
 | `PRIMARY_COMMAND` | — | `vanilla` only: a command to run and supervise at `/`, with the port in `$PORT` |
-| `WORKSPACE_DIR` | `/workspace` | Where the agent, terminals and file manager start (formerly `OPENCODE_WORKDIR`, still read) |
-| `PRIMARY_PORT` | `3000` | The port `/` proxies to. The `opencode` preset's server listens here (formerly `OPENCODE_PORT`, still read) |
+| `WORKSPACE_DIR` | `/workspace` | Where the agent, terminals and file manager start |
+| `PRIMARY_PORT` | `3000` | The port `/` proxies to. The `opencode` preset's server listens here |
 | `SSH_AUTHORIZED_KEYS` | — | Newline- or `;`-separated public keys |
 | `SSH_PASSWORD` | — | Enables password auth (prefer keys) |
 | `DESKTOP_ENABLE` | `true` | XFCE + noVNC |
@@ -522,14 +522,15 @@ Run `scripts/smoke-test.sh` against a live container to check the whole thing:
 ./scripts/smoke-test.sh http://localhost:8080 dev:changeme
 ```
 
-### Your own daemons — including the OpenCode server
+### Your own daemons — including the primary service
 
 The system supervisor is root's and stays that way. You get a **second,
 unprivileged pitchfork supervisor of your own** — its own state, socket and
 logs — so `pitchfork` as `dev` means *your* daemons and can't touch the
 container's.
 
-**The OpenCode server runs there**, not in the root supervisor. It is the thing
+**The primary service runs there** — the OpenCode server under the `opencode`
+preset, or your `PRIMARY_COMMAND` — not in the root supervisor. It is the thing
 you are here to use rather than part of the plumbing, so you can restart it,
 read its logs and watch its memory without sudo — from the terminal, or from
 pitchfork's web UI at `<PUBLIC_URL>/pitchfork`:
@@ -582,10 +583,10 @@ Set `USER_SUPERVISOR_ENABLE=false` if you don't want the user supervisor running
 at boot — you can still start one on demand.
 
 Because the two supervisors cannot see each other, nothing in the system set
-`depends` on the OpenCode server any more. Caddy is a proxy and does not need
-its upstream at startup; the browser terminal waits for the server before
-starting the TUI; and the container's health check tests the OpenCode port as
-well as the gateway, so "healthy" still means the server is actually up.
+`depends` on the primary service any more. Caddy is a proxy and does not need
+its upstream at startup, and when the container supervises a primary service its
+health check tests that port as well as the gateway, so "healthy" still means the
+service is actually up.
 
 Two details worth knowing if you go poking at this:
 

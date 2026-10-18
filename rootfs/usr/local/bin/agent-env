@@ -50,7 +50,7 @@ RUN_ENV=/run/agent-env/env
 
 # The active preset's own subcommands, one help line each, from the "# help:"
 # comment at the top of each script in presets/<name>/commands/.
-PRESET_COMMANDS="/opt/agent-env/presets/${AGENT_ENV_PRESET:-opencode}/commands"
+PRESET_COMMANDS="/opt/agent-env/presets/${AGENT_ENV_PRESET:-vanilla}/commands"
 preset_commands() {
   local f name help
   for f in "${PRESET_COMMANDS}"/*; do
@@ -107,8 +107,8 @@ case "${1:-help}" in
   urls)
     base="${PUBLIC_URL:-http://localhost:8080}"
     prefix="${ENV_PREFIX:-~env}"
-    if [[ "${PRIMARY_SUPERVISED:-true}" == "true" ]]; then
-      printf 'Primary service : %s/  (%s, on 127.0.0.1:%s)\n' "${base}" "${AGENT_ENV_PRESET:-opencode}" "${PRIMARY_PORT:-3000}"
+    if [[ "${PRIMARY_SUPERVISED:-false}" == "true" ]]; then
+      printf 'Primary service : %s/  (%s, on 127.0.0.1:%s)\n' "${base}" "${AGENT_ENV_PRESET:-vanilla}" "${PRIMARY_PORT:-3000}"
     else
       printf 'Primary service : %s/  (proxies to 127.0.0.1:%s)\n' "${base}" "${PRIMARY_PORT:-3000}"
     fi

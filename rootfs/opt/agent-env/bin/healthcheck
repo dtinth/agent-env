@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # The image's HEALTHCHECK.
 #
-# This has to follow the configuration, not assume it. It used to be a fixed
-# `curl /healthz && probe the OpenCode port`, which was fine only while OpenCode was
-# mandatory: the moment it can be turned off, an unconditional probe of its port
-# marks a perfectly good container unhealthy forever — and an orchestrator then
-# restarts it in a loop. So read what the entrypoint actually decided.
+# This has to follow the configuration, not assume it: an unconditional probe of
+# the primary service's port marks a container that supervises nothing unhealthy
+# forever, and an orchestrator then restarts it in a loop. So read what the
+# entrypoint actually decided.
 set -euo pipefail
 
 env_file=/run/agent-env/env

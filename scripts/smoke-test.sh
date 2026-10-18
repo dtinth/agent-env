@@ -91,9 +91,9 @@ DUFS_PATH="${DUFS_PATH:-${ENV_PREFIX}/files}"
 HEALTH_PATH="${HEALTH_PATH:-${ENV_PREFIX}/healthz}"
 USER_WEB_PATH="${USER_WEB_PATH:-pitchfork}"
 USER_WEB_ENABLE="${USER_WEB_ENABLE:-true}"
-AGENT_ENV_PRESET="${AGENT_ENV_PRESET:-opencode}"
-PRIMARY_SUPERVISED="${PRIMARY_SUPERVISED:-true}"
-PRIMARY_INJECTS="${PRIMARY_INJECTS:-true}"
+AGENT_ENV_PRESET="${AGENT_ENV_PRESET:-vanilla}"
+PRIMARY_SUPERVISED="${PRIMARY_SUPERVISED:-false}"
+PRIMARY_INJECTS="${PRIMARY_INJECTS:-false}"
 PRIMARY_PORT="${PRIMARY_PORT:-3000}"
 
 head_ "Gateway routes"
@@ -192,18 +192,6 @@ if [ "${auth_mode}" != none ]; then
     || bad "/${ENV_PREFIX}/ answered $c without credentials"
 else
   skip "that the environment index is gated (AUTH_MODE=none asks for no gate)"
-fi
-
-# The basic-auth username defaulted to `opencode` before it became `dev`. A
-# deployment that never set one keeps both, or every saved login breaks.
-if [[ "${auth_mode}" == basic ]] && have_container \
-    && [[ -z "$(docker exec "${CONTAINER}" printenv GATEWAY_USER 2>/dev/null)" ]]; then
-  c=$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' \
-    -u "opencode:${AUTH#*:}" "${BASE}/${ENV_PREFIX}/")
-  [[ "$c" == 200 ]] && ok "the old default username still signs in ($c)" \
-                    || bad "opencode:<password> answered $c with GATEWAY_USER unset"
-else
-  skip "the old default username (only accepted under basic auth with GATEWAY_USER unset)"
 fi
 
 head_ "Primary service at /"

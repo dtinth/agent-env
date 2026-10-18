@@ -463,17 +463,17 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
     "What should this environment run?",
     [
       {
-        value: "opencode",
-        label: "OpenCode",
-        hint: "installs OpenCode and serves its web UI at /",
-      },
-      {
         value: "vanilla",
         label: "Nothing in particular",
         hint: "no agent installed; / goes to whatever you run on a port",
       },
+      {
+        value: "opencode",
+        label: "OpenCode",
+        hint: "installs OpenCode and serves its web UI at /",
+      },
     ],
-    prev.preset ?? "opencode",
+    prev.preset ?? "vanilla",
   );
   let primaryPort: number | undefined;
   let primaryCommand: string | undefined;
@@ -666,13 +666,6 @@ async function main() {
 
   if (answersArg) {
     preset = JSON.parse(readFileSync(answersArg, "utf8"));
-    // The question this replaced. An old answers file still means what it said.
-    if ("opencodeEnable" in preset && !("preset" in preset)) {
-      preset.preset =
-        preset.opencodeEnable === false || preset.opencodeEnable === "false"
-          ? "vanilla"
-          : "opencode";
-    }
     interactive = false;
   } else if (!process.stdin.isTTY) {
     // Falling back to defaults here would generate a deployment nobody chose,
@@ -684,13 +677,7 @@ async function main() {
   }
 
   const p = (f: string) => `${outDir.replace(/\/$/, "")}/${f}`;
-  const prev: Partial<Answers> & { opencodeEnable?: boolean } = JSON.parse(
-    readIfExists(p(ANSWERS_FILE)) ?? "{}",
-  );
-  // Saved by a version that asked "run OpenCode at /?" instead.
-  if (prev.preset === undefined && prev.opencodeEnable !== undefined) {
-    prev.preset = prev.opencodeEnable ? "opencode" : "vanilla";
-  }
+  const prev: Partial<Answers> = JSON.parse(readIfExists(p(ANSWERS_FILE)) ?? "{}");
   const answers = await collect(prev);
   // collect() has already asked about everything validate() checks, one
   // question at a time; this is the backstop, not the first line.

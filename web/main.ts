@@ -161,9 +161,7 @@ function writeAnswers(a: Partial<Answers>): void {
   };
   pick("mode", a.mode);
   pick("authMode", a.authMode);
-  // Saved by a version that asked "run OpenCode at /?" instead.
-  const old = (a as { opencodeEnable?: boolean }).opencodeEnable;
-  pick("preset", a.preset ?? (old === undefined ? undefined : old ? "opencode" : "vanilla"));
+  pick("preset", a.preset);
   set("behindProxy", a.behindProxy);
   if (a.behindProxy) set("publicUrl", a.publicUrl);
   for (const k of [
