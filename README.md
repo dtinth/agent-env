@@ -731,7 +731,10 @@ declares, and runs `mise upgrade` on each tool. For the `opencode` preset:
 ```
 
 That file is the image's and is rewritten each start, which is how switching
-preset switches the tools. To pin a version, declare the tool yourself in
+preset switches the tools. (An earlier release seeded a file of your own,
+`conf.d/agent-env.toml`, with these same two tools. It is removed if you never
+changed it; if you edited it, it is left alone and its tools stay declared under
+any preset, so delete it when you want them gone.) To pin a version, declare the tool yourself in
 `~/.config/mise/config.toml` (`"npm:@opencode/cli" = "2.0.32"`), which takes
 precedence and stops the upgrades for that tool.
 
