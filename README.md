@@ -621,8 +621,9 @@ ssh -p 2222 dev@host 'opencode run "summarise this repo"'
 The image carries one locale, `C.UTF-8`, and PAM hands it to every session.
 `sshd` deliberately does not accept `LANG` or `LC_*` from the client: a
 forwarded `en_US.UTF-8` is a locale that does not exist here, and every shell
-started under it warns about `setlocale` before doing anything else. `TERM` and
-`COLORTERM` still come across.
+started under it warns about `setlocale` before doing anything else. The image
+removes Debian's own `AcceptEnv` line for the same reason. `TERM`, `COLORTERM`
+and `NO_COLOR` still come across.
 
 ### Docker inside the container
 
