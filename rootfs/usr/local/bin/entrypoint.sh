@@ -68,8 +68,8 @@ is_true() {
 # /run/agent-env/env is read by programs that cannot reasonably reimplement
 # is_true — the healthcheck, the `agent-env` helper, the test suite. Publishing
 # the raw value silently desynchronises them from what the entrypoint actually
-# decided: OPENCODE_ENABLE=1 starts the server and injects its credential, while
-# a reader comparing against "true" concludes it is off and stops probing it.
+# decided: a flag of 1 starts a service while a reader comparing against "true"
+# concludes it is off and stops probing it.
 # Write what the flag resolved to, never what was typed.
 canon() { if is_true "${1:-}"; then echo true; else echo false; fi; }
 
@@ -112,10 +112,49 @@ AUTH_MODE="${AUTH_MODE:-google}"
 PUBLIC_URL="${PUBLIC_URL:-http://localhost:${GATEWAY_PORT}}"
 PUBLIC_URL="${PUBLIC_URL%/}"
 
-# OpenCode is the default occupant of /, not a requirement of the image. With it
-# off, / proxies to PRIMARY_PORT instead — whatever the workspace is running —
-# and falls back to the environment index when nothing is listening there.
-OPENCODE_ENABLE="${OPENCODE_ENABLE:-true}"
+# The preset decides what this environment is for: which agent tools mise
+# installs, which primary service (if any) is supervised at /, and which commands
+# `agent-env` gains. A preset is a directory under /opt/agent-env/presets:
+#
+#   preset.env     title and summary, for the /~env/ index
+#   tools.toml     mise tools, installed into the home volume and kept current
+#   run            the primary service, exec'd with PRIMARY_PORT in its environment
+#   auth           keeps the gateway's credential for that service current
+#   login.sh       sourced by login shells;  environment: lines for /etc/environment
+#   commands/      extra `agent-env` subcommands
+#
+# opencode is the default. vanilla installs no agent and supervises nothing: / goes
+# to whatever the workspace runs on PRIMARY_PORT.
+PRESETS_DIR=/opt/agent-env/presets
+if [[ -z "${AGENT_ENV_PRESET:-}" && -n "${OPENCODE_ENABLE:-}" ]]; then
+  if is_true "${OPENCODE_ENABLE}"; then AGENT_ENV_PRESET=opencode; else AGENT_ENV_PRESET=vanilla; fi
+  warn "OPENCODE_ENABLE is deprecated; set AGENT_ENV_PRESET=${AGENT_ENV_PRESET} instead"
+fi
+unset OPENCODE_ENABLE
+AGENT_ENV_PRESET="${AGENT_ENV_PRESET:-opencode}"
+AGENT_ENV_PRESET="${AGENT_ENV_PRESET,,}"
+PRESET_DIR="${PRESETS_DIR}/${AGENT_ENV_PRESET}"
+[[ "${AGENT_ENV_PRESET}" =~ ^[a-z0-9_-]+$ && -f "${PRESET_DIR}/preset.env" ]] \
+  || die "AGENT_ENV_PRESET=${AGENT_ENV_PRESET} is not a preset (available: $(cd "${PRESETS_DIR}" && ls -d */ | tr -d / | paste -sd, -))"
+PRESET_TITLE=""; PRESET_SUMMARY=""
+# shellcheck disable=SC1091
+. "${PRESET_DIR}/preset.env"
+
+# Any command, supervised at / on PRIMARY_PORT. Only the vanilla preset takes
+# one: every other preset already has a primary service of its own, and its
+# credential belongs to that service alone.
+PRIMARY_COMMAND="${PRIMARY_COMMAND:-}"
+if [[ -n "${PRIMARY_COMMAND}" && "${AGENT_ENV_PRESET}" != vanilla ]]; then
+  die "PRIMARY_COMMAND needs AGENT_ENV_PRESET=vanilla: the ${AGENT_ENV_PRESET} preset runs its own primary service"
+fi
+PRIMARY_SUPERVISED=false
+if [[ -n "${PRIMARY_COMMAND}" || -x "${PRESET_DIR}/run" ]]; then PRIMARY_SUPERVISED=true; fi
+# The gateway adds the primary service's own credential on the way through, but
+# only when the preset ships the means to keep it current, and only for the
+# server the preset itself runs.
+PRIMARY_INJECTS=false
+if [[ "${PRIMARY_SUPERVISED}" == true && -z "${PRIMARY_COMMAND}" && -x "${PRESET_DIR}/auth" ]]; then PRIMARY_INJECTS=true; fi
+
 # Where everything starts: the agent, the terminals, the file manager, the
 # user's own daemons. It used to be spelled OPENCODE_WORKDIR, which is still
 # honoured, but it was never OpenCode's alone.
@@ -126,14 +165,14 @@ fi
 WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
 unset OPENCODE_WORKDIR
 
-# The port the primary service listens on, and so where / points. OpenCode, when
-# enabled, is told to listen here; with it off, whatever the workspace runs
-# there takes its place. 3000 is what Next, Rails, Vite preview and most
+# The port the primary service listens on, and so where / points. A preset's
+# server, or PRIMARY_COMMAND, is told to listen here; with neither, whatever the
+# workspace runs there takes its place. 3000 is what Next, Rails, Vite preview and most
 # `npm start` templates pick. OPENCODE_PORT was this before the two merged.
-# It only carries over while OpenCode is enabled: with OpenCode off it never
+# It only carries over for the opencode preset: otherwise it never
 # said where the primary service was, and 3000 is where that always was.
 if [[ -n "${OPENCODE_PORT:-}" ]]; then
-  if is_true "${OPENCODE_ENABLE}" && [[ -z "${PRIMARY_PORT:-}" ]]; then
+  if [[ "${AGENT_ENV_PRESET}" == opencode && -z "${PRIMARY_PORT:-}" ]]; then
     warn "OPENCODE_PORT is deprecated; set PRIMARY_PORT=${OPENCODE_PORT} instead"
     PRIMARY_PORT="${OPENCODE_PORT}"
   else
@@ -436,12 +475,12 @@ fi
 
 pf_begin="# >>> agent-env managed — rewritten on every start, edits here are lost >>>"
 pf_end="# <<< agent-env managed <<<"
-pf_block="${RUN_DIR}/opencode-daemon.toml"
-pf_opencode=""
-if is_true "${OPENCODE_ENABLE}"; then
-  pf_opencode="
-[daemons.opencode]
-run = \"/opt/agent-env/bin/run-opencode\"
+pf_block="${RUN_DIR}/primary-daemon.toml"
+pf_primary=""
+if is_true "${PRIMARY_SUPERVISED}"; then
+  pf_primary="
+[daemons.primary]
+run = \"/opt/agent-env/bin/run-primary\"
 dir = \"${WORKSPACE_DIR}\"
 ready_port = { port = ${PRIMARY_PORT}, timeout = \"120s\" }
 retry = true
@@ -453,7 +492,7 @@ cat > "${pf_block}" <<BLOCK
 ${pf_begin}
 # Keep your own daemons above this block: in TOML, anything following a table
 # header belongs to that table.
-${pf_opencode}${pf_dufs}${pf_docker}${pf_end}
+${pf_primary}${pf_dufs}${pf_docker}${pf_end}
 BLOCK
 
 python3 - "${user_pf_config}" "${pf_block}" "${pf_begin}" "${pf_end}" <<'MERGE'
@@ -481,20 +520,28 @@ MERGE
 
 chown -R "${PUID}:${PGID}" "$(dirname "${user_pf_config}")"
 
+# The primary service's credential
 # ---------------------------------------------------------------------------
-# OpenCode server credential
-# ---------------------------------------------------------------------------
-# The server runs with --service, which mints its own password and records it in
-# the user's service.json. The gateway reads it from there (sync-opencode-auth);
-# nothing here chooses it.
-OPENCODE_AUTH_SNIPPET="${RUN_DIR}/opencode-auth.caddy"
-: > "${OPENCODE_AUTH_SNIPPET}"
-chown root:"${GATEWAY_GROUP}" "${OPENCODE_AUTH_SNIPPET}"
-chmod 640 "${OPENCODE_AUTH_SNIPPET}"
+# A preset whose server has its own login keeps the gateway's copy current with
+# its `auth` daemon, which writes this snippet. It stays empty, and is imported
+# by nothing, for every other primary.
+PRIMARY_AUTH_SNIPPET="${RUN_DIR}/primary-auth.caddy"
+: > "${PRIMARY_AUTH_SNIPPET}"
+chown root:"${GATEWAY_GROUP}" "${PRIMARY_AUTH_SNIPPET}"
+chmod 640 "${PRIMARY_AUTH_SNIPPET}"
 if [[ -n "${OPENCODE_SERVER_PASSWORD:-}" ]]; then
   log "WARN OPENCODE_SERVER_PASSWORD is ignored: the OpenCode service generates its own password"
 fi
 unset OPENCODE_SERVER_PASSWORD
+
+# What run-primary runs for PRIMARY_COMMAND. Not in the env file below: `agent-env`
+# sources that as shell, and a command line is the one value that must not be.
+if [[ -n "${PRIMARY_COMMAND}" ]]; then
+  printf '%s' "${PRIMARY_COMMAND}" > "${RUN_DIR}/primary-command"
+  chmod 644 "${RUN_DIR}/primary-command"
+else
+  rm -f "${RUN_DIR}/primary-command"
+fi
 
 # Make the runtime configuration discoverable to shells and to `agent-env`.
 {
@@ -508,7 +555,9 @@ unset OPENCODE_SERVER_PASSWORD
   echo "HEALTH_PATH=${HEALTH_PATH}"
   echo "USER_WEB_PATH=${USER_WEB_PATH}"
   echo "USER_WEB_ENABLE=$(canon "${USER_WEB_ENABLE}")"
-  echo "OPENCODE_ENABLE=$(canon "${OPENCODE_ENABLE}")"
+  echo "AGENT_ENV_PRESET=${AGENT_ENV_PRESET}"
+  echo "PRIMARY_SUPERVISED=$(canon "${PRIMARY_SUPERVISED}")"
+  echo "PRIMARY_INJECTS=$(canon "${PRIMARY_INJECTS}")"
     echo "PRIMARY_PORT=${PRIMARY_PORT}"
   echo "WORKSPACE_DIR=${WORKSPACE_DIR}"
   echo "SSH_PORT=${SSH_PORT}"
@@ -521,11 +570,9 @@ unset OPENCODE_SERVER_PASSWORD
 } > "${RUN_DIR}/env"
 
 cat > /etc/profile.d/99-agent-env.sh <<EOF
-export OPENCODE_SERVER='http://127.0.0.1:${PRIMARY_PORT}'
-if [ -r "\$HOME/.local/state/opencode/service.json" ]; then
-  OPENCODE_SERVER_PASSWORD="\$(jq -r '.password // empty' "\$HOME/.local/state/opencode/service.json" 2>/dev/null)"
-  export OPENCODE_SERVER_PASSWORD
-fi
+export AGENT_ENV_PRESET='${AGENT_ENV_PRESET}'
+export PRIMARY_PORT='${PRIMARY_PORT}'
+[ -r '${PRESET_DIR}/login.sh' ] && . '${PRESET_DIR}/login.sh'
 export DISPLAY='${DESKTOP_DISPLAY}'
 export XAUTHORITY='${XAUTHORITY_FILE}'
 export XDG_RUNTIME_DIR='${XDG_RUNTIME_DIR}'
@@ -556,8 +603,9 @@ MISE_CACHE_DIR=/opt/mise/cache
 DISPLAY=${DESKTOP_DISPLAY}
 XAUTHORITY=${XAUTHORITY_FILE}
 XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}
-OPENCODE_SERVER=http://127.0.0.1:${PRIMARY_PORT}
 EOF
+[[ -r "${PRESET_DIR}/environment" ]] \
+  && sed "s/\${PRIMARY_PORT}/${PRIMARY_PORT}/g" "${PRESET_DIR}/environment" >> /etc/environment
 if is_true "${DOCKER_ROOTLESS_ENABLE}"; then
   echo "DOCKER_HOST=${DOCKER_ROOTLESS_HOST}" >> /etc/environment
 fi
@@ -999,14 +1047,16 @@ HTMLHEAD
 
     # This page is also what / falls back to when nothing is listening on
     # PRIMARY_PORT, so it has to make sense read from either address.
-    if is_true "${OPENCODE_ENABLE}"; then
+    if is_true "${PRIMARY_SUPERVISED}"; then
+      local primary_title="${PRESET_TITLE:-Primary service}"
+      local primary_summary="${PRESET_SUMMARY:-Your PRIMARY_COMMAND, at /}"
       cat <<EOF
 <main>
   <h1>agent-env</h1>
   <p class="sub">Everything this environment serves for itself is under
-    <code>/${ENV_PREFIX}/</code>. <code>/</code> is OpenCode.</p>
+    <code>/${ENV_PREFIX}/</code>. <code>/</code> is ${primary_title}.</p>
   <ul>
-      <li><a class="svc" href="/"><b>OpenCode</b><span>The v2 web UI and API, at /</span></a></li>
+      <li><a class="svc" href="/"><b>${primary_title}</b><span>${primary_summary}</span></a></li>
 EOF
     else
       cat <<EOF
@@ -1224,19 +1274,24 @@ EOF
 				respond "no such service — see /${ENV_PREFIX}/ for what this environment serves" 404
 			}
 EOF
-    if is_true "${OPENCODE_ENABLE}"; then
+    if is_true "${PRIMARY_SUPERVISED}"; then
+      # Everything else: the primary service. When its preset ships a credential
+      # for it, that goes in here so users never see it.
+      #
+      # The injection belongs to the preset's own server and must never follow / to
+      # anything else: it would hand a credential to someone's application, and
+      # break anything that does its own Authorization. The import is therefore
+      # written only for a primary the preset runs, never for PRIMARY_COMMAND.
+      local primary_upstream="reverse_proxy 127.0.0.1:${PRIMARY_PORT}"
+      if is_true "${PRIMARY_INJECTS}"; then
+        primary_upstream="reverse_proxy 127.0.0.1:${PRIMARY_PORT} {
+					import ${PRIMARY_AUTH_SNIPPET}
+				}"
+      fi
       cat <<EOF
 
-			# Everything else: the OpenCode v2 web UI and API. The server's own
-			# basic-auth credential is injected here so users never see it. It comes
-			# from a snippet that sync-opencode-auth keeps current.
-			# The injection is bound to OpenCode and must never follow / to anything
-			# else: it would hand a credential to someone's own application, and
-			# break anything that does its own Authorization.
 			handle {
-				reverse_proxy 127.0.0.1:${PRIMARY_PORT} {
-					import ${OPENCODE_AUTH_SNIPPET}
-				}
+				${primary_upstream}
 			}
 		}
 	}
@@ -1252,8 +1307,8 @@ EOF
       fi
       cat <<EOF
 
-			# / belongs to the workspace. Nothing is injected here — the OpenCode
-			# credential exists to reach the OpenCode server, and sending it
+			# / belongs to the workspace. Nothing is injected here: a preset's
+			# credential exists to reach that preset's own server, and sending it
 			# anywhere else would leak it into someone else's application.
 			handle {
 				reverse_proxy 127.0.0.1:${PRIMARY_PORT}
@@ -1309,19 +1364,24 @@ mise_user() {
     MISE_CONFIG_DIR="${USER_HOME}/.config/mise" "$@"
 }
 
-# OpenCode is only fetched when it is going to be used.
-is_true "${OPENCODE_ENABLE}" || export MISE_DISABLE_TOOLS="npm:@opencode/cli${MISE_DISABLE_TOOLS:+,${MISE_DISABLE_TOOLS}}"
-
-# Seeded once and then the user's: pin a version or drop a tool by editing it.
-agent_tools="${USER_HOME}/.config/mise/conf.d/agent-env.toml"
-if [[ ! -e "${agent_tools}" ]]; then
-  install -d -o "${PUID}" -g "${PGID}" "${agent_tools%/*}"
-  install -m 644 -o "${PUID}" -g "${PGID}" /etc/agent-env/agent-tools.toml "${agent_tools}"
+# The preset's tools. Copied over on every start, so switching preset switches the
+# tools; the file is the image's, not yours. To pin a version, declare the tool in
+# ~/.config/mise/config.toml, which takes precedence over anything in conf.d.
+mise_conf_d="${USER_HOME}/.config/mise/conf.d"
+install -d -o "${PUID}" -g "${PGID}" "${mise_conf_d}"
+install -m 644 -o "${PUID}" -g "${PGID}" "${PRESET_DIR}/tools.toml" "${mise_conf_d}/00-agent-env-preset.toml"
+# An earlier release seeded these two tools into a file of the volume's own. If it
+# was never touched, it would keep installing OpenCode under the vanilla preset.
+old_seed="${mise_conf_d}/agent-env.toml"
+if [[ -f "${old_seed}" ]] && [[ "$(grep -vE '^[[:space:]]*(#|$)' "${old_seed}")" == '[tools]
+"npm:@opencode/cli" = { version = "latest", allow_builds = ["@opencode/cli"] }
+"npm:agent-browser" = { version = "latest", allow_builds = ["agent-browser"] }' ]]; then
+  rm -f "${old_seed}"
 fi
 
 # Install what the volume declares, then move each tool to the newest version it
-# allows. Tools the image itself declares are left to the image: they are locked
-# on purpose, and a rebuild is how they move. Each tool is handled on its own, so
+# allows. Tools the image itself declares (/etc/mise/config.toml) are left to the
+# image: they are locked on purpose, and a rebuild is how they move. Each tool is handled on its own, so
 # one that cannot be fetched blocks neither the others nor their upgrades.
 log "installing and upgrading mise tools (${USER_HOME}/.config/mise)"
 # Without a network mise retries for minutes before giving up, and the gateway
@@ -1333,9 +1393,9 @@ if ! curl -fsS --max-time 8 -o /dev/null "${npm_registry}" 2>/dev/null; then
   npm_up=false
   warn "the npm registry (${npm_registry}) is unreachable; skipping npm-backed mise tools and using what is installed"
 fi
-# One "<tool> <installed>" line per tool declared outside the image's config.
+# One "<tool> <installed>" line per tool declared outside the image's own config.
 mapfile -t declared < <(mise_user mise ls --json 2>/dev/null \
-  | jq -r 'to_entries[] | select(any(.value[]; (.source.path // "") | startswith("/etc/mise") | not)) | "\(.key) \(all(.value[]; .installed))"' 2>/dev/null)
+  | jq -r 'to_entries[] | select(any(.value[]; (.source.path // "") != "/etc/mise/config.toml")) | "\(.key) \(all(.value[]; .installed))"' 2>/dev/null)
 for entry in "${declared[@]}"; do
   tool="${entry% *}"; present="${entry##* }"
   [[ "${tool}" == npm:* ]] && ! "${npm_up}" && continue
@@ -1465,7 +1525,7 @@ EOF
     fi
 
     # Caddy is a proxy: it does not need its upstreams to exist at startup, and
-    # opencode now lives in another supervisor entirely.
+    # the primary service lives in another supervisor entirely.
     local caddy_deps=''
     case "${AUTH_MODE,,}" in google|github)
       emit_daemon oauth2-proxy "/opt/agent-env/bin/run-oauth2-proxy" \
@@ -1483,8 +1543,8 @@ EOF
       'env = { HOME = "/var/lib/caddy", XDG_CONFIG_HOME = "/var/lib/caddy", XDG_DATA_HOME = "/var/lib/caddy" }' \
       "ready_http = { url = \"http://127.0.0.1:${GATEWAY_PORT}/${HEALTH_PATH}\", timeout = \"60s\" }"
 
-    if is_true "${OPENCODE_ENABLE}"; then
-      emit_daemon gateway-auth-sync "/opt/agent-env/bin/sync-opencode-auth" \
+    if is_true "${PRIMARY_INJECTS}"; then
+      emit_daemon primary-auth "${PRESET_DIR}/auth" \
         'depends = ["caddy"]' \
         'retry = true'
     fi
@@ -1520,10 +1580,11 @@ render_pitchfork
 # Summary
 # ---------------------------------------------------------------------------
 log "----------------------------------------------------------------"
-if is_true "${OPENCODE_ENABLE}"; then
-  log " OpenCode v2 : $(su -s /bin/bash -l -c 'opencode --version' "${USER_NAME}" 2>/dev/null || echo unknown)"
+log " preset      : ${AGENT_ENV_PRESET}"
+if is_true "${PRIMARY_SUPERVISED}"; then
+  log " primary     : ${PRESET_TITLE:-PRIMARY_COMMAND} on 127.0.0.1:${PRIMARY_PORT}, at /"
 else
-  log " primary     : / proxies to 127.0.0.1:${PRIMARY_PORT} (OpenCode is off)"
+  log " primary     : / proxies to 127.0.0.1:${PRIMARY_PORT} (nothing supervised)"
 fi
 log " gateway     : ${PUBLIC_URL}  (listening on ${GATEWAY_BIND:-0.0.0.0}:${GATEWAY_PORT})"
 log " auth mode   : ${AUTH_MODE}"

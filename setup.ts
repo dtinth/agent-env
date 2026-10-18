@@ -42,6 +42,7 @@ import {
   generate,
   hostPathFor,
   type Mode,
+  type Preset,
   portClashProblem,
   type Problem,
   publicUrlFor,
@@ -223,7 +224,9 @@ async function yesNo(key: string, question: string, fallback: boolean): Promise<
 
 async function collect(prev: Partial<Answers>): Promise<Answers> {
   note(C.b("\nagent-env setup"));
-  note(C.dim("A hosted agent workstation: OpenCode, a desktop, a terminal, SSH."));
+  note(
+    C.dim("A hosted agent workstation: a desktop, a terminal, SSH, and an agent if you want one."),
+  );
   if (Object.keys(prev).length) {
     note(C.dim(`Re-running — previous answers are the defaults, and secrets in .env are kept.`));
   }
@@ -455,13 +458,34 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
   }
 
   // 3. What lives at /.
-  const opencodeEnable = await yesNo(
-    "opencodeEnable",
-    "Run OpenCode at / ?",
-    prev.opencodeEnable ?? true,
+  const agentPreset = await select<Preset>(
+    "preset",
+    "What should this environment run?",
+    [
+      {
+        value: "opencode",
+        label: "OpenCode",
+        hint: "installs OpenCode and serves its web UI at /",
+      },
+      {
+        value: "vanilla",
+        label: "Nothing in particular",
+        hint: "no agent installed; / goes to whatever you run on a port",
+      },
+    ],
+    prev.preset ?? "opencode",
   );
   let primaryPort: number | undefined;
-  if (!opencodeEnable) {
+  let primaryCommand: string | undefined;
+  // Not asked under opencode, so an answers file naming one would be dropped
+  // without a word.
+  if (agentPreset !== "vanilla" && preset.primaryCommand) {
+    bad(
+      "primaryCommand",
+      "only the vanilla preset takes one; the opencode preset runs its own server",
+    );
+  }
+  if (agentPreset === "vanilla") {
     primaryPort = Number(
       await ask(
         "primaryPort",
@@ -470,6 +494,13 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
         { validate: CHECKS.port },
       ),
     );
+    primaryCommand =
+      (await ask(
+        "primaryCommand",
+        "A command to run there ($PORT is the port; blank to start your own later)",
+        prev.primaryCommand ?? "",
+        { optional: true },
+      )) || undefined;
   }
 
   // 4. Extras. Each of these costs something, so they are asked rather than
@@ -600,8 +631,9 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
     allowedEmails,
     allowedEmailDomains,
     gatewayUser,
-    opencodeEnable,
+    preset: agentPreset,
     primaryPort,
+    primaryCommand,
     rootlessDocker,
     sshKeys,
     sshPort,
@@ -634,6 +666,13 @@ async function main() {
 
   if (answersArg) {
     preset = JSON.parse(readFileSync(answersArg, "utf8"));
+    // The question this replaced. An old answers file still means what it said.
+    if ("opencodeEnable" in preset && !("preset" in preset)) {
+      preset.preset =
+        preset.opencodeEnable === false || preset.opencodeEnable === "false"
+          ? "vanilla"
+          : "opencode";
+    }
     interactive = false;
   } else if (!process.stdin.isTTY) {
     // Falling back to defaults here would generate a deployment nobody chose,
@@ -645,7 +684,13 @@ async function main() {
   }
 
   const p = (f: string) => `${outDir.replace(/\/$/, "")}/${f}`;
-  const prev: Partial<Answers> = JSON.parse(readIfExists(p(ANSWERS_FILE)) ?? "{}");
+  const prev: Partial<Answers> & { opencodeEnable?: boolean } = JSON.parse(
+    readIfExists(p(ANSWERS_FILE)) ?? "{}",
+  );
+  // Saved by a version that asked "run OpenCode at /?" instead.
+  if (prev.preset === undefined && prev.opencodeEnable !== undefined) {
+    prev.preset = prev.opencodeEnable ? "opencode" : "vanilla";
+  }
   const answers = await collect(prev);
   // collect() has already asked about everything validate() checks, one
   // question at a time; this is the backstop, not the first line.

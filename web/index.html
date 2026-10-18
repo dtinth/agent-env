@@ -183,13 +183,30 @@
 
         <fieldset>
           <legend>3. What runs</legend>
-          <label class="check">
-            <input type="checkbox" name="opencodeEnable" checked /> Run OpenCode at <code>/</code>
-          </label>
-          <label class="field narrow" data-show="!opencodeEnable">
+          <div class="field">
+            <span>What should this environment run?</span>
+            <label class="check">
+              <input type="radio" name="preset" value="opencode" checked />
+              OpenCode <small>(installed for you; its web UI is at <code>/</code>)</small>
+            </label>
+            <label class="check">
+              <input type="radio" name="preset" value="vanilla" />
+              Nothing in particular
+              <small>(no agent; <code>/</code> goes to whatever you run on a port)</small>
+            </label>
+          </div>
+          <label class="field narrow" data-show="preset=vanilla">
             <span>Port inside the container that <code>/</code> proxies to</span>
             <input name="primaryPort" inputmode="numeric" value="3000" />
             <em class="error" data-error="primaryPort"></em>
+          </label>
+          <label class="field" data-show="preset=vanilla">
+            <span
+              >A command to run there
+              <small>(optional; <code>$PORT</code> is the port)</small></span
+            >
+            <input name="primaryCommand" placeholder="npm run dev -- --port $PORT" />
+            <em class="error" data-error="primaryCommand"></em>
           </label>
           <label class="check">
             <input type="checkbox" name="rootlessDocker" />

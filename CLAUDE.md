@@ -2,11 +2,16 @@
 
 ## What this repo is
 
-A Docker image that turns OpenCode v2 into a hosted, Google-authenticated
-workstation. The moving parts:
+A Docker image that turns an agent (OpenCode v2 by default) into a hosted,
+Google-authenticated workstation. The moving parts:
 
 - `Dockerfile` — the image. Debian trixie, XFCE + noVNC, Chromium, mise, and
   four fetched static binaries (pitchfork, ttyd, oauth2-proxy, caddy).
+- `rootfs/opt/agent-env/presets/` — what the environment is *for*. A preset is a
+  directory (`preset.env`, `tools.toml`, and optionally `run`, `auth`,
+  `login.sh`, `environment`, `commands/`); the entrypoint knows nothing about
+  OpenCode and just runs whatever the active `AGENT_ENV_PRESET` provides.
+  `opencode` is the default, `vanilla` installs no agent.
 - `rootfs/` — everything baked into the image's filesystem. The entrypoint is
   `rootfs/usr/local/bin/entrypoint.sh`; it validates configuration, renders the
   Caddyfile and the pitchfork daemon definitions, then execs pitchfork as PID 1.
@@ -60,12 +65,14 @@ done
 CONTAINER=agent-env ./scripts/smoke-test.sh http://localhost:8080 "dev:${password}"
 ```
 
-The second run is the same with `-e OPENCODE_ENABLE=false` on a different port and container name — see the
-`Smoke test with OpenCode off` step in `.github/workflows/docker.yml`.
+The second run is the same with `-e AGENT_ENV_PRESET=vanilla` on a different port
+and container name, and a third adds a supplied command (`-e 'PRIMARY_COMMAND=python3
+-m http.server "$PORT" --bind 127.0.0.1' -e 'SMOKE_PRIMARY_EXPECT=Directory listing'`) —
+see the `Smoke test, vanilla preset` steps in `.github/workflows/docker.yml`.
 
-A clean run reports 75 passed (OpenCode on) and 78 (OpenCode off), 0 failed,
+A clean run reports 75 passed (opencode preset) and 78 (vanilla), 0 failed,
 and one skip each — the oversized `*_FILE` guard when the container was not
-given one, and the credential-isolation check when there is no OpenCode server
+given one, and the credential-isolation check when there is no primary service
 to inspect. Skips are counted and printed rather than dropped, so a total that
 moves means a check appeared or vanished; `passed + skipped` is what stays
 constant across auth modes. A full build from cold cache takes ~10 minutes; the

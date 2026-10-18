@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# The OpenCode v2 API + web server, as the opencode preset's primary service.
+# Bound to loopback; the gateway is the only public entrance. --service
+# registers it as the shared service, so the CLI's own discovery lands here
+# instead of on a second server.
+#
+# run-primary has already changed into the workspace and exported PRIMARY_PORT.
+set -euo pipefail
+if ! command -v opencode >/dev/null 2>&1; then
+  echo "opencode is not installed: the entrypoint installs it with mise at start, and could not (offline?). Run 'mise install' to retry." >&2
+  exit 1
+fi
+exec opencode serve --service \
+  --hostname 127.0.0.1 \
+  --port "${PRIMARY_PORT}" \
+  ${OPENCODE_SERVE_ARGS:-}

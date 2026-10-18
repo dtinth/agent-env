@@ -12,6 +12,7 @@ import {
   generate,
   hostPathFor,
   type Mode,
+  type Preset,
   type Problem,
   publicUrlFor,
   randomSecret,
@@ -94,7 +95,7 @@ function readAnswers(): Answers {
   const mode = radio("mode") as Mode;
   const authMode = radio("authMode") as AuthMode;
   const behindProxy = mode === "local" ? checked("behindProxy") : undefined;
-  const opencodeEnable = checked("opencodeEnable");
+  const preset = radio("preset") as Preset;
   const a: Answers = {
     version: VERSION,
     mode,
@@ -105,8 +106,9 @@ function readAnswers(): Answers {
     acmeEmail: mode === "caddy" ? text("acmeEmail") : undefined,
     tsHostname: mode === "tailscale" ? text("tsHostname") : undefined,
     authMode,
-    opencodeEnable,
-    primaryPort: opencodeEnable ? undefined : num("primaryPort"),
+    preset,
+    primaryPort: preset === "vanilla" ? num("primaryPort") : undefined,
+    primaryCommand: preset === "vanilla" ? text("primaryCommand") || undefined : undefined,
     rootlessDocker: checked("rootlessDocker"),
     sshKeys: text("sshKeys"),
     sshPort: mode === "tailscale" ? undefined : num("sshPort"),
@@ -159,6 +161,9 @@ function writeAnswers(a: Partial<Answers>): void {
   };
   pick("mode", a.mode);
   pick("authMode", a.authMode);
+  // Saved by a version that asked "run OpenCode at /?" instead.
+  const old = (a as { opencodeEnable?: boolean }).opencodeEnable;
+  pick("preset", a.preset ?? (old === undefined ? undefined : old ? "opencode" : "vanilla"));
   set("behindProxy", a.behindProxy);
   if (a.behindProxy) set("publicUrl", a.publicUrl);
   for (const k of [
@@ -174,8 +179,8 @@ function writeAnswers(a: Partial<Answers>): void {
     "allowedEmails",
     "allowedEmailDomains",
     "gatewayUser",
-    "opencodeEnable",
     "primaryPort",
+    "primaryCommand",
     "rootlessDocker",
     "sshKeys",
     "sshPort",
@@ -207,7 +212,7 @@ function applyModeDefaults(): void {
 // Rendering
 // ---------------------------------------------------------------------------
 
-/** `data-show="mode=caddy"`, `"authMode=google,github"`, `"behindProxy"`, `"!opencodeEnable"`. */
+/** `data-show="mode=caddy"`, `"authMode=google,github"`, `"behindProxy"`, `"preset=vanilla"`. */
 function shown(rule: string): boolean {
   const negate = rule.startsWith("!");
   const body = negate ? rule.slice(1) : rule;

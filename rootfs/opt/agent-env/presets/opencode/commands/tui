@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Attaches the OpenCode v2 TUI to the same server the web UI talks to. Run it
-# from the browser terminal or any shell: `agent-env tui`.
+# help: Attach the OpenCode v2 TUI to the server the web UI talks to
+#
+# Run it from the browser terminal or any shell: `agent-env tui`.
 set -uo pipefail
 export TERM="${TERM:-xterm-256color}"
 
@@ -17,11 +18,6 @@ cd "${workdir}" || cd "${HOME}"
 
 # shellcheck disable=SC1091
 [[ -r /etc/profile ]] && . /etc/profile
-
-if [[ "$(value OPENCODE_ENABLE)" == false ]]; then
-  echo "OpenCode is turned off in this environment (OPENCODE_ENABLE=false)." >&2
-  exit 1
-fi
 
 port="$(value PRIMARY_PORT)"
 port="${port:-${PRIMARY_PORT:-3000}}"
