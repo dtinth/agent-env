@@ -274,7 +274,7 @@ ENV TZ=UTC \
     # image's own node and dufs — is read as a shared, read-only install dir.
     MISE_DATA_DIR=/home/dev/.local/share/mise \
     MISE_SHARED_INSTALL_DIRS=/opt/mise/installs \
-    PATH=/home/dev/.local/share/mise/shims:/opt/mise/shims:/home/dev/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin \
+    PATH=/home/dev/.local/share/mise/shims:/opt/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin \
     DISPLAY=:1 \
     CHROME_BIN=/usr/bin/chromium \
     XDG_RUNTIME_DIR=/run/user/1000
