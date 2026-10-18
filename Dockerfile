@@ -2,21 +2,20 @@
 #
 # agent-env — a ready-to-use OpenCode v2 workstation image.
 #
-#   * OpenCode v2 API + web server (`opencode2 serve`)
+#   * OpenCode v2 API + web server (`opencode serve`)
 #   * SSH server
 #   * XFCE desktop on a virtual display, reachable over noVNC
-#   * ttyd, serving the real OpenCode v2 TUI in the browser
+#   * ttyd, serving a login shell in the browser
 #   * Google or GitHub sign-in (oauth2-proxy) in front of all of it, via Caddy
-#   * mise as the language/tool manager
-#   * agent-browser + system Chromium, wired to the virtual display
+#   * mise as the language/tool manager; OpenCode and agent-browser are
+#     installed through it into the home volume at start, not baked in
+#   * system Chromium, wired to the virtual display
 #
 FROM debian:trixie-slim
 
 ARG TARGETARCH
 
 # Pinned versions for the components we fetch outside apt.
-ARG OPENCODE_VERSION=beta
-ARG AGENT_BROWSER_VERSION=latest
 ARG TTYD_VERSION=1.7.7
 ARG PITCHFORK_VERSION=2.22.0
 ARG OAUTH2_PROXY_VERSION=7.15.4
@@ -173,6 +172,9 @@ RUN set -eux; \
 
 # Declared and checksum-locked in the repo; see mise/config.toml.
 COPY mise/config.toml mise/mise.lock /etc/mise/
+# The agent tools, as a template for the home volume rather than part of the
+# image's own toolchain; see the entrypoint.
+COPY mise/agent-tools.toml /etc/agent-env/agent-tools.toml
 
 RUN chown -R "${USER_UID}:${USER_GID}" /opt/mise /etc/mise
 
@@ -181,39 +183,21 @@ ENV USER_NAME=${USER_NAME} \
     PATH=/opt/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 
 # ---------------------------------------------------------------------------
-# Node (via mise) + OpenCode v2 + agent-browser, installed as the user.
+# Node and dufs (via mise), installed as the user.
+#
+# OpenCode and agent-browser are deliberately not here. They move faster than
+# this image does, so they are installed into the home volume at first start and
+# upgraded at every start; see mise/agent-tools.toml and the entrypoint.
 # ---------------------------------------------------------------------------
 USER ${USER_NAME}
 WORKDIR /home/${USER_NAME}
 
 RUN set -eux; \
-    # Installs the version pinned in mise.lock and verifies its checksum,
+    # Installs the versions pinned in mise.lock and verifies their checksums,
     # rather than resolving whatever is newest at build time.
     mise install; \
     mise x -- node --version; \
-    mise x -- npm install -g "@opencode-ai/cli@${OPENCODE_VERSION}" "agent-browser@${AGENT_BROWSER_VERSION}"; \
-    mise reshim; \
-    \
-    # Both packages ship every platform's prebuilt binary; keep only ours.
-    npm_root="$(mise x -- npm root -g)"; \
-    case "$(uname -m)" in \
-      x86_64) ab_keep="agent-browser-linux-x64" ;; \
-      aarch64) ab_keep="agent-browser-linux-arm64" ;; \
-      *) ab_keep="" ;; \
-    esac; \
-    if [ -n "${ab_keep}" ]; then \
-      find "${npm_root}/agent-browser/bin" -maxdepth 1 -type f -name 'agent-browser-*' \
-        ! -name "${ab_keep}" -delete; \
-    fi; \
-    find "${npm_root}/@opencode-ai/cli/node_modules/@opencode-ai" -maxdepth 1 -type d \
-      -name '*-musl*' -exec rm -rf {} +; \
-    \
-    # npm's cache is pure build residue.
-    mise x -- npm cache clean --force >/dev/null 2>&1 || true; \
-    rm -rf "${HOME}/.npm" "${HOME}/.cache" /opt/mise/cache; \
-    \
-    opencode2 --version; \
-    agent-browser --version
+    rm -rf "${HOME}/.npm" "${HOME}/.cache" /opt/mise/cache
 
 USER root
 
@@ -290,6 +274,11 @@ ENV TZ=UTC \
     DOCKER_ROOTLESS_ENABLE=false \
     AGENT_ENV_STATE_DIR=/var/lib/agent-env \
     MISE_CONFIG_DIR=/home/dev/.config/mise \
+    # From here on, mise installs into the home volume, and /opt/mise — the
+    # image's own node and dufs — is read as a shared, read-only install dir.
+    MISE_DATA_DIR=/home/dev/.local/share/mise \
+    MISE_SHARED_INSTALL_DIRS=/opt/mise/installs \
+    PATH=/home/dev/.local/share/mise/shims:/opt/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin \
     DISPLAY=:1 \
     CHROME_BIN=/usr/bin/chromium \
     XDG_RUNTIME_DIR=/run/user/1000
@@ -305,7 +294,7 @@ EXPOSE 8080 8081 22 60000-60010/udp
 # The probe follows the configuration rather than assuming it: the gateway
 # always, plus the OpenCode server only when OPENCODE_ENABLE says it should be
 # there. See rootfs/opt/agent-env/bin/healthcheck.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=240s --retries=3 \
     CMD ["/opt/agent-env/bin/healthcheck"]
 
 # entrypoint.sh renders configuration and then exec's the CMD, so pitchfork

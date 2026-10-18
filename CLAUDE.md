@@ -166,6 +166,24 @@ If you meet the old error on an older image, that is the cause. The bound is
 `FILE_SECRET_MAX_BYTES`, and the OpenCode-off CI run passes an oversized
 `*_FILE` so the regression cannot come back quietly.
 
+### 4. The container needs the CA too
+
+OpenCode and agent-browser are no longer baked into the image: the entrypoint
+installs them with mise at first start. In the cloud sandbox that fetch goes
+through the same intercepting proxy, so run the smoke containers with the CA
+mounted and the two variables set, or the install fails and OpenCode never
+starts:
+
+```bash
+docker run -d ... \
+  -v /root/.ccr/ca-bundle.crt:/tmp/ca.crt:ro \
+  -e NODE_EXTRA_CA_CERTS=/tmp/ca.crt -e SSL_CERT_FILE=/tmp/ca.crt \
+  agent-env:smoke
+```
+
+`SSL_CERT_FILE` is a `*_FILE` variable and the file is over the size limit, so
+the entrypoint logs the usual "not exporting SSL_CERT" warning; that is expected.
+
 ### Housekeeping
 
 - Writable disk is a fixed per-session allowance, and the built image is ~3.9GB.

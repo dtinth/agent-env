@@ -12,7 +12,11 @@ value() { sed -n "s/^$1=//p" "${env_file}" 2>/dev/null | head -1; }
 port="$(value PRIMARY_PORT)"
 workdir="$(value WORKSPACE_DIR)"
 cd "${workdir:-${WORKSPACE_DIR:-/workspace}}"
-exec opencode2 serve --service \
+if ! command -v opencode >/dev/null 2>&1; then
+  echo "opencode is not installed: the entrypoint installs it with mise at start, and could not (offline?). Run 'mise install' to retry." >&2
+  exit 1
+fi
+exec opencode serve --service \
   --hostname 127.0.0.1 \
   --port "${port:-${PRIMARY_PORT:-3000}}" \
   ${OPENCODE_SERVE_ARGS:-}

@@ -12,8 +12,8 @@ on:
     tags: ["v*.*.*"]
   pull_request:
     branches: [main]
-  # OPENCODE_VERSION defaults to the `beta` dist-tag, so a rebuild picks up new
-  # OpenCode v2 builds even when nothing in this repo changed.
+  # OpenCode is installed at container start, so this run is what notices a new
+  # release that breaks the image's integration with it.
   schedule:
     - cron: "17 4 * * 1"
   workflow_dispatch:

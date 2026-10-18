@@ -497,7 +497,7 @@ PY
 
     # ...and its parent really is that supervisor, not PID 1.
     parent=$(docker exec "${CONTAINER}" bash -c '
-      pid=$(pgrep -f "opencode2 serve" | head -1)
+      pid=$(pgrep -f "opencode(\.exe)? serve" | head -1)
       while [ -n "$pid" ] && [ "$pid" != 1 ]; do
         args=$(ps -o args= -p "$pid")
         case "$args" in *"supervisor run"*) echo "$args"; exit 0 ;; esac
@@ -555,7 +555,7 @@ PY
   # A secret passed with -e stays in the container config, but it must not
   # reach the daemons — the OpenCode server runs code the agent was asked to run.
   leak=$(docker exec -u dev "${CONTAINER}" sh -c '
-    p=$(pgrep -f "opencode2 serve" | head -1)
+    p=$(pgrep -f "opencode(\.exe)? serve" | head -1)
     if [ -z "$p" ]; then echo no-process; exit 0; fi
     tr "\0" "\n" < /proc/$p/environ |
       grep -cE "^(GOOGLE_CLIENT_SECRET|GITHUB_CLIENT_SECRET|GATEWAY_PASSWORD|OAUTH2_PROXY_COOKIE_SECRET)=" || true
@@ -602,7 +602,7 @@ with open("/etc/mise/mise.lock", "rb") as fh:
   # tools by a second, different route.
   ishim=$(docker exec -u dev "${CONTAINER}" bash -ic 'command -v node' 2>/dev/null | tr -d '\r')
   nshim=$(docker exec -u dev "${CONTAINER}" bash -c 'command -v node' 2>/dev/null | tr -d '\r')
-  [[ "${ishim}" == /opt/mise/shims/node && "${nshim}" == /opt/mise/shims/node ]] \
+  [[ "${ishim}" == */shims/node && "${ishim}" == "${nshim}" ]] \
     && ok "interactive and non-interactive shells both resolve tools by shim" \
     || bad "node resolves to '${ishim:-unset}' interactively, '${nshim:-unset}' otherwise"
   act=$(docker exec -u dev "${CONTAINER}" bash -ic 'echo "${MISE_SHELL:-no}"' 2>/dev/null | tr -d '\r')

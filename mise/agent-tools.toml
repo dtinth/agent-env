@@ -1,0 +1,15 @@
+# The agent tools: what runs the workspace, as opposed to what the image needs.
+#
+# The entrypoint copies this to ~/.config/mise/conf.d/agent-env.toml on the home
+# volume the first time it is missing, installs what it declares, and runs
+# `mise upgrade` on it at every start — so they stay current without a rebuild,
+# and the volume keeps them between containers. Edit that copy to pin a version
+# ("2.0.32" instead of "latest"), or delete a line to stop installing a tool. It
+# is yours: the image never overwrites it.
+#
+# `allow_builds` lets the package's postinstall script run. mise skips scripts by
+# default, and both of these use theirs to select a native binary.
+
+[tools]
+"npm:@opencode/cli" = { version = "latest", allow_builds = ["@opencode/cli"] }
+"npm:agent-browser" = { version = "latest", allow_builds = ["agent-browser"] }

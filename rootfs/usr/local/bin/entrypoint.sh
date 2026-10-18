@@ -9,6 +9,11 @@ die()  { printf '\033[1;31m[agent-env] ERROR\033[0m %s\n' "$*" >&2; exit 1; }
 
 USER_NAME="${USER_NAME:-dev}"
 USER_HOME="/home/${USER_NAME}"
+# mise installs into the home volume; the image's own tools in /opt/mise are
+# shared, read-only installs. See the mise section below.
+export MISE_DATA_DIR="${USER_HOME}/.local/share/mise"
+export MISE_SHARED_INSTALL_DIRS=/opt/mise/installs
+export PATH="${MISE_DATA_DIR}/shims:/opt/mise/shims:${PATH}"
 # Unprivileged account for caddy and oauth2-proxy.
 GATEWAY_USER_NAME="${GATEWAY_USER_NAME:-gateway}"
 GATEWAY_GROUP="${GATEWAY_GROUP:-gateway}"
@@ -554,10 +559,11 @@ chmod 644 /etc/profile.d/99-agent-env.sh
 # by PAM instead, and without them it lands in the C locale. Keep this file free
 # of comments — pam_env reads it as bare KEY=VALUE lines.
 cat > /etc/environment <<EOF
-PATH=/opt/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+PATH=${MISE_DATA_DIR}/shims:/opt/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 LANG=C.UTF-8
 LC_ALL=C.UTF-8
-MISE_DATA_DIR=/opt/mise
+MISE_DATA_DIR=${MISE_DATA_DIR}
+MISE_SHARED_INSTALL_DIRS=/opt/mise/installs
 MISE_CONFIG_DIR=${USER_HOME}/.config/mise
 MISE_STATE_DIR=/opt/mise/state
 MISE_CACHE_DIR=/opt/mise/cache
@@ -1344,28 +1350,58 @@ EOF
 render_caddyfile
 
 # ---------------------------------------------------------------------------
-# mise: optional extra global tools
+# mise: the agent tools, and any extra global tools
 # ---------------------------------------------------------------------------
-# Tool *installs* live in /opt/mise, part of the image, so they do not survive
-# being recreated on a new image — but the declarations do, in the home volume.
-# Rebuild from them so a tool the agent installed is still there afterwards.
-if [[ -s "${USER_HOME}/.config/mise/config.toml" ]]; then
-  log "restoring mise tools declared in ${USER_HOME}/.config/mise/config.toml"
-  setpriv --reuid "${PUID}" --regid "${PGID}" --init-groups --inh-caps=-all \
-    env HOME="${USER_HOME}" MISE_CONFIG_DIR="${USER_HOME}/.config/mise" \
-    mise install --yes >/dev/null 2>&1 \
-    || warn "some mise tools could not be reinstalled (offline?); run 'mise install' to retry"
+# The image's own node and dufs are locked in /opt/mise and read as shared
+# installs. Everything else mise installs — the agent tools below, and anything
+# declared with `mise use -g` — goes into the home volume, so it persists, and
+# only has to be fetched again when the volume is new.
+gosu_run() { setpriv --reuid "${PUID}" --regid "${PGID}" --init-groups --inh-caps=-all "$@"; }
+mise_user() {
+  gosu_run env HOME="${USER_HOME}" MISE_DATA_DIR="${MISE_DATA_DIR}" \
+    MISE_SHARED_INSTALL_DIRS=/opt/mise/installs \
+    MISE_CONFIG_DIR="${USER_HOME}/.config/mise" "$@"
+}
+
+# OpenCode is only fetched when it is going to be used.
+is_true "${OPENCODE_ENABLE}" || export MISE_DISABLE_TOOLS="npm:@opencode/cli${MISE_DISABLE_TOOLS:+,${MISE_DISABLE_TOOLS}}"
+
+# Seeded once and then the user's: pin a version or drop a tool by editing it.
+agent_tools="${USER_HOME}/.config/mise/conf.d/agent-env.toml"
+if [[ ! -e "${agent_tools}" ]]; then
+  install -d -o "${PUID}" -g "${PGID}" "${agent_tools%/*}"
+  install -m 644 -o "${PUID}" -g "${PGID}" /etc/agent-env/agent-tools.toml "${agent_tools}"
 fi
+
+# Install what is declared, then move what is declared in the volume to the
+# newest version it allows. Tools the image itself declares are left to the
+# image: they are locked on purpose, and a rebuild is how they move.
+log "installing and upgrading mise tools (${USER_HOME}/.config/mise)"
+# Without a network mise retries for minutes before giving up, and the gateway
+# would wait on it. Ask the registry once, briefly, and skip the whole step if
+# it does not answer: what is already in the volume is still used.
+if ! curl -fsS --max-time 8 -o /dev/null https://registry.npmjs.org/ 2>/dev/null; then
+  warn "the npm registry is unreachable; skipping mise install/upgrade and using what is installed"
+elif mise_user timeout 600 mise install --yes >/dev/null 2>&1; then
+  mapfile -t upgradable < <(mise_user mise ls --json 2>/dev/null \
+    | jq -r 'to_entries[] | select(any(.value[]; (.source.path // "") | startswith("/etc/mise") | not)) | .key' 2>/dev/null)
+  if (( ${#upgradable[@]} )); then
+    mise_user timeout 600 mise upgrade --yes "${upgradable[@]}" >/dev/null 2>&1 \
+      || warn "could not upgrade mise tools; using what is installed"
+  fi
+else
+  warn "some mise tools could not be installed; run 'mise install' to retry"
+fi
+mise_user mise reshim >/dev/null 2>&1 || true
 
 if [[ -n "${MISE_TOOLS:-}" ]]; then
   log "installing mise tools: ${MISE_TOOLS}"
-  # shellcheck disable=SC2086
-  gosu_run() { setpriv --reuid "${PUID}" --regid "${PGID}" --init-groups --inh-caps=-all "$@"; }
   # --yes explicitly: MISE_YES is a build-time ARG and is deliberately not in
   # the image's environment, so nothing here inherits a blanket "trust it".
-  gosu_run env HOME="${USER_HOME}" mise use -g --yes ${MISE_TOOLS} \
+  # shellcheck disable=SC2086
+  mise_user mise use -g --yes ${MISE_TOOLS} \
     || warn "mise failed to install one or more of: ${MISE_TOOLS}"
-  gosu_run env HOME="${USER_HOME}" mise reshim || true
+  mise_user mise reshim || true
 fi
 
 # ---------------------------------------------------------------------------
@@ -1540,7 +1576,7 @@ render_pitchfork
 # ---------------------------------------------------------------------------
 log "----------------------------------------------------------------"
 if is_true "${OPENCODE_ENABLE}"; then
-  log " OpenCode v2 : $(su -s /bin/bash -c 'opencode2 --version' "${USER_NAME}" 2>/dev/null || echo unknown)"
+  log " OpenCode v2 : $(su -s /bin/bash -l -c 'opencode --version' "${USER_NAME}" 2>/dev/null || echo unknown)"
 else
   log " primary     : / proxies to 127.0.0.1:${PRIMARY_PORT} (OpenCode is off)"
 fi
