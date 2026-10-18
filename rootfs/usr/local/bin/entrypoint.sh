@@ -111,7 +111,6 @@ PUBLIC_URL="${PUBLIC_URL%/}"
 # off, / proxies to PRIMARY_PORT instead — whatever the workspace is running —
 # and falls back to the environment index when nothing is listening there.
 OPENCODE_ENABLE="${OPENCODE_ENABLE:-true}"
-OPENCODE_PORT="${OPENCODE_PORT:-4096}"
 # Where everything starts: the agent, the terminals, the file manager, the
 # user's own daemons. It used to be spelled OPENCODE_WORKDIR, which is still
 # honoured, but it was never OpenCode's alone.
@@ -122,9 +121,16 @@ fi
 WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
 unset OPENCODE_WORKDIR
 
-# Where / points when OpenCode is off. 3000 is what Next, Rails, Vite preview and
-# most `npm start` templates pick, so the default is right more often than not.
+# The port the primary service listens on, and so where / points. OpenCode, when
+# enabled, is told to listen here; with it off, whatever the workspace runs
+# there takes its place. 3000 is what Next, Rails, Vite preview and most
+# `npm start` templates pick. OPENCODE_PORT was this before the two merged.
+if [[ -z "${PRIMARY_PORT:-}" && -n "${OPENCODE_PORT:-}" ]]; then
+  warn "OPENCODE_PORT is deprecated; set PRIMARY_PORT=${OPENCODE_PORT} instead"
+  PRIMARY_PORT="${OPENCODE_PORT}"
+fi
 PRIMARY_PORT="${PRIMARY_PORT:-3000}"
+unset OPENCODE_PORT
 
 SSH_ENABLE="${SSH_ENABLE:-true}"
 SSH_PORT="${SSH_PORT:-22}"
@@ -144,18 +150,27 @@ NOVNC_PORT="${NOVNC_PORT:-6080}"
 TTYD_ENABLE="${TTYD_ENABLE:-true}"
 TTYD_PORT="${TTYD_PORT:-7681}"
 TTYD_WRITABLE="${TTYD_WRITABLE:-true}"
-# What the browser terminal runs: the OpenCode TUI, or a plain login shell. It
-# is resolved here rather than left to the terminal itself, so every reader —
-# the daemon, `agent-env tui`, the runtime env file — agrees on one answer.
-# With OpenCode off there is no server to attach to and the TUI would only sit
-# on a connect loop, so a shell is the only sane thing to run.
-case "${TTYD_COMMAND:-tui}" in
-  shell) TTYD_COMMAND=shell ;;
-  tui)   TTYD_COMMAND=tui ;;
-  *)     warn "TTYD_COMMAND=${TTYD_COMMAND} is not 'tui' or 'shell'; using tui"
-         TTYD_COMMAND=tui ;;
+# What the browser terminal runs: `opencode` (the TUI), `shell` (a login shell),
+# or any other command, which runs under a login shell in the workspace —
+# `claude` is the obvious one. It is resolved here rather than left to the
+# terminal itself, so every reader — the daemon, `agent-env tui`, the runtime
+# env file — agrees on one answer. TTYD_COMMAND is the old name; `tui` was the
+# old word for `opencode`.
+if [[ -z "${TERMINAL:-}" && -n "${TTYD_COMMAND:-}" ]]; then
+  TERMINAL="${TTYD_COMMAND/#tui/opencode}"
+  warn "TTYD_COMMAND is deprecated; set TERMINAL=${TERMINAL} instead"
+fi
+unset TTYD_COMMAND
+case "${TERMINAL:-}" in
+  "")       if is_true "${OPENCODE_ENABLE}"; then TERMINAL=opencode; else TERMINAL=shell; fi ;;
+  tui)      TERMINAL=opencode ;;
 esac
-is_true "${OPENCODE_ENABLE}" || TTYD_COMMAND=shell
+# With OpenCode off there is no server to attach to, and the TUI would only sit
+# on a connect loop.
+if [[ "${TERMINAL}" == opencode ]] && ! is_true "${OPENCODE_ENABLE}"; then
+  warn "TERMINAL=opencode needs OPENCODE_ENABLE; using shell"
+  TERMINAL=shell
+fi
 # ttyd and dufs are told their own prefix so their UIs work under one; noVNC is
 # not, because the gateway strips the prefix before proxying to it.
 TTYD_PATH="${ENV_PREFIX}/terminal"
@@ -443,7 +458,7 @@ if is_true "${OPENCODE_ENABLE}"; then
 [daemons.opencode]
 run = \"/opt/agent-env/bin/run-opencode\"
 dir = \"${WORKSPACE_DIR}\"
-ready_port = { port = ${OPENCODE_PORT}, timeout = \"120s\" }
+ready_port = { port = ${PRIMARY_PORT}, timeout = \"120s\" }
 retry = true
 boot_start = true
 "
@@ -509,8 +524,7 @@ unset OPENCODE_SERVER_PASSWORD
   echo "USER_WEB_PATH=${USER_WEB_PATH}"
   echo "USER_WEB_ENABLE=$(canon "${USER_WEB_ENABLE}")"
   echo "OPENCODE_ENABLE=$(canon "${OPENCODE_ENABLE}")"
-  echo "OPENCODE_PORT=${OPENCODE_PORT}"
-  echo "PRIMARY_PORT=${PRIMARY_PORT}"
+    echo "PRIMARY_PORT=${PRIMARY_PORT}"
   echo "WORKSPACE_DIR=${WORKSPACE_DIR}"
   echo "SSH_PORT=${SSH_PORT}"
   echo "DESKTOP_DISPLAY=${DESKTOP_DISPLAY}"
@@ -519,14 +533,14 @@ unset OPENCODE_SERVER_PASSWORD
   echo "DASHBOARD_PUBLIC_URL=${DASHBOARD_PUBLIC_URL}"
   echo "DESKTOP_ENABLE=$(canon "${DESKTOP_ENABLE}")"
   echo "TTYD_ENABLE=$(canon "${TTYD_ENABLE}")"
-  echo "TTYD_COMMAND=${TTYD_COMMAND}"
+  echo "TERMINAL=${TERMINAL}"
   echo "SSH_ENABLE=$(canon "${SSH_ENABLE}")"
   echo "USER_NAME=${USER_NAME}"
   echo "DOCKER_ROOTLESS_ENABLE=$(canon "${DOCKER_ROOTLESS_ENABLE}")"
 } > "${RUN_DIR}/env"
 
 cat > /etc/profile.d/99-agent-env.sh <<EOF
-export OPENCODE_SERVER='http://127.0.0.1:${OPENCODE_PORT}'
+export OPENCODE_SERVER='http://127.0.0.1:${PRIMARY_PORT}'
 if [ -r "\$HOME/.local/state/opencode/service.json" ]; then
   OPENCODE_SERVER_PASSWORD="\$(jq -r '.password // empty' "\$HOME/.local/state/opencode/service.json" 2>/dev/null)"
   export OPENCODE_SERVER_PASSWORD
@@ -560,7 +574,7 @@ MISE_CACHE_DIR=/opt/mise/cache
 DISPLAY=${DESKTOP_DISPLAY}
 XAUTHORITY=${XAUTHORITY_FILE}
 XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}
-OPENCODE_SERVER=http://127.0.0.1:${OPENCODE_PORT}
+OPENCODE_SERVER=http://127.0.0.1:${PRIMARY_PORT}
 EOF
 if is_true "${DOCKER_ROOTLESS_ENABLE}"; then
   echo "DOCKER_HOST=${DOCKER_ROOTLESS_HOST}" >> /etc/environment
@@ -1030,13 +1044,12 @@ EOF
     fi
 
     if is_true "${TTYD_ENABLE}"; then
-      # What it runs is TTYD_COMMAND's answer, not OpenCode's: a shell is what
-      # you get with OpenCode off *and* when you asked for one outright.
-      if [[ "${TTYD_COMMAND}" == tui ]]; then
-        svc "/${TTYD_PATH}/" "Terminal" "The OpenCode TUI, over a websocket"
-      else
-        svc "/${TTYD_PATH}/" "Terminal" "A login shell, over a websocket"
-      fi
+      # What it runs is TERMINAL's answer, not OpenCode's.
+      case "${TERMINAL}" in
+        opencode) svc "/${TTYD_PATH}/" "Terminal" "The OpenCode TUI, over a websocket" ;;
+        shell)    svc "/${TTYD_PATH}/" "Terminal" "A login shell, over a websocket" ;;
+        *)        svc "/${TTYD_PATH}/" "Terminal" "A login shell running ${TERMINAL}, over a websocket" ;;
+      esac
     fi
     is_true "${DESKTOP_ENABLE}" \
       && svc "/${DESKTOP_PATH}/" "Desktop" "XFCE on a virtual display, over noVNC"
@@ -1251,7 +1264,7 @@ EOF
 			# else: it would hand a credential to someone's own application, and
 			# break anything that does its own Authorization.
 			handle {
-				reverse_proxy 127.0.0.1:${OPENCODE_PORT} {
+				reverse_proxy 127.0.0.1:${PRIMARY_PORT} {
 					import ${OPENCODE_AUTH_SNIPPET}
 				}
 			}
@@ -1412,7 +1425,6 @@ DISPLAY = "${DESKTOP_DISPLAY}"
 XAUTHORITY = "${XAUTHORITY_FILE}"
 XDG_RUNTIME_DIR = "${XDG_RUNTIME_DIR}"
 TZ = "${TZ}"
-OPENCODE_PORT = "${OPENCODE_PORT}"
 WORKSPACE_DIR = "${WORKSPACE_DIR}"
 DESKTOP_DISPLAY = "${DESKTOP_DISPLAY}"
 DESKTOP_RESOLUTION = "${DESKTOP_RESOLUTION}"
@@ -1421,7 +1433,6 @@ NOVNC_PORT = "${NOVNC_PORT}"
 TTYD_PORT = "${TTYD_PORT}"
 TTYD_WRITABLE = "${TTYD_WRITABLE}"
 TTYD_PATH = "${TTYD_PATH}"
-TTYD_COMMAND = "${TTYD_COMMAND}"
 DUFS_PATH = "${DUFS_PATH}"
 AB_DASHBOARD_PORT = "${AB_DASHBOARD_PORT}"
 EOF
@@ -1552,11 +1563,7 @@ log " gateway     : ${PUBLIC_URL}  (listening on ${GATEWAY_BIND:-0.0.0.0}:${GATE
 log " auth mode   : ${AUTH_MODE}"
 log " index       : ${PUBLIC_URL}/${ENV_PREFIX}/"
 if is_true "${TTYD_ENABLE}"; then
-  if [[ "${TTYD_COMMAND}" == tui ]]; then
-    log " TUI         : ${PUBLIC_URL}/${TTYD_PATH}/"
-  else
-    log " terminal    : ${PUBLIC_URL}/${TTYD_PATH}/  (login shell)"
-  fi
+  log " terminal    : ${PUBLIC_URL}/${TTYD_PATH}/  (${TERMINAL})"
 fi
 is_true "${DESKTOP_ENABLE}"     && log " desktop     : ${PUBLIC_URL}/${DESKTOP_PATH}/"
 is_true "${AB_DASHBOARD_ENABLE}" && log " browser dash: ${DASHBOARD_PUBLIC_URL}"

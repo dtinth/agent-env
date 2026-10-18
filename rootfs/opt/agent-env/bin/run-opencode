@@ -2,9 +2,17 @@
 # OpenCode v2 API + web server. Bound to loopback; the gateway is the only
 # public entrance. --service registers it as the shared service, so the CLI's
 # own discovery lands here instead of on a second server.
+#
+# This runs under the user's own supervisor, which does not inherit the
+# container's environment, so the port comes from the file the entrypoint
+# publishes — the same place the healthcheck and the gateway sync read it.
 set -euo pipefail
-cd "${WORKSPACE_DIR:-/workspace}"
+env_file=/run/agent-env/env
+value() { sed -n "s/^$1=//p" "${env_file}" 2>/dev/null | head -1; }
+port="$(value PRIMARY_PORT)"
+workdir="$(value WORKSPACE_DIR)"
+cd "${workdir:-${WORKSPACE_DIR:-/workspace}}"
 exec opencode2 serve --service \
   --hostname 127.0.0.1 \
-  --port "${OPENCODE_PORT:-4096}" \
+  --port "${port:-${PRIMARY_PORT:-3000}}" \
   ${OPENCODE_SERVE_ARGS:-}
