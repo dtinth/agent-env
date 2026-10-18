@@ -219,6 +219,11 @@ RUN set -eux; \
     # built. Shipping them would give every deployment — and anyone who pulls
     # the image — the same private key, so throw them away and let the
     # entrypoint generate a persistent set per deployment instead.
+    # Debian's sshd_config accepts LANG and LC_* from the client, and AcceptEnv
+    # lines accumulate across files, so the drop-in the entrypoint writes cannot
+    # take that back. The image has one locale, C.UTF-8; a forwarded en_US.UTF-8
+    # makes every shell warn about setlocale. Remove the line here.
+    sed -i '/^AcceptEnv /d' /etc/ssh/sshd_config; \
     rm -f /etc/ssh/ssh_host_*; \
     install -d -m 0700 /var/lib/agent-env; \
     chown -R gateway:gateway /var/lib/caddy; \

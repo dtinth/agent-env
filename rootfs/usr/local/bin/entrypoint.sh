@@ -681,7 +681,7 @@ PrintMotd no
 # Deliberately not LANG or LC_*: the image carries C.UTF-8 and nothing else, so
 # accepting a client's en_US.UTF-8 only produces a setlocale warning from every
 # shell it starts. TERM and COLORTERM are honoured because they always are.
-AcceptEnv TERM COLORTERM
+AcceptEnv TERM COLORTERM NO_COLOR
 ClientAliveInterval 30
 ClientAliveCountMax 4
 EOF

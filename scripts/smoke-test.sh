@@ -666,9 +666,13 @@ with open("/etc/mise/mise.lock", "rb") as fh:
   # make every shell an SSH session starts warn about setlocale. The pair below
   # is what keeps that quiet: nothing locale-shaped is accepted from the client,
   # and PAM hands each session the locale that does exist.
+  # The effective config, not just our drop-in: Debian's own sshd_config
+  # carries an AcceptEnv of its own, and the lines add up.
   refute "sshd accepts no locale variables from the client" \
-    docker exec "${CONTAINER}" grep -qE '^AcceptEnv .*(LANG|LC_)' \
-    /etc/ssh/sshd_config.d/00-agent-env.conf
+    sh -c "docker exec ${CONTAINER} sshd -T | grep -E '^acceptenv .*(lang|lc_)'"
+
+  assert "sshd still accepts TERM from the client" \
+    sh -c "docker exec ${CONTAINER} sshd -T | grep -qiE '^acceptenv term$'"
 
   assert "PAM gives every session the locale the image has" \
     docker exec "${CONTAINER}" grep -q '^LANG=C.UTF-8' /etc/environment
