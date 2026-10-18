@@ -149,6 +149,13 @@ if [[ -n "${PRIMARY_COMMAND}" && "${AGENT_ENV_PRESET}" != vanilla ]]; then
 fi
 PRIMARY_SUPERVISED=false
 if [[ -n "${PRIMARY_COMMAND}" || -x "${PRESET_DIR}/run" ]]; then PRIMARY_SUPERVISED=true; fi
+# The primary service is a daemon of the dev user's own supervisor. Without that
+# supervisor nothing would start it, and a healthcheck probing for it would
+# leave the container unhealthy for good, so say what will actually happen.
+if [[ "${PRIMARY_SUPERVISED}" == true ]] && ! is_true "${USER_SUPERVISOR_ENABLE:-true}"; then
+  warn "USER_SUPERVISOR_ENABLE is off, so nothing starts the ${PRIMARY_COMMAND:+PRIMARY_COMMAND}${PRIMARY_COMMAND:-${AGENT_ENV_PRESET} server}; run it yourself on PRIMARY_PORT"
+  PRIMARY_SUPERVISED=false
+fi
 # The gateway adds the primary service's own credential on the way through, but
 # only when the preset ships the means to keep it current, and only for the
 # server the preset itself runs.

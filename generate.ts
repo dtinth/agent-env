@@ -576,6 +576,9 @@ export function renderEnv(
   L.push("");
 
   L.push("# --- What lives at / ---");
+  // Decided whether or not it is written: an old command left in .env would
+  // keep running (vanilla) or stop the container starting (opencode).
+  decided.add("PRIMARY_COMMAND");
   put("AGENT_ENV_PRESET", a.preset);
   if (a.preset === "vanilla") {
     put("PRIMARY_PORT", String(a.primaryPort ?? 3000));

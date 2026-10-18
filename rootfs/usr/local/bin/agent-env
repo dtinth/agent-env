@@ -2,6 +2,23 @@
 # Small operator helper for the running container.
 set -euo pipefail
 
+# The primary service is a daemon of the dev user's own supervisor, not the
+# system one, so its logs and its start/stop/restart go there. This runs before
+# the sudo re-exec below, which would only land in the wrong supervisor.
+case "${1:-}:${2:-}" in
+  logs:primary|restart:primary|start:primary|stop:primary)
+    user="$(sed -n 's/^USER_NAME=//p' /run/agent-env/env 2>/dev/null | head -1)"
+    user="${user:-dev}"
+    pf_args=("$1")
+    [[ "$1" == logs ]] && pf_args+=(--follow)
+    pf_args+=(primary)
+    if [[ "$(id -un)" == "${user}" ]]; then exec pitchfork "${pf_args[@]}"; fi
+    if [[ "$(id -u)" -eq 0 ]]; then exec runuser -l "${user}" -c "pitchfork ${pf_args[*]}"; fi
+    echo "agent-env $1 primary must run as ${user} or root." >&2
+    exit 1
+    ;;
+esac
+
 # The system supervisor is root-only on purpose, so that the dev user's own
 # pitchfork stays theirs. These commands need it, so re-run them under sudo
 # rather than loosening the permissions on it.

@@ -207,6 +207,21 @@ test("the vanilla preset takes a command, and $PORT survives Compose", () => {
   assertEquals(envOf(dir).PRIMARY_COMMAND, "npm run dev -- --port $PORT");
 });
 
+test("clearing the command drops it from a regenerated .env", () => {
+  // An old PRIMARY_COMMAND carried through from the previous .env would keep
+  // running under vanilla and stop an opencode container from starting at all.
+  const dir = tmp();
+  const vanilla = { ...LOCAL, preset: "vanilla", primaryPort: 3000 };
+  run({ ...vanilla, primaryCommand: "node app.js" }, dir);
+  assertEquals(envOf(dir).PRIMARY_COMMAND, "node app.js");
+  // Unmentioned answers fall back to the previous run's; clearing says so.
+  run({ ...vanilla, primaryCommand: "" }, dir, ["--force"]);
+  assert(!("PRIMARY_COMMAND" in envOf(dir)), "the cleared command came back");
+  run({ ...vanilla, primaryCommand: "node app.js" }, dir, ["--force"]);
+  run({ ...LOCAL, preset: "opencode", primaryCommand: "" }, dir, ["--force"]);
+  assert(!("PRIMARY_COMMAND" in envOf(dir)), "switching to opencode kept the command");
+});
+
 test("the opencode preset runs its own server, so a command is refused", () => {
   const dir = tmp();
   const r = run({ ...LOCAL, preset: "opencode", primaryCommand: "node app.js" }, dir);
