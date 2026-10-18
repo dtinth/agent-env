@@ -287,11 +287,13 @@ if have_container; then
   # off. Comparing the published value against itself would prove nothing, and
   # assuming the default would fail a container that legitimately asked for a
   # shell with OpenCode still on. TTYD_COMMAND and `tui` are the old spellings.
-  want_cmd=opencode
   requested=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER}" 2>/dev/null \
     | sed -n -e 's/^TERMINAL=//p' -e 's/^TTYD_COMMAND=//p' | head -1 | tr -d '\r')
-  [ "${requested}" = shell ] && want_cmd=shell
-  [ "${OPENCODE_ENABLE}" = true ] || want_cmd=shell
+  case "${requested}" in
+    ""|tui|opencode) want_cmd=opencode ;;
+    *)               want_cmd="${requested}" ;;
+  esac
+  [ "${want_cmd}" = opencode ] && [ "${OPENCODE_ENABLE}" != true ] && want_cmd=shell
 
   # `agent-env tui` runs from an SSH login shell, which inherits neither the
   # container's environment nor pitchfork's, and the ttyd daemon reads the same

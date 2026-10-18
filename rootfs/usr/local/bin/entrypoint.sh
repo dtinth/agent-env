@@ -125,9 +125,15 @@ unset OPENCODE_WORKDIR
 # enabled, is told to listen here; with it off, whatever the workspace runs
 # there takes its place. 3000 is what Next, Rails, Vite preview and most
 # `npm start` templates pick. OPENCODE_PORT was this before the two merged.
-if [[ -z "${PRIMARY_PORT:-}" && -n "${OPENCODE_PORT:-}" ]]; then
-  warn "OPENCODE_PORT is deprecated; set PRIMARY_PORT=${OPENCODE_PORT} instead"
-  PRIMARY_PORT="${OPENCODE_PORT}"
+# It only carries over while OpenCode is enabled: with OpenCode off it never
+# said where the primary service was, and 3000 is where that always was.
+if [[ -n "${OPENCODE_PORT:-}" ]]; then
+  if is_true "${OPENCODE_ENABLE}" && [[ -z "${PRIMARY_PORT:-}" ]]; then
+    warn "OPENCODE_PORT is deprecated; set PRIMARY_PORT=${OPENCODE_PORT} instead"
+    PRIMARY_PORT="${OPENCODE_PORT}"
+  else
+    warn "OPENCODE_PORT is deprecated and ignored here; PRIMARY_PORT decides"
+  fi
 fi
 PRIMARY_PORT="${PRIMARY_PORT:-3000}"
 unset OPENCODE_PORT
@@ -1048,7 +1054,8 @@ EOF
       case "${TERMINAL}" in
         opencode) svc "/${TTYD_PATH}/" "Terminal" "The OpenCode TUI, over a websocket" ;;
         shell)    svc "/${TTYD_PATH}/" "Terminal" "A login shell, over a websocket" ;;
-        *)        svc "/${TTYD_PATH}/" "Terminal" "A login shell running ${TERMINAL}, over a websocket" ;;
+        *)        local_cmd="${TERMINAL//&/"&amp;"}"; local_cmd="${local_cmd//</"&lt;"}"; local_cmd="${local_cmd//>/"&gt;"}"
+                  svc "/${TTYD_PATH}/" "Terminal" "A login shell running ${local_cmd}, over a websocket" ;;
       esac
     fi
     is_true "${DESKTOP_ENABLE}" \
