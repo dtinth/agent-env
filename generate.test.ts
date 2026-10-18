@@ -96,3 +96,25 @@ test("invalid answers are reported per field and refused", () => {
   const e = assertThrows(() => generate(refused), InvalidAnswers);
   assertEquals(e.problems[0].message, "Refusing to generate that.");
 });
+
+test("owner IDs must be IDs the entrypoint can use", () => {
+  for (const bad of [Number.NaN, -1, 1.5]) {
+    const a: Answers = {
+      ...BASIC,
+      workspace: { kind: "path", path: "/srv", puid: bad, pgid: 1000 },
+    };
+    assertEquals(
+      validate(a).map((p) => p.field),
+      ["puid"],
+      `accepted ${bad}`,
+    );
+  }
+});
+
+test("a bare relative path is a bind mount for any caller", () => {
+  const files = generate(
+    { ...BASIC, workspace: { kind: "path", path: "code", puid: 1000, pgid: 1000 } },
+    { randomSecret: fixed },
+  );
+  assert(files["compose.yaml"].includes('"./code:/workspace"'));
+});

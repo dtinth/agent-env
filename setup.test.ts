@@ -803,3 +803,31 @@ test("a cleared allow list does not come back on a re-run", () => {
   // And it is not passed through to a container that has no value for it.
   assert(!readText(`${dir}/compose.yaml`).includes("GITHUB_USERS"));
 });
+
+// The same rule for SSH: a key removed from the answers is a key whose access
+// was revoked, and carrying it through would leave it authorized.
+test("removed SSH keys do not come back on a re-run", () => {
+  const dir = tmp();
+  run({ ...LOCAL, sshKeys: "ssh-ed25519 AAAA old@host" }, dir);
+  assertEquals(envOf(dir).SSH_AUTHORIZED_KEYS, "ssh-ed25519 AAAA old@host");
+  assertEquals(run({ ...LOCAL, sshKeys: "" }, dir, ["--force"]).code, 0);
+  assert(!("SSH_AUTHORIZED_KEYS" in envOf(dir)), "a removed key is still authorized");
+});
+
+// And for every allow list when the sign-in changes: a list left behind in
+// .env comes back into force the moment AUTH_MODE is pointed at it again.
+test("allow lists do not survive a change of sign-in", () => {
+  const dir = tmp();
+  run({ ...GITHUB, githubUsers: "octocat", allowedEmails: "me@example.com" }, dir);
+  assertEquals(run({ ...GITHUB, authMode: "basic" }, dir, ["--force"]).code, 0);
+  const env = envOf(dir);
+  for (const k of [
+    "GITHUB_USERS",
+    "GITHUB_ORG",
+    "GITHUB_TEAM",
+    "ALLOWED_EMAILS",
+    "ALLOWED_EMAIL_DOMAINS",
+  ]) {
+    assert(!(k in env), `${k} outlived the switch to basic auth`);
+  }
+});

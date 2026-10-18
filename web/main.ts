@@ -32,13 +32,38 @@ let current = "compose.yaml";
 
 /**
  * Secrets are minted once per key and then held, so the password on screen
- * does not change with every keystroke. "New secrets" clears this.
+ * does not change with every keystroke, or with a reload of this tab. They are
+ * kept in sessionStorage, not localStorage: a credential should not outlive
+ * the visit on this machine. Across visits, the existing .env box is the way
+ * to keep them, and the page says so. "New secrets" clears this.
  */
-let minted = new Map<string, string>();
+const SECRETS_KEY = "agent-env-configurator:secrets";
+let minted = new Map<string, string>(loadSecrets());
+function loadSecrets(): [string, string][] {
+  try {
+    return Object.entries(
+      JSON.parse(sessionStorage.getItem(SECRETS_KEY) ?? "{}") as Record<string, string>,
+    );
+  } catch {
+    return [];
+  }
+}
+function saveSecrets(): void {
+  try {
+    sessionStorage.setItem(SECRETS_KEY, JSON.stringify(Object.fromEntries(minted)));
+  } catch {
+    // Blocked storage: secrets still hold for as long as the page is open.
+  }
+}
 const stableSecret = (bytes: number, key: string): string => {
-  if (!minted.has(key)) minted.set(key, randomSecret(bytes));
+  if (!minted.has(key)) {
+    minted.set(key, randomSecret(bytes));
+    saveSecrets();
+  }
   return minted.get(key)!;
 };
+/** True when this tab started from a previous visit's answers but not its secrets. */
+let restoredWithoutSecrets = false;
 
 /** Answers the person has set themselves, so mode defaults leave them alone. */
 const touched = new Set<string>();
@@ -208,7 +233,9 @@ function showProblems(problems: Problem[]): void {
   const list = document.createElement("ul");
   for (const p of problems) {
     const slot = p.field ? form.querySelector<HTMLElement>(`[data-error="${p.field}"]`) : null;
-    if (slot && slot.offsetParent !== null) slot.textContent = p.message;
+    // An empty slot is display:none itself, so ask whether its section is
+    // hidden rather than whether the slot is laid out.
+    if (slot && !slot.closest("[hidden]")) slot.textContent = p.message;
     // A field-level message ("required") needs its question to make sense on
     // its own; the label beside the slot is that question.
     const label = slot?.closest("label")?.querySelector(":scope > span")?.textContent;
@@ -263,6 +290,9 @@ function render(): void {
   const problems = validate(answers);
   showProblems(problems);
   showNextSteps(answers, problems.length === 0);
+  // An invalid form has no files. Keeping the last valid ones would let Copy
+  // and Download export a deployment that no longer matches the answers.
+  files = {};
   if (problems.length === 0) {
     files = generate(answers, {
       existingEnv: el("existingEnv").value,
@@ -274,13 +304,17 @@ function render(): void {
       // Private mode or blocked storage: the page works without it.
     }
   }
-  code.parentElement!.classList.toggle("stale", problems.length > 0);
+  for (const id of ["#copy", "#download"]) {
+    document.querySelector<HTMLButtonElement>(id)!.disabled = problems.length > 0;
+  }
+  document.querySelector<HTMLElement>("#secrets-note")!.hidden =
+    !restoredWithoutSecrets || el("existingEnv").value.trim() !== "";
   showFile();
 }
 
 function showFile(): void {
   for (const t of tabs) t.setAttribute("aria-selected", String(t.dataset.file === current));
-  code.textContent = files[current] ?? "";
+  code.textContent = files[current] ?? "Fix the problems above to see this file.";
 }
 
 // ---------------------------------------------------------------------------
@@ -310,17 +344,21 @@ document.querySelector("#copy")!.addEventListener("click", async (e) => {
 });
 
 document.querySelector("#download")!.addEventListener("click", () => {
-  const blob = new Blob([files[current] ?? ""], { type: "text/plain" });
+  // Not text/plain: browsers append ".txt" to a name like ".env" for that.
+  const blob = new Blob([files[current] ?? ""], { type: "application/octet-stream" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   // Some browsers drop a leading dot; "env" saved this way still needs renaming.
   a.download = current;
   a.click();
-  URL.revokeObjectURL(a.href);
+  // Revoked on the next tick, not now: some browsers start the download
+  // asynchronously and would find the URL already gone.
+  setTimeout(() => URL.revokeObjectURL(a.href), 0);
 });
 
 document.querySelector("#regenerate")!.addEventListener("click", () => {
   minted = new Map();
+  saveSecrets();
   render();
 });
 
@@ -339,7 +377,10 @@ document.querySelector<HTMLInputElement>("#load-answers")!.addEventListener("cha
 el("timezone").value = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 try {
   const saved = localStorage.getItem(STORAGE_KEY);
-  if (saved) writeAnswers(JSON.parse(saved) as Partial<Answers>);
+  if (saved) {
+    writeAnswers(JSON.parse(saved) as Partial<Answers>);
+    restoredWithoutSecrets = minted.size === 0;
+  }
 } catch {
   // Unreadable or unavailable: start fresh.
 }

@@ -238,10 +238,12 @@
             <label class="field narrow">
               <span>Owner UID</span>
               <input name="puid" inputmode="numeric" value="1000" />
+              <em class="error" data-error="puid"></em>
             </label>
             <label class="field narrow">
               <span>Owner GID</span>
               <input name="pgid" inputmode="numeric" value="1000" />
+              <em class="error" data-error="pgid"></em>
             </label>
           </div>
           <p class="hint" data-show="workspaceKind=path">
@@ -268,6 +270,11 @@
 
       <section class="output" aria-live="polite">
         <div id="problems" class="problems" hidden></div>
+        <p id="secrets-note" class="notice" hidden>
+          Your answers from last time are back, but the secrets in this <code>.env</code> are new.
+          If you have already deployed, paste your current <code>.env</code> under “Updating an
+          existing deployment?” to keep the ones in use.
+        </p>
         <div class="tabs" role="tablist">
           <button type="button" role="tab" data-file="compose.yaml" aria-selected="true">
             compose.yaml

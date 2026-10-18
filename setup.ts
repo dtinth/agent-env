@@ -72,20 +72,21 @@ let outDir = ".";
 const args = process.argv.slice(2);
 
 let rl: Interface | undefined;
-let stdinClosed = false;
-let pending: ((answer: string | null) => void) | undefined;
+/** Set once the wizard is done asking, so closing stdin then is expected. */
+let finished = false;
 
-/**
- * One line from the terminal, or null once stdin has closed — the same
- * contract as the browser's prompt(), which the questions were written for.
- */
+/** One line from the terminal. Closing stdin instead ends the wizard. */
 function prompt(question: string): Promise<string | null> {
   if (!rl) {
     rl = createInterface({ input: process.stdin, output: process.stdout });
+    // Input ending mid-wizard (Ctrl-D, a closed pipe) is not an answer.
+    // Treating it as "take the default" would run the remaining questions
+    // unattended — including "Overwrite them?" — so stop, writing nothing.
     rl.on("close", () => {
-      stdinClosed = true;
-      pending?.(null);
-      pending = undefined;
+      if (finished) return;
+      note();
+      note(C.r("Input closed before the questions were answered. Nothing written."));
+      process.exit(1);
     });
     // Without a listener readline swallows Ctrl-C and just pauses, which
     // leaves the wizard hanging at a prompt nobody can answer.
@@ -95,14 +96,7 @@ function prompt(question: string): Promise<string | null> {
     });
   }
   const r = rl;
-  return new Promise((resolve) => {
-    if (stdinClosed) return resolve(null);
-    pending = resolve;
-    r.question(`${question} `, (answer) => {
-      pending = undefined;
-      resolve(answer);
-    });
-  });
+  return new Promise((resolve) => r.question(`${question} `, resolve));
 }
 
 function note(s = "") {
@@ -766,4 +760,5 @@ async function main() {
 }
 
 await main();
+finished = true;
 rl?.close();
