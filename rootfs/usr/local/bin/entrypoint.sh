@@ -13,7 +13,7 @@ USER_HOME="/home/${USER_NAME}"
 # shared, read-only installs. See the mise section below.
 export MISE_DATA_DIR="${USER_HOME}/.local/share/mise"
 export MISE_SHARED_INSTALL_DIRS=/opt/mise/installs
-export PATH="${MISE_DATA_DIR}/shims:/opt/mise/shims:${PATH}"
+export PATH="${MISE_DATA_DIR}/shims:/opt/mise/shims:${USER_HOME}/.local/bin:${PATH}"
 # Unprivileged account for caddy and oauth2-proxy.
 GATEWAY_USER_NAME="${GATEWAY_USER_NAME:-gateway}"
 GATEWAY_GROUP="${GATEWAY_GROUP:-gateway}"
@@ -555,7 +555,7 @@ chmod 644 /etc/profile.d/99-agent-env.sh
 # by PAM instead, and without them it lands in the C locale. Keep this file free
 # of comments — pam_env reads it as bare KEY=VALUE lines.
 cat > /etc/environment <<EOF
-PATH=${MISE_DATA_DIR}/shims:/opt/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+PATH=${MISE_DATA_DIR}/shims:/opt/mise/shims:${USER_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 LANG=C.UTF-8
 LC_ALL=C.UTF-8
 MISE_DATA_DIR=${MISE_DATA_DIR}
