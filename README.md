@@ -259,14 +259,15 @@ make this table wrong.
 
 `AGENT_ENV_PRESET` decides what the environment is for. A preset is a directory
 under [`rootfs/opt/agent-env/presets`](rootfs/opt/agent-env/presets): the mise
-tools it installs, the primary service it supervises (if any), how that service's
-login reaches the gateway, and any extra `agent-env` commands. The entrypoint
-itself knows nothing about OpenCode; it runs whatever the active preset provides.
+tools it installs, the primary service it supervises (if any), and any extra
+`agent-env` commands. The entrypoint itself knows nothing about OpenCode; it runs
+whatever the active preset provides, and the gateway treats every primary service
+the same way: as a plain service on `PRIMARY_PORT`.
 
 | Preset | Installs | `/` |
 |---|---|---|
 | `vanilla` (default) | nothing of its own | whatever answers on `PRIMARY_PORT` — yours, or `PRIMARY_COMMAND` |
-| `opencode` | OpenCode | OpenCode's web UI, supervised on `PRIMARY_PORT`, with its own login handled by the gateway |
+| `opencode` | OpenCode | OpenCode's web UI, supervised on `PRIMARY_PORT`, behind a small proxy that adds its login |
 
 Both keep the same desktop, terminal (a login shell), file manager, SSH and
 agent-browser. Under `opencode`, `agent-env tui` attaches the OpenCode TUI and `agent-env password`
@@ -301,23 +302,34 @@ that is up and answering its own 502 shows its own error, which is what you want
 while debugging it. A genuinely broken `/~env/` service is likewise never
 papered over.
 
-**A preset's credential never reaches anything else.** The gateway adds the
-preset's server's own login on the way through, but only for the server the
-preset itself runs: `PRIMARY_COMMAND` and anything you run on the port yourself
-get no injection, and the smoke suite asserts the import is absent there. The
-container's `HEALTHCHECK` follows the same split: it always probes the gateway,
-and probes `PRIMARY_PORT` only when the container is supervising something there.
+**A preset's credential never reaches anything else, because the gateway never
+holds one.** If a preset's server has a login of its own, the preset puts a small
+proxy in front of that server and adds the login there; to the gateway, the
+healthcheck and everything else it is just a service on `PRIMARY_PORT`. So
+`PRIMARY_COMMAND`, and anything you run on the port yourself, can never be handed
+it, and the smoke suite asserts the gateway config adds no `Authorization` header
+at all. The container's `HEALTHCHECK` always probes the gateway, and probes
+`PRIMARY_PORT` only when the container is supervising something there.
 
 ### How the OpenCode server itself is protected
 
-`opencode serve --service` registers the server as OpenCode's shared service, so
-the `opencode` CLI's default discovery finds it instead of spawning a second
-one. The service has its own HTTP basic auth (user `opencode`) with a password it
-generates itself and records in `~/.local/state/opencode/service.json`; the
-gateway reads it from there and injects it on the way through, so users
-authenticate once at the gateway and never see it. Inside a login shell the same
-value is exported as `OPENCODE_SERVER_PASSWORD`, and `agent-env password` prints
-it. Setting `OPENCODE_SERVER_PASSWORD` yourself has no effect.
+The `opencode` preset runs two things as one supervised service, the `primary`
+daemon: `opencode serve --service` on `127.0.0.1:4096`, and a Caddy on
+`PRIMARY_PORT` in front of it. `--service` registers the server as OpenCode's
+shared service, so the `opencode` CLI's default discovery finds it instead of
+spawning a second one. The server has its own HTTP basic auth (user `opencode`)
+with a password it generates itself and records in
+`~/.local/state/opencode/service.json`; the Caddy is given it at start and adds it
+to every request. Users authenticate once at the gateway and never see it. The
+password belongs to one server process, so if either half dies the daemon does too
+and pitchfork starts both again with a fresh one; and the Caddy only starts
+listening once the server is up, so `PRIMARY_PORT` answering means the whole thing
+is ready. Port 4096 is the
+server's, so `PRIMARY_PORT=4096` is refused.
+
+Inside a login shell, `OPENCODE_SERVER` points the CLI at the server itself
+(4096) with its password in `OPENCODE_SERVER_PASSWORD`, and `agent-env password`
+prints it. Setting `OPENCODE_SERVER_PASSWORD` yourself has no effect.
 
 Only ports **8080** and **22** listen on external interfaces.
 The OpenCode server, VNC, websockify, ttyd and oauth2-proxy are all bound to

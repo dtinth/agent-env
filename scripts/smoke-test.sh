@@ -70,11 +70,10 @@ runtime_var() {
   docker exec "${CONTAINER}" sh -c "sed -n 's/^$1=//p' /run/agent-env/env" 2>/dev/null | tr -d '\r'
 }
 ENV_PREFIX=""; TTYD_PATH=""; DESKTOP_PATH=""; DUFS_PATH=""; HEALTH_PATH=""; USER_WEB_PATH=""
-AGENT_ENV_PRESET=""; PRIMARY_SUPERVISED=""; PRIMARY_INJECTS=""; PRIMARY_PORT=""
+AGENT_ENV_PRESET=""; PRIMARY_SUPERVISED=""; PRIMARY_PORT=""
 if have_container; then
   AGENT_ENV_PRESET=$(runtime_var AGENT_ENV_PRESET)
   PRIMARY_SUPERVISED=$(runtime_var PRIMARY_SUPERVISED)
-  PRIMARY_INJECTS=$(runtime_var PRIMARY_INJECTS)
   USER_WEB_ENABLE=$(runtime_var USER_WEB_ENABLE)
   PRIMARY_PORT=$(runtime_var PRIMARY_PORT)
   ENV_PREFIX=$(runtime_var ENV_PREFIX)
@@ -93,7 +92,6 @@ USER_WEB_PATH="${USER_WEB_PATH:-pitchfork}"
 USER_WEB_ENABLE="${USER_WEB_ENABLE:-true}"
 AGENT_ENV_PRESET="${AGENT_ENV_PRESET:-vanilla}"
 PRIMARY_SUPERVISED="${PRIMARY_SUPERVISED:-false}"
-PRIMARY_INJECTS="${PRIMARY_INJECTS:-false}"
 PRIMARY_PORT="${PRIMARY_PORT:-3000}"
 
 head_ "Gateway routes"
@@ -144,7 +142,7 @@ root_body=$(curl -s --max-time 15 -u "${AUTH}" "${BASE}/" | md5sum | cut -d' ' -
 # This compares against an app that answers every path alike, as the preset
 # servers and the stand-in below do. A command the operator supplied decides its
 # own paths, and a file server answering 404 for a path it lacks is correct.
-if [ "${PRIMARY_SUPERVISED}" = true ] && [ "${PRIMARY_INJECTS}" != true ]; then
+if [ "${PRIMARY_SUPERVISED}" = true ] && [ "${AGENT_ENV_PRESET}" != opencode ]; then
   skip "that old paths reach the primary service (a supplied command decides its own paths)"
 else
   for path in /terminal /desktop /files /img/logo.png; do
@@ -196,20 +194,23 @@ fi
 
 head_ "Primary service at /"
 if have_container; then
-  # A preset's server may have its own basic-auth credential, injected at /. It
-  # exists to reach that server and nothing else, so if / is ever pointed at
-  # someone's own application — PRIMARY_COMMAND, or no preset at all — that header
-  # must not follow it there.
-  inj=$(docker exec "${CONTAINER}" grep -c 'import /run/agent-env/primary-auth.caddy' /etc/caddy/Caddyfile 2>/dev/null | head -1)
-  inj="${inj:-0}"
-  if [ "${PRIMARY_INJECTS}" = true ]; then
-    [[ "${inj}" -ge 1 ]] \
-      && ok "the ${AGENT_ENV_PRESET} server's credential is injected at / (${inj})" \
-      || bad "no Authorization injection at / — the ${AGENT_ENV_PRESET} server will reject requests"
-  else
-    [[ "${inj}" -eq 0 ]] \
-      && ok "no credential is injected at / (preset ${AGENT_ENV_PRESET}, supervised primary: ${PRIMARY_SUPERVISED})" \
-      || bad "${inj} Authorization injection(s) would leak a credential into another app"
+  # A preset's server may have its own login. The preset adds it in front of that
+  # server, so the gateway is plain: nothing in its config may add an
+  # Authorization header on the way to whatever answers at /, or a command the
+  # operator supplied would be handed a credential meant for something else.
+  inj=$(docker exec "${CONTAINER}" grep -c 'header_up Authorization' /etc/caddy/Caddyfile 2>/dev/null | head -1)
+  [[ "${inj:-0}" -eq 0 ]] \
+    && ok "the gateway adds no Authorization header on the way to /" \
+    || bad "${inj} Authorization header_up line(s) in the gateway config would leak a credential into another app"
+
+  if [ "${AGENT_ENV_PRESET}" = opencode ]; then
+    # ...and the preset's own proxy on the primary port does the injecting, in
+    # front of a server that on its own refuses an anonymous request.
+    pc=$(docker exec "${CONTAINER}" curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:${PRIMARY_PORT}/api/session" 2>/dev/null)
+    sc=$(docker exec "${CONTAINER}" curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:4096/api/session" 2>/dev/null)
+    [[ "${pc}" == 200 && "${sc}" == 401 ]] \
+      && ok "the preset's proxy on ${PRIMARY_PORT} adds the login its server on 4096 insists on (${pc} vs ${sc})" \
+      || bad "primary port answered ${pc:-nothing}, server answered ${sc:-nothing}; expected 200 and 401"
   fi
 
   # The healthcheck has to follow the configuration: an unconditional probe of
@@ -223,7 +224,7 @@ fi
 # A primary the operator supplied with PRIMARY_COMMAND: it must be the thing that
 # answers at /, with the whole path space, and be handed the port it is meant to
 # listen on. CI passes SMOKE_PRIMARY_EXPECT, text its command is known to serve.
-if have_container && [ "${PRIMARY_SUPERVISED}" = true ] && [ "${PRIMARY_INJECTS}" != true ]; then
+if have_container && [ "${PRIMARY_SUPERVISED}" = true ] && [ "${AGENT_ENV_PRESET}" != opencode ]; then
   expect=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER}" 2>/dev/null \
     | sed -n 's/^SMOKE_PRIMARY_EXPECT=//p' | head -1 | tr -d '\r')
   if [ "${oauth_gate}" = true ]; then
@@ -516,10 +517,11 @@ PY
       && ok "the primary service runs in the dev user's own supervisor" \
       || bad "the primary service is not running under dev: ${user_daemons:-none}"
 
-    # ...and its parent really is that supervisor, not PID 1. Found by what is
-    # listening on the primary port, so it holds for any primary.
+    # ...and its parent really is that supervisor, not PID 1. Found from the shell
+    # pitchfork starts for it, which is the same for any primary (the preset's
+    # Caddy is not traceable: its file capabilities make it non-dumpable).
     parent=$(docker exec -u dev "${CONTAINER}" bash -c '
-      pid=$(ss -ltnpH "sport = :'"${PRIMARY_PORT}"'" | grep -o "pid=[0-9]*" | head -1 | cut -d= -f2)
+      pid=$(pgrep -f "^sh -c /opt/agent-env/bin/run-primary" | head -1)
       while [ -n "$pid" ] && [ "$pid" != 1 ]; do
         args=$(ps -o args= -p "$pid")
         case "$args" in *"supervisor run"*) echo "$args"; exit 0 ;; esac
@@ -576,16 +578,17 @@ PY
 
   # A secret passed with -e stays in the container config, but it must not
   # reach the daemons — the primary service runs code the agent was asked to run.
-  # Found by what listens on the primary port, so it holds for any primary.
+  # Read from the shell pitchfork starts for it, which every primary inherits its
+  # environment from.
   leak=$(docker exec -u dev "${CONTAINER}" sh -c '
-    p=$(ss -ltnpH "sport = :'"${PRIMARY_PORT}"'" | grep -o "pid=[0-9]*" | head -1 | cut -d= -f2)
+    p=$(pgrep -f "^sh -c /opt/agent-env/bin/run-primary" | head -1)
     if [ -z "$p" ]; then echo no-process; exit 0; fi
     tr "\0" "\n" < /proc/$p/environ |
       grep -cE "^(GOOGLE_CLIENT_SECRET|GITHUB_CLIENT_SECRET|GATEWAY_PASSWORD|OAUTH2_PROXY_COOKIE_SECRET)=" || true
   ' 2>/dev/null || true)
   case "${leak}" in
     0)  ok "gateway credentials are absent from the primary service's environment" ;;
-    no-process) bad "nothing is listening on the primary port, so nothing was checked" ;;
+    no-process) bad "no primary daemon process to inspect, so nothing was checked" ;;
     "") bad "could not read the primary service's environment" ;;
     *)  bad "${leak} gateway credential(s) visible to the agent's own process" ;;
   esac

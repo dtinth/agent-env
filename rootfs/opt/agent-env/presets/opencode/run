@@ -1,16 +1,78 @@
 #!/usr/bin/env bash
-# The OpenCode v2 API + web server, as the opencode preset's primary service.
-# Bound to loopback; the gateway is the only public entrance. --service
-# registers it as the shared service, so the CLI's own discovery lands here
-# instead of on a second server.
+# The opencode preset's primary service: OpenCode v2 behind a small Caddy that
+# adds its login.
+#
+#   OpenCode      127.0.0.1:4096          --service makes it mint its own password
+#                                         and record it in ~/.local/state/opencode
+#   Caddy         127.0.0.1:PRIMARY_PORT  injects that password, proxies to :4096
+#
+# To everything outside this script — the gateway, the healthcheck, anything you
+# run yourself — the preset is just a service on PRIMARY_PORT that needs no
+# login. The credential never leaves this pair, so nothing else can be handed it.
 #
 # run-primary has already changed into the workspace and exported PRIMARY_PORT.
+# The Caddy comes up only once OpenCode is listening and has registered, so
+# "listening on PRIMARY_PORT" means both halves are ready. The password belongs to
+# one server process (OpenCode exits if its record is altered), so if either half
+# dies so does this script, and pitchfork starts the pair again with a fresh one.
 set -euo pipefail
+
+INTERNAL=4096
+state="${HOME}/.local/state/opencode/service.json"
+conf="${XDG_RUNTIME_DIR:-/tmp}/opencode-proxy.caddy"
+
 if ! command -v opencode >/dev/null 2>&1; then
   echo "opencode is not installed: the entrypoint installs it with mise at start, and could not (offline?). Run 'mise install' to retry." >&2
   exit 1
 fi
-exec opencode serve --service \
-  --hostname 127.0.0.1 \
-  --port "${PRIMARY_PORT}" \
-  ${OPENCODE_SERVE_ARGS:-}
+
+# A record left by an earlier run names the same address and an old password, so
+# it must not be mistaken for the one the server below is about to write.
+rm -f "${state}"
+
+opencode serve --service --hostname 127.0.0.1 --port "${INTERNAL}" ${OPENCODE_SERVE_ARGS:-} &
+server=$!
+proxy=""
+cleanup() {
+  trap - EXIT
+  kill "${server}" ${proxy:+"${proxy}"} 2>/dev/null || true
+  wait 2>/dev/null || true
+}
+trap cleanup EXIT
+trap 'exit 143' TERM INT
+
+pw=""
+for _ in $(seq 1 120); do
+  kill -0 "${server}" 2>/dev/null || { echo "opencode exited before it was ready" >&2; exit 1; }
+  if (exec 3<>"/dev/tcp/127.0.0.1/${INTERNAL}") 2>/dev/null; then
+    pw="$(jq -r --arg p ":${INTERNAL}" \
+      'select((.url // "") | endswith($p)) | .password // empty' "${state}" 2>/dev/null || true)"
+    [[ -n "${pw}" ]] && break
+  fi
+  sleep 1
+done
+[[ -n "${pw}" ]] || { echo "opencode did not register its login within 120s" >&2; exit 1; }
+
+b64="$(printf 'opencode:%s' "${pw}" | base64 -w0)"
+umask 077
+cat > "${conf}" <<CADDY
+{
+	admin off
+	auto_https off
+	persist_config off
+	default_bind 127.0.0.1
+}
+
+:${PRIMARY_PORT} {
+	reverse_proxy 127.0.0.1:${INTERNAL} {
+		header_up Authorization "Basic ${b64}"
+	}
+}
+CADDY
+
+caddy run --config "${conf}" --adapter caddyfile &
+proxy=$!
+
+# Either half going away ends the pair.
+wait -n "${server}" "${proxy}" || true
+exit 1

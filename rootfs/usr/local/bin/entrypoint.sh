@@ -132,7 +132,7 @@ AGENT_ENV_PRESET="${AGENT_ENV_PRESET,,}"
 PRESET_DIR="${PRESETS_DIR}/${AGENT_ENV_PRESET}"
 [[ "${AGENT_ENV_PRESET}" =~ ^[a-z0-9_-]+$ && -f "${PRESET_DIR}/preset.env" ]] \
   || die "AGENT_ENV_PRESET=${AGENT_ENV_PRESET} is not a preset (available: $(cd "${PRESETS_DIR}" && ls -d */ | tr -d / | paste -sd, -))"
-PRESET_TITLE=""; PRESET_SUMMARY=""
+PRESET_TITLE=""; PRESET_SUMMARY=""; PRESET_RESERVED_PORT=""
 # shellcheck disable=SC1091
 . "${PRESET_DIR}/preset.env"
 
@@ -152,11 +152,6 @@ if [[ "${PRIMARY_SUPERVISED}" == true ]] && ! is_true "${USER_SUPERVISOR_ENABLE:
   warn "USER_SUPERVISOR_ENABLE is off, so nothing starts the ${PRIMARY_COMMAND:+PRIMARY_COMMAND}${PRIMARY_COMMAND:-${AGENT_ENV_PRESET} server}; run it yourself on PRIMARY_PORT"
   PRIMARY_SUPERVISED=false
 fi
-# The gateway adds the primary service's own credential on the way through, but
-# only when the preset ships the means to keep it current, and only for the
-# server the preset itself runs.
-PRIMARY_INJECTS=false
-if [[ "${PRIMARY_SUPERVISED}" == true && -z "${PRIMARY_COMMAND}" && -x "${PRESET_DIR}/auth" ]]; then PRIMARY_INJECTS=true; fi
 
 # Where everything starts: the agent, the terminals, the file manager, the
 # user's own daemons.
@@ -167,6 +162,9 @@ WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
 # workspace runs there takes its place. 3000 is what Next, Rails, Vite preview and
 # most `npm start` templates pick.
 PRIMARY_PORT="${PRIMARY_PORT:-3000}"
+if [[ -n "${PRESET_RESERVED_PORT}" && "${PRIMARY_PORT}" == "${PRESET_RESERVED_PORT}" ]]; then
+  die "PRIMARY_PORT=${PRIMARY_PORT} collides with the ${AGENT_ENV_PRESET} preset's own server; pick another port"
+fi
 
 SSH_ENABLE="${SSH_ENABLE:-true}"
 SSH_PORT="${SSH_PORT:-22}"
@@ -500,20 +498,6 @@ MERGE
 
 chown -R "${PUID}:${PGID}" "$(dirname "${user_pf_config}")"
 
-# The primary service's credential
-# ---------------------------------------------------------------------------
-# A preset whose server has its own login keeps the gateway's copy current with
-# its `auth` daemon, which writes this snippet. It stays empty, and is imported
-# by nothing, for every other primary.
-PRIMARY_AUTH_SNIPPET="${RUN_DIR}/primary-auth.caddy"
-: > "${PRIMARY_AUTH_SNIPPET}"
-chown root:"${GATEWAY_GROUP}" "${PRIMARY_AUTH_SNIPPET}"
-chmod 640 "${PRIMARY_AUTH_SNIPPET}"
-if [[ -n "${OPENCODE_SERVER_PASSWORD:-}" ]]; then
-  log "WARN OPENCODE_SERVER_PASSWORD is ignored: the OpenCode service generates its own password"
-fi
-unset OPENCODE_SERVER_PASSWORD
-
 # What run-primary runs for PRIMARY_COMMAND. Not in the env file below: `agent-env`
 # sources that as shell, and a command line is the one value that must not be.
 if [[ -n "${PRIMARY_COMMAND}" ]]; then
@@ -537,7 +521,6 @@ fi
   echo "USER_WEB_ENABLE=$(canon "${USER_WEB_ENABLE}")"
   echo "AGENT_ENV_PRESET=${AGENT_ENV_PRESET}"
   echo "PRIMARY_SUPERVISED=$(canon "${PRIMARY_SUPERVISED}")"
-  echo "PRIMARY_INJECTS=$(canon "${PRIMARY_INJECTS}")"
     echo "PRIMARY_PORT=${PRIMARY_PORT}"
   echo "WORKSPACE_DIR=${WORKSPACE_DIR}"
   echo "SSH_PORT=${SSH_PORT}"
@@ -1235,23 +1218,13 @@ EOF
 			}
 EOF
     if is_true "${PRIMARY_SUPERVISED}"; then
-      # Everything else: the primary service. When its preset ships a credential
-      # for it, that goes in here so users never see it.
-      #
-      # The injection belongs to the preset's own server and must never follow / to
-      # anything else: it would hand a credential to someone's application, and
-      # break anything that does its own Authorization. The import is therefore
-      # written only for a primary the preset runs, never for PRIMARY_COMMAND.
-      local primary_upstream="reverse_proxy 127.0.0.1:${PRIMARY_PORT}"
-      if is_true "${PRIMARY_INJECTS}"; then
-        primary_upstream="reverse_proxy 127.0.0.1:${PRIMARY_PORT} {
-					import ${PRIMARY_AUTH_SNIPPET}
-				}"
-      fi
+      # Everything else: the primary service, plain. Whatever login a preset's
+      # server needs is added by the preset itself, in front of that server, so
+      # nothing here knows about it and nothing here could pass it on.
       cat <<EOF
 
 			handle {
-				${primary_upstream}
+				reverse_proxy 127.0.0.1:${PRIMARY_PORT}
 			}
 		}
 	}
@@ -1502,12 +1475,6 @@ EOF
       'retry = true' \
       'env = { HOME = "/var/lib/caddy", XDG_CONFIG_HOME = "/var/lib/caddy", XDG_DATA_HOME = "/var/lib/caddy" }' \
       "ready_http = { url = \"http://127.0.0.1:${GATEWAY_PORT}/${HEALTH_PATH}\", timeout = \"60s\" }"
-
-    if is_true "${PRIMARY_INJECTS}"; then
-      emit_daemon primary-auth "${PRESET_DIR}/auth" \
-        'depends = ["caddy"]' \
-        'retry = true'
-    fi
 
     if is_true "${USER_SUPERVISOR_ENABLE}"; then
       local user_sup_ready="ready_cmd = { run = \"true\", timeout = \"5s\" }"

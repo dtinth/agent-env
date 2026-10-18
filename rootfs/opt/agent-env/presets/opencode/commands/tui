@@ -19,8 +19,9 @@ cd "${workdir}" || cd "${HOME}"
 # shellcheck disable=SC1091
 [[ -r /etc/profile ]] && . /etc/profile
 
-port="$(value PRIMARY_PORT)"
-port="${port:-${PRIMARY_PORT:-3000}}"
+# The server itself, not the preset's proxy in front of it: the CLI brings its
+# own password (login.sh), and this is where it registered.
+port=4096
 
 # The server is a daemon of the user's own supervisor now, so it may still be
 # coming up when a browser opens the terminal. Wait for it rather than showing a
