@@ -10,9 +10,11 @@
  * the setup.ts wizard and the web configurator in web/. The one source of variation is the secrets it mints when
  * `existingEnv` has none; pass `randomSecret` to make that deterministic too.
  *
- * The output is a compose.yaml and a .env and nothing else: sidecar config is
- * inlined in compose.yaml as `configs:` content, so the pair can be pasted
- * into Dockge, Dokploy, or any other tool that takes a compose stack.
+ * The deployment is a compose.yaml and a .env and nothing else: sidecar
+ * config is inlined in compose.yaml as `configs:` content, so the pair can be
+ * pasted into Dockge, Dokploy, or any other tool that takes a compose stack.
+ * The third file, agent-env.setup.json, is not deployed; it records the
+ * answers so the next run can offer them as defaults.
  */
 
 export const VERSION = 1;
@@ -423,6 +425,16 @@ export function validate(a: Answers): Problem[] {
   if (!a.opencodeEnable) port("primaryPort", a.primaryPort);
   port("sshPort", a.sshPort);
   if (a.workspace?.kind === "path") {
+    // The entrypoint hands these to usermod/groupmod, which refuse anything
+    // but a plain non-negative integer — and refusing stops the container.
+    for (const [key, id] of [
+      ["puid", a.workspace.puid],
+      ["pgid", a.workspace.pgid],
+    ] as const) {
+      if (id !== undefined && !(Number.isInteger(id) && id >= 0)) {
+        field(key, "a numeric user or group ID, like 1000");
+      }
+    }
     required("workspacePath", a.workspace.path);
     if (a.workspace.path) {
       field("workspacePath", CHECKS.workspacePath(a.workspace.path));
@@ -537,6 +549,19 @@ export function renderEnv(
   put("TZ", a.timezone);
   L.push("");
 
+  // Every allow list is decided by this run, whichever sign-in is chosen. One
+  // carried through from another mode would sit in .env and come back into
+  // force the moment AUTH_MODE pointed at it again.
+  for (const k of [
+    "ALLOWED_EMAILS",
+    "ALLOWED_EMAIL_DOMAINS",
+    "GITHUB_USERS",
+    "GITHUB_ORG",
+    "GITHUB_TEAM",
+  ]) {
+    decided.add(k);
+  }
+
   L.push("# --- Who gets in ---");
   put("AUTH_MODE", a.authMode);
   if (a.authMode === "google") {
@@ -579,6 +604,8 @@ export function renderEnv(
   L.push("");
 
   L.push("# --- Access ---");
+  // Decided either way: a key removed from the answers is revoked, not kept.
+  decided.add("SSH_AUTHORIZED_KEYS");
   if (a.sshKeys) put("SSH_AUTHORIZED_KEYS", a.sshKeys);
   else L.push("# SSH_AUTHORIZED_KEYS=ssh-ed25519 AAAA... you@host");
   L.push("");
@@ -734,7 +761,9 @@ export function renderCompose(a: Answers, envKeys: string[]): string {
 
   L.push("    volumes:");
   if (a.workspace.kind === "path") {
-    L.push(`      - ${yamlString(`${a.workspace.path}:/workspace`)}`);
+    // Normalised here too, not only by the front ends: any caller of generate
+    // gets a bind mount, never an undeclared named volume.
+    L.push(`      - ${yamlString(`${hostPathFor(a.workspace.path ?? "")}:/workspace`)}`);
   } else {
     L.push("      - workspace:/workspace");
   }
