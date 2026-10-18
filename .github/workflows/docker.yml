@@ -70,11 +70,12 @@ jobs:
 
             # A generated Caddyfile that compose accepts can still be one Caddy
             # refuses, and that failure only shows up at first start in domain
-            # mode. Ask Caddy itself.
-            if [ -f "${dir}/Caddyfile" ]; then
-              docker run --rm -v "${dir}/Caddyfile:/tmp/Caddyfile:ro" \
-                --entrypoint caddy caddy:2-alpine \
-                validate --config /tmp/Caddyfile --adapter caddyfile
+            # mode. Ask Caddy itself, through compose, so it reads the config
+            # inlined in compose.yaml exactly as a real start would.
+            if grep -q '^  caddyfile:$' "${dir}/compose.yaml"; then
+              ( cd "${dir}" && docker compose run --rm --no-deps \
+                --entrypoint caddy caddy \
+                validate --config /etc/caddy/Caddyfile --adapter caddyfile )
               echo "::notice::${mode} Caddyfile is valid"
             fi
           done
