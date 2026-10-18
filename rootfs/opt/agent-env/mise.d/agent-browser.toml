@@ -1,0 +1,13 @@
+# agent-browser, for every preset: the CLI that drives the headed Chromium on the
+# virtual display. Not an agent, so no preset owns it.
+#
+# The entrypoint copies each file in this directory to ~/.config/mise/conf.d/ on
+# every start, so edits there are lost: to pin a version, declare the tool in
+# ~/.config/mise/config.toml, which takes precedence. Installs go into the home
+# volume and are upgraded at every start.
+#
+# `allow_builds` lets the package's postinstall script run; mise skips scripts by
+# default, and this one uses its own to select a native binary.
+
+[tools]
+"npm:agent-browser" = { version = "latest", allow_builds = ["agent-browser"] }

@@ -261,10 +261,11 @@ itself knows nothing about OpenCode; it runs whatever the active preset provides
 
 | Preset | Installs | `/` |
 |---|---|---|
-| `opencode` (default) | OpenCode, agent-browser | OpenCode's web UI, supervised on `PRIMARY_PORT`, with its own login handled by the gateway |
-| `vanilla` | agent-browser | whatever answers on `PRIMARY_PORT` — yours, or `PRIMARY_COMMAND` |
+| `opencode` (default) | OpenCode | OpenCode's web UI, supervised on `PRIMARY_PORT`, with its own login handled by the gateway |
+| `vanilla` | nothing of its own | whatever answers on `PRIMARY_PORT` — yours, or `PRIMARY_COMMAND` |
 
-Both keep the same desktop, terminal (a login shell), file manager and SSH. Under
+Both keep the same desktop, terminal (a login shell), file manager, SSH and
+agent-browser. Under
 `opencode`, `agent-env tui` attaches the OpenCode TUI and `agent-env password`
 prints the server's password; those commands belong to the preset and do not
 exist elsewhere.
@@ -719,24 +720,27 @@ image's tools, and the volume keeps yours.
 
 #### The agent tools
 
-The preset's tools are not in the image. They move faster than it does, so the
-entrypoint copies the active preset's `tools.toml` to
-`~/.config/mise/conf.d/00-agent-env-preset.toml` on every start, installs what it
-declares, and runs `mise upgrade` on each tool. For the `opencode` preset:
+The agent tools are not in the image. They move faster than it does, so on every
+start the entrypoint copies two kinds of file to `~/.config/mise/conf.d/`,
+installs what they declare, and runs `mise upgrade` on each tool:
 
-```toml
-[tools]
-"npm:@opencode/cli" = { version = "latest", allow_builds = ["@opencode/cli"] }
-"npm:agent-browser" = { version = "latest", allow_builds = ["agent-browser"] }
-```
+- **Every preset:** each file in
+  [`rootfs/opt/agent-env/mise.d`](rootfs/opt/agent-env/mise.d), as
+  `00-agent-env-<name>.toml`. Today that is `agent-browser`, so a browser works
+  the same way whichever preset you chose.
+- **The active preset:** its own `tools.toml`, as `00-agent-env-preset.toml` — for
+  `opencode`, `"npm:@opencode/cli" = { version = "latest", allow_builds = [...] }`.
+  A preset with nothing of its own, like `vanilla`, has no such file.
 
-That file is the image's and is rewritten each start, which is how switching
-preset switches the tools. (An earlier release seeded a file of your own,
-`conf.d/agent-env.toml`, with these same two tools. It is removed if you never
-changed it; if you edited it, it is left alone and its tools stay declared under
-any preset, so delete it when you want them gone.) To pin a version, declare the tool yourself in
-`~/.config/mise/config.toml` (`"npm:@opencode/cli" = "2.0.32"`), which takes
-precedence and stops the upgrades for that tool.
+The old copies are removed first, which is how switching preset switches which
+tools are declared and kept current. It does not uninstall what the old preset
+already put in the volume (`mise uninstall npm:@opencode/cli` does). These files are the image's and are rewritten each start. (An earlier
+release seeded a file of your own, `conf.d/agent-env.toml`, with the same two
+tools. It is removed if you never changed it; if you edited it, it is left alone
+and its tools stay declared under any preset, so delete it when you want them
+gone.) To pin a version, declare the tool yourself in `~/.config/mise/config.toml`
+(`"npm:@opencode/cli" = "2.0.32"`), which takes precedence and stops the upgrades
+for that tool.
 
 The first start on a new volume downloads them, which takes a minute or so, and
 needs the npm registry. If a later start cannot reach it, the tools already in
