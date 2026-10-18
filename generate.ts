@@ -18,6 +18,9 @@
  */
 
 export const VERSION = 1;
+
+export const PRESETS = ["opencode", "vanilla"] as const;
+export type Preset = (typeof PRESETS)[number];
 export const ANSWERS_FILE = "agent-env.setup.json";
 
 export type Mode = "local" | "caddy" | "tailscale";
@@ -48,8 +51,12 @@ export interface Answers {
   allowedEmails?: string;
   allowedEmailDomains?: string;
   gatewayUser?: string;
-  opencodeEnable: boolean;
+  /** What the environment is for; see rootfs/opt/agent-env/presets. */
+  preset: Preset;
+  /** Where / goes when no preset server answers it (vanilla only). */
   primaryPort?: number;
+  /** A command the container supervises at / (vanilla only). */
+  primaryCommand?: string;
   rootlessDocker: boolean;
   sshKeys: string;
   sshPort?: number;
@@ -131,7 +138,9 @@ export function parseEnvFile(text: string): Record<string, EnvEntry> {
 function envValue(v: string): string {
   // A backslash is an escape to dotenv even unquoted, so "pa\ss" comes back as
   // "pass" unless it is quoted and the backslash doubled.
-  if (v === "" || (/^[^\s"'#\\][^#\\]*$/.test(v) && v === v.trim())) return v;
+  if (v === "" || (/^[^\s"'#\\$][^#\\$]*$/.test(v) && v === v.trim())) return v;
+  // Compose expands $VAR in a double-quoted .env value; single quotes are literal.
+  if (v.includes("$") && !v.includes("'")) return `'${v}'`;
   return '"' + v.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
 }
 // ---------------------------------------------------------------------------
@@ -396,7 +405,24 @@ export function validate(a: Answers): Problem[] {
       field("githubTeam", CHECKS.githubTeam(a.githubTeam, a.githubOrg));
     }
   }
-  if (!a.opencodeEnable) port("primaryPort", a.primaryPort);
+  if (a.preset === "vanilla") port("primaryPort", a.primaryPort);
+  if (a.primaryCommand) {
+    if (a.preset !== "vanilla") {
+      field(
+        "primaryCommand",
+        "only the vanilla preset takes one; the opencode preset runs its own server",
+      );
+    } else if (/[\r\n]/.test(a.primaryCommand)) {
+      field("primaryCommand", "one line only");
+    } else if (a.primaryCommand.includes("$") && a.primaryCommand.includes("'")) {
+      // Compose expands $ in a .env value unless it is single-quoted, and a
+      // single-quoted value cannot hold a '.
+      field(
+        "primaryCommand",
+        "cannot contain both $ and ' — put the command in a script and run that",
+      );
+    }
+  }
   port("sshPort", a.sshPort);
   if (a.workspace?.kind === "path") {
     // The entrypoint hands these to usermod/groupmod, which refuse anything
@@ -550,8 +576,11 @@ export function renderEnv(
   L.push("");
 
   L.push("# --- What lives at / ---");
-  put("OPENCODE_ENABLE", bool(a.opencodeEnable));
-  if (!a.opencodeEnable) put("PRIMARY_PORT", String(a.primaryPort ?? 3000));
+  put("AGENT_ENV_PRESET", a.preset);
+  if (a.preset === "vanilla") {
+    put("PRIMARY_PORT", String(a.primaryPort ?? 3000));
+    if (a.primaryCommand) put("PRIMARY_COMMAND", a.primaryCommand);
+  }
   L.push("");
 
   L.push("# --- Services ---");

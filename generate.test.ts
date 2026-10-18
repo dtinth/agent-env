@@ -13,7 +13,7 @@ const BASIC: Answers = {
   publicUrl: "http://localhost:8080",
   authMode: "basic",
   gatewayUser: "dev",
-  opencodeEnable: true,
+  preset: "opencode",
   rootlessDocker: false,
   sshKeys: "",
   sshPort: 2222,

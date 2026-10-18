@@ -11,7 +11,7 @@ One container gives you:
 
 | What | Where | Notes |
 |---|---|---|
-| **OpenCode v2 web UI + API** | `<PUBLIC_URL>/` | `opencode serve`; optional — see below |
+| **The primary service** | `<PUBLIC_URL>/` | OpenCode v2 by default; a different preset or your own command is optional — see [Presets](#presets-and-what-lives-at-) |
 | **Terminal** in the browser | `<PUBLIC_URL>/~env/terminal` | a login shell over ttyd; `agent-env tui` attaches the OpenCode TUI |
 | **XFCE desktop** in the browser | `<PUBLIC_URL>/~env/desktop` | noVNC over x11vnc |
 | **pitchfork dashboard** | `<PUBLIC_URL>/pitchfork` | start/stop/logs for your own daemons |
@@ -251,41 +251,61 @@ generates it — which is the whole reason for choosing it. The prefix is fixed
 rather than configurable: it is a documented contract, and a knob would only
 make this table wrong.
 
-### What lives at `/`
+### Presets, and what lives at `/`
 
-OpenCode is the default occupant of `/`, not a requirement of the image. Set
-`OPENCODE_ENABLE=false` and `/` proxies to `PRIMARY_PORT` (default `3000`)
-instead — whatever the workspace is running. OpenCode itself listens on that
-same port when enabled, so `PRIMARY_PORT` is the one knob for "what is at `/`":
+`AGENT_ENV_PRESET` decides what the environment is for. A preset is a directory
+under [`rootfs/opt/agent-env/presets`](rootfs/opt/agent-env/presets): the mise
+tools it installs, the primary service it supervises (if any), how that service's
+login reaches the gateway, and any extra `agent-env` commands. The entrypoint
+itself knows nothing about OpenCode; it runs whatever the active preset provides.
+
+| Preset | Installs | `/` |
+|---|---|---|
+| `opencode` (default) | OpenCode, agent-browser | OpenCode's web UI, supervised on `PRIMARY_PORT`, with its own login handled by the gateway |
+| `vanilla` | agent-browser | whatever answers on `PRIMARY_PORT` — yours, or `PRIMARY_COMMAND` |
+
+Both keep the same desktop, terminal (a login shell), file manager and SSH. Under
+`opencode`, `agent-env tui` attaches the OpenCode TUI and `agent-env password`
+prints the server's password; those commands belong to the preset and do not
+exist elsewhere.
+
+With `vanilla`, `/` proxies to `PRIMARY_PORT` (default `3000`). Either start
+something there yourself, or have the container run it for you:
 
 ```
-OPENCODE_ENABLE=false
+AGENT_ENV_PRESET=vanilla
 PRIMARY_PORT=3000
+PRIMARY_COMMAND=npm run dev -- --port $PORT
 ```
 
-With nothing listening there yet, `/` serves the `/~env/` index instead of a
+`PRIMARY_COMMAND` runs under a login shell in the workspace as the dev user, in
+the dev user's own supervisor as the `primary` daemon, with the port in `$PORT`.
+It is restarted if it exits, and `agent-env logs primary` follows it. Only
+`vanilla` takes one: every other preset already has a primary service of its own.
+
+With nothing listening on the port, `/` serves the `/~env/` index instead of a
 bare 502, so an empty workstation explains itself. The status code stays `502` —
 the page renders, but nothing is pretending there is an application when there
 isn't, so an ingress health check pointed at `/` still reports the truth. Start
 your dev server and it takes over `/` and everything below it immediately; no
-gateway restart, and the reserved prefix is untouched.
+gateway restart, and the reserved prefix is untouched. That fallback only exists
+while the container supervises nothing: a `primary` that is down surfaces as a
+real 502.
 
 Caddy falls back only for errors *it* generates — a refused connection. An app
 that is up and answering its own 502 shows its own error, which is what you want
 while debugging it. A genuinely broken `/~env/` service is likewise never
 papered over.
 
-One other thing follows `OPENCODE_ENABLE`:
+**A preset's credential never reaches anything else.** The gateway adds the
+preset's server's own login on the way through, but only for the server the
+preset itself runs: `PRIMARY_COMMAND` and anything you run on the port yourself
+get no injection, and the smoke suite asserts the import is absent there. The
+container's `HEALTHCHECK` follows the same split: it always probes the gateway,
+and probes `PRIMARY_PORT` only when the container is supervising something there.
 
-- **No credential is injected at `/`.** The gateway normally adds the OpenCode
-  server's own basic-auth header on the way through. That credential exists to
-  reach OpenCode and nothing else — it is never sent to a primary service that
-  isn't OpenCode, and the smoke suite asserts the injection is absent.
-
-The container's `HEALTHCHECK` follows the same setting: it always probes the
-gateway, and probes the OpenCode port only when OpenCode is supposed to be
-there. It deliberately does *not* probe `PRIMARY_PORT` — nothing is required to
-be listening on it.
+`OPENCODE_ENABLE` is gone; while it is set and `AGENT_ENV_PRESET` is not, the
+entrypoint maps it (`true` to `opencode`, `false` to `vanilla`) and warns.
 
 ### How the OpenCode server itself is protected
 
@@ -384,9 +404,10 @@ See [`.env.example`](.env.example) for the annotated list. The essentials:
 | `GITHUB_USERS` / `GITHUB_ORG` / `GITHUB_TEAM` | — | The `github` allow list; at least one, or an `ALLOWED_EMAIL*` |
 | `ALLOWED_EMAILS`, `ALLOWED_EMAIL_DOMAINS` | — | Who may sign in |
 | `OAUTH2_PROXY_COOKIE_SECRET` | generated | Set it to survive restarts cleanly |
-| `OPENCODE_ENABLE` | `true` | Whether OpenCode occupies `/` at all |
+| `AGENT_ENV_PRESET` | `opencode` | What the environment is for: `opencode` or `vanilla` (see [Presets](#presets-and-what-lives-at-)) |
+| `PRIMARY_COMMAND` | — | `vanilla` only: a command to run and supervise at `/`, with the port in `$PORT` |
 | `WORKSPACE_DIR` | `/workspace` | Where the agent, terminals and file manager start (formerly `OPENCODE_WORKDIR`, still read) |
-| `PRIMARY_PORT` | `3000` | The port `/` proxies to. OpenCode listens here when enabled (formerly `OPENCODE_PORT`, still read) |
+| `PRIMARY_PORT` | `3000` | The port `/` proxies to. The `opencode` preset's server listens here (formerly `OPENCODE_PORT`, still read) |
 | `SSH_AUTHORIZED_KEYS` | — | Newline- or `;`-separated public keys |
 | `SSH_PASSWORD` | — | Enables password auth (prefer keys) |
 | `DESKTOP_ENABLE` | `true` | XFCE + noVNC |
@@ -463,7 +484,7 @@ docker exec -it agent-env agent-env logs caddy  # follow one service
 docker exec -it agent-env agent-env top         # pitchfork's interactive dashboard
 docker exec -it agent-env agent-env config      # the rendered gateway config
 docker exec -it agent-env agent-env daemons     # the rendered daemon definitions
-docker exec -it agent-env agent-env restart opencode
+docker exec -it agent-env agent-env restart primary
 docker exec -it agent-env agent-env tui         # attach the OpenCode TUI from a shell
 ```
 
@@ -698,11 +719,10 @@ image's tools, and the volume keeps yours.
 
 #### The agent tools
 
-OpenCode and agent-browser are not in the image. They move faster than it does,
-so they are declared in `~/.config/mise/conf.d/agent-env.toml` on the home
-volume — seeded from [`mise/agent-tools.toml`](mise/agent-tools.toml) the first
-time it is missing — and the entrypoint installs them and runs `mise upgrade` on
-them at every start:
+The preset's tools are not in the image. They move faster than it does, so the
+entrypoint copies the active preset's `tools.toml` to
+`~/.config/mise/conf.d/00-agent-env-preset.toml` on every start, installs what it
+declares, and runs `mise upgrade` on each tool. For the `opencode` preset:
 
 ```toml
 [tools]
@@ -710,14 +730,15 @@ them at every start:
 "npm:agent-browser" = { version = "latest", allow_builds = ["agent-browser"] }
 ```
 
-That file is yours; the image never overwrites it. Pin a version
-(`version = "2.0.32"`) to stop upgrading, or delete a line to stop installing the
-tool. With `OPENCODE_ENABLE=false`, OpenCode is not installed at all.
+That file is the image's and is rewritten each start, which is how switching
+preset switches the tools. To pin a version, declare the tool yourself in
+`~/.config/mise/config.toml` (`"npm:@opencode/cli" = "2.0.32"`), which takes
+precedence and stops the upgrades for that tool.
 
 The first start on a new volume downloads them, which takes a minute or so, and
 needs the npm registry. If a later start cannot reach it, the tools already in
 the volume are used and the entrypoint logs a warning. If a *first* start cannot,
-OpenCode has nothing to run; `agent-env logs opencode` says so, and it retries.
+OpenCode has nothing to run; `agent-env logs primary` says so, and it retries.
 
 The image's own tools are declared in [`mise/config.toml`](mise/config.toml) and
 pinned in [`mise/mise.lock`](mise/mise.lock), which records an exact version and
@@ -932,7 +953,7 @@ Chromium needs a large `/dev/shm`: keep `--shm-size=2g` (compose already sets it
 - **OpenCode is installed on first start, not built in.** It comes from
   `@opencode/cli` through mise into the home volume and is upgraded at every
   start (see [The agent tools](#the-agent-tools)); pin a version in
-  `~/.config/mise/conf.d/agent-env.toml` to stop that.
+  `~/.config/mise/config.toml` to stop that.
   `OPENCODE_DISABLE_AUTOUPDATE=1` is set so OpenCode never self-updates in
   between.
 - **Image size is ~3 GB.** Most of it is XFCE, Chromium and a compiler toolchain.

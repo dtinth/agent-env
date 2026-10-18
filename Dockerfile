@@ -1,14 +1,15 @@
 # syntax=docker/dockerfile:1.7
 #
-# agent-env — a ready-to-use OpenCode v2 workstation image.
+# agent-env — a ready-to-use, browser-reachable agent workstation image.
 #
-#   * OpenCode v2 API + web server (`opencode serve`)
+#   * a preset (AGENT_ENV_PRESET): OpenCode v2 by default, or none (vanilla)
 #   * SSH server
 #   * XFCE desktop on a virtual display, reachable over noVNC
 #   * ttyd, serving a login shell in the browser
 #   * Google or GitHub sign-in (oauth2-proxy) in front of all of it, via Caddy
-#   * mise as the language/tool manager; OpenCode and agent-browser are
-#     installed through it into the home volume at start, not baked in
+#   * mise as the language/tool manager; the preset's agent tools and
+#     agent-browser are installed through it into the home volume at start,
+#     not baked in
 #   * system Chromium, wired to the virtual display
 #
 FROM debian:trixie-slim
@@ -172,9 +173,6 @@ RUN set -eux; \
 
 # Declared and checksum-locked in the repo; see mise/config.toml.
 COPY mise/config.toml mise/mise.lock /etc/mise/
-# The agent tools, as a template for the home volume rather than part of the
-# image's own toolchain; see the entrypoint.
-COPY mise/agent-tools.toml /etc/agent-env/agent-tools.toml
 
 RUN chown -R "${USER_UID}:${USER_GID}" /opt/mise /etc/mise
 
@@ -185,9 +183,10 @@ ENV USER_NAME=${USER_NAME} \
 # ---------------------------------------------------------------------------
 # Node and dufs (via mise), installed as the user.
 #
-# OpenCode and agent-browser are deliberately not here. They move faster than
-# this image does, so they are installed into the home volume at first start and
-# upgraded at every start; see mise/agent-tools.toml and the entrypoint.
+# The agent tools are deliberately not here. They move faster than this image
+# does, so the active preset's tools are installed into the home volume at first
+# start and upgraded at every start; see rootfs/opt/agent-env/presets and the
+# entrypoint.
 # ---------------------------------------------------------------------------
 USER ${USER_NAME}
 WORKDIR /home/${USER_NAME}
@@ -289,8 +288,7 @@ ENV TZ=UTC \
 EXPOSE 8080 22 60000-60010/udp
 
 # The probe follows the configuration rather than assuming it: the gateway
-# always, plus the OpenCode server only when OPENCODE_ENABLE says it should be
-# there. See rootfs/opt/agent-env/bin/healthcheck.
+# always, plus the primary service when the image is supervising one. See rootfs/opt/agent-env/bin/healthcheck.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=240s --retries=3 \
     CMD ["/opt/agent-env/bin/healthcheck"]
 

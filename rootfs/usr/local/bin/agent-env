@@ -31,23 +31,35 @@ RUN_ENV=/run/agent-env/env
 # shellcheck disable=SC1090
 [[ -r "${RUN_ENV}" ]] && . "${RUN_ENV}"
 
+# The active preset's own subcommands, one help line each, from the "# help:"
+# comment at the top of each script in presets/<name>/commands/.
+PRESET_COMMANDS="/opt/agent-env/presets/${AGENT_ENV_PRESET:-opencode}/commands"
+preset_commands() {
+  local f name help
+  for f in "${PRESET_COMMANDS}"/*; do
+    [[ -x "${f}" ]] || continue
+    name="${f##*/}"
+    help="$(sed -n 's/^# help: //p' "${f}" | head -1)"
+    printf '  agent-env %-20s%s\n' "${name}" "${help}"
+  done
+}
+
 usage() {
   cat <<EOF
-agent-env — manage this OpenCode v2 workstation
+agent-env — manage this workstation
 
   agent-env status              Show the state of every service
   agent-env urls                Print the URLs this container serves
-  agent-env password            Print the OpenCode server password
   agent-env logs [service]      Follow logs (all services, or one)
-  agent-env restart <service>   Restart one service (e.g. opencode, desktop, caddy)
+  agent-env restart <service>   Restart one service (e.g. primary, desktop, caddy)
   agent-env start <service>     Start one service
   agent-env stop <service>      Stop one service
-  agent-env tui                 Attach the OpenCode v2 TUI
   agent-env top                 pitchfork's interactive dashboard
   agent-env config              Show the rendered gateway configuration
   agent-env daemons             Show the rendered daemon definitions
   agent-env mine                List *your* daemons, not the system's
   agent-env x-cookie            Print the X cookie, to drive the display remotely
+$(preset_commands)
 
 The system services above belong to the root supervisor (these commands sudo
 into it for you). Your own daemons live in a second, unprivileged supervisor:
@@ -78,8 +90,8 @@ case "${1:-help}" in
   urls)
     base="${PUBLIC_URL:-http://localhost:8080}"
     prefix="${ENV_PREFIX:-~env}"
-    if [[ "${OPENCODE_ENABLE:-true}" == "true" ]]; then
-      printf 'OpenCode web UI : %s/\n' "${base}"
+    if [[ "${PRIMARY_SUPERVISED:-true}" == "true" ]]; then
+      printf 'Primary service : %s/  (%s, on 127.0.0.1:%s)\n' "${base}" "${AGENT_ENV_PRESET:-opencode}" "${PRIMARY_PORT:-3000}"
     else
       printf 'Primary service : %s/  (proxies to 127.0.0.1:%s)\n' "${base}" "${PRIMARY_PORT:-3000}"
     fi
@@ -102,9 +114,6 @@ case "${1:-help}" in
     fi
     true
     ;;
-  password)
-    jq -r '.password // empty' "/home/${USER_NAME:-dev}/.local/state/opencode/service.json"
-    ;;
   logs)
     if [[ -n "${2:-}" ]]; then exec pitchfork logs --follow "$2"; fi
     exec pitchfork logs --follow
@@ -112,9 +121,6 @@ case "${1:-help}" in
   restart|start|stop)
     [[ -n "${2:-}" ]] || { echo "usage: agent-env $1 <service>" >&2; exit 1; }
     exec pitchfork "$1" "$2"
-    ;;
-  tui)
-    exec /opt/agent-env/bin/tui
     ;;
   top)
     exec pitchfork tui
@@ -136,6 +142,10 @@ case "${1:-help}" in
     usage
     ;;
   *)
+    # A subcommand the active preset brings with it.
+    if [[ "$1" =~ ^[a-z][a-z0-9-]*$ && -x "${PRESET_COMMANDS}/$1" ]]; then
+      exec "${PRESET_COMMANDS}/$1" "${@:2}"
+    fi
     echo "unknown command: $1" >&2
     usage >&2
     exit 1

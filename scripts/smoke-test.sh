@@ -70,9 +70,11 @@ runtime_var() {
   docker exec "${CONTAINER}" sh -c "sed -n 's/^$1=//p' /run/agent-env/env" 2>/dev/null | tr -d '\r'
 }
 ENV_PREFIX=""; TTYD_PATH=""; DESKTOP_PATH=""; DUFS_PATH=""; HEALTH_PATH=""; USER_WEB_PATH=""
-OPENCODE_ENABLE=""; PRIMARY_PORT=""
+AGENT_ENV_PRESET=""; PRIMARY_SUPERVISED=""; PRIMARY_INJECTS=""; PRIMARY_PORT=""
 if have_container; then
-  OPENCODE_ENABLE=$(runtime_var OPENCODE_ENABLE)
+  AGENT_ENV_PRESET=$(runtime_var AGENT_ENV_PRESET)
+  PRIMARY_SUPERVISED=$(runtime_var PRIMARY_SUPERVISED)
+  PRIMARY_INJECTS=$(runtime_var PRIMARY_INJECTS)
   USER_WEB_ENABLE=$(runtime_var USER_WEB_ENABLE)
   PRIMARY_PORT=$(runtime_var PRIMARY_PORT)
   ENV_PREFIX=$(runtime_var ENV_PREFIX)
@@ -89,7 +91,9 @@ DUFS_PATH="${DUFS_PATH:-${ENV_PREFIX}/files}"
 HEALTH_PATH="${HEALTH_PATH:-${ENV_PREFIX}/healthz}"
 USER_WEB_PATH="${USER_WEB_PATH:-pitchfork}"
 USER_WEB_ENABLE="${USER_WEB_ENABLE:-true}"
-OPENCODE_ENABLE="${OPENCODE_ENABLE:-true}"
+AGENT_ENV_PRESET="${AGENT_ENV_PRESET:-opencode}"
+PRIMARY_SUPERVISED="${PRIMARY_SUPERVISED:-true}"
+PRIMARY_INJECTS="${PRIMARY_INJECTS:-true}"
 PRIMARY_PORT="${PRIMARY_PORT:-3000}"
 
 head_ "Gateway routes"
@@ -113,7 +117,7 @@ for path in / "/${ENV_PREFIX}/" "/${TTYD_PATH}/" "/${DESKTOP_PATH}/vnc.html"; do
   case "$c" in
     200) ok "${path} serves (200)" ;;
     302) ok "${path} redirects to sign-in (302)" ;;
-    502) if [[ "${path}" == / && "${OPENCODE_ENABLE}" != true ]]; then
+    502) if [[ "${path}" == / && "${PRIMARY_SUPERVISED}" != true ]]; then
            ok "/ has no upstream yet and falls back to the index (502)"
          else
            bad "${path} returned $c"
@@ -137,12 +141,19 @@ esac
 # rather than status codes keeps this honest in every auth mode: under google
 # both are the same 302, under basic both are the same app shell.
 root_body=$(curl -s --max-time 15 -u "${AUTH}" "${BASE}/" | md5sum | cut -d' ' -f1)
-for path in /terminal /desktop /files /img/logo.png; do
-  body=$(curl -s --max-time 15 -u "${AUTH}" "${BASE}${path}" | md5sum | cut -d' ' -f1)
-  [[ "${body}" == "${root_body}" ]] \
-    && ok "${path} reaches the primary service, no longer squatted" \
-    || bad "${path} does not match / — something still owns it"
-done
+# This compares against an app that answers every path alike, as the preset
+# servers and the stand-in below do. A command the operator supplied decides its
+# own paths, and a file server answering 404 for a path it lacks is correct.
+if [ "${PRIMARY_SUPERVISED}" = true ] && [ "${PRIMARY_INJECTS}" != true ]; then
+  skip "that old paths reach the primary service (a supplied command decides its own paths)"
+else
+  for path in /terminal /desktop /files /img/logo.png; do
+    body=$(curl -s --max-time 15 -u "${AUTH}" "${BASE}${path}" | md5sum | cut -d' ' -f1)
+    [[ "${body}" == "${root_body}" ]] \
+      && ok "${path} reaches the primary service, no longer squatted" \
+      || bad "${path} does not match / — something still owns it"
+  done
+fi
 
 # The daemons UI cannot be nested (pitchfork validates its web path as one
 # segment), so the prefix redirects to it instead. That redirect is the only
@@ -197,35 +208,57 @@ fi
 
 head_ "Primary service at /"
 if have_container; then
-  # The OpenCode server's own basic-auth credential is injected at /. It exists
-  # to reach OpenCode and nothing else, so if / is ever pointed at someone's own
-  # application that header must not follow it there.
-  inj=$(docker exec "${CONTAINER}" grep -c 'import /run/agent-env/opencode-auth.caddy' /etc/caddy/Caddyfile 2>/dev/null | head -1)
+  # A preset's server may have its own basic-auth credential, injected at /. It
+  # exists to reach that server and nothing else, so if / is ever pointed at
+  # someone's own application — PRIMARY_COMMAND, or no preset at all — that header
+  # must not follow it there.
+  inj=$(docker exec "${CONTAINER}" grep -c 'import /run/agent-env/primary-auth.caddy' /etc/caddy/Caddyfile 2>/dev/null | head -1)
   inj="${inj:-0}"
-  if [ "${OPENCODE_ENABLE}" = true ]; then
+  if [ "${PRIMARY_INJECTS}" = true ]; then
     [[ "${inj}" -ge 1 ]] \
-      && ok "the OpenCode credential is injected at / (${inj})" \
-      || bad "no Authorization injection at / — the OpenCode server will reject requests"
+      && ok "the ${AGENT_ENV_PRESET} server's credential is injected at / (${inj})" \
+      || bad "no Authorization injection at / — the ${AGENT_ENV_PRESET} server will reject requests"
   else
     [[ "${inj}" -eq 0 ]] \
-      && ok "no credential is injected at / while OpenCode is off" \
-      || bad "${inj} Authorization injection(s) would leak the OpenCode credential into another app"
+      && ok "no credential is injected at / (preset ${AGENT_ENV_PRESET}, supervised primary: ${PRIMARY_SUPERVISED})" \
+      || bad "${inj} Authorization injection(s) would leak a credential into another app"
   fi
 
   # The healthcheck has to follow the configuration: an unconditional probe of
-  # the OpenCode port marks an OpenCode-off container unhealthy forever.
-  assert "the healthcheck passes with OPENCODE_ENABLE=${OPENCODE_ENABLE}" \
+  # the primary port marks a container with nothing supervised unhealthy forever.
+  assert "the healthcheck passes with PRIMARY_SUPERVISED=${PRIMARY_SUPERVISED}" \
     docker exec "${CONTAINER}" /opt/agent-env/bin/healthcheck
 else
   skip "credential injection at / and the healthcheck (no container to look inside)"
 fi
 
+# A primary the operator supplied with PRIMARY_COMMAND: it must be the thing that
+# answers at /, with the whole path space, and be handed the port it is meant to
+# listen on. CI passes SMOKE_PRIMARY_EXPECT, text its command is known to serve.
+if have_container && [ "${PRIMARY_SUPERVISED}" = true ] && [ "${PRIMARY_INJECTS}" != true ]; then
+  expect=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER}" 2>/dev/null \
+    | sed -n 's/^SMOKE_PRIMARY_EXPECT=//p' | head -1 | tr -d '\r')
+  if [ "${oauth_gate}" = true ]; then
+    skip "the supplied primary at / (the OAuth gate answers before it does)"
+  elif [ -n "${expect}" ]; then
+    body=$(curl -s --max-time 15 -u "${AUTH}" "${BASE}/")
+    grep -q -- "${expect}" <<<"${body}" \
+      && ok "the command given as PRIMARY_COMMAND answers at /" \
+      || bad "/ did not serve what PRIMARY_COMMAND should (wanted '${expect}'): ${body:0:80}"
+    c=$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' -u "${AUTH}" "${BASE}/${ENV_PREFIX}/")
+    [[ "$c" == 200 ]] && ok "the reserved prefix is still the environment's, not the command's ($c)" \
+                      || bad "/${ENV_PREFIX}/ returned $c with a supplied primary"
+  else
+    skip "the supplied primary at / (pass SMOKE_PRIMARY_EXPECT to the container to check it)"
+  fi
+fi
+
 # Behind an OAuth gate every one of these bounces to sign-in before it can reach a
 # service, so they would be testing the gate rather than the routing.
-if [ "${OPENCODE_ENABLE}" != true ] && [ "${oauth_gate}" = true ]; then
+if [ "${PRIMARY_SUPERVISED}" != true ] && [ "${oauth_gate}" = true ]; then
   skip "the primary service at / (the OAuth gate answers before it does)"
 fi
-if [ "${OPENCODE_ENABLE}" != true ] && [ "${oauth_gate}" != true ]; then
+if [ "${PRIMARY_SUPERVISED}" != true ] && [ "${oauth_gate}" != true ]; then
   # Nothing is listening on PRIMARY_PORT yet, so / should explain itself rather
   # than show a bare 502. Caddy keeps the error status, which is honest — the
   # body is what matters here.
@@ -293,7 +326,7 @@ head_ "Published configuration"
 # Everything downstream of /run/agent-env/env compares against literal true or
 # false: the healthcheck, the `agent-env` helper, this suite. The entrypoint
 # accepts 1/yes/on/enabled as well, so publishing the raw value desynchronises
-# every reader from what it actually decided — OPENCODE_ENABLE=1 starts the
+# every reader from what it actually decided — a flag of 1 starts the
 # server and injects its credential while a reader concludes it is off and
 # stops probing it.
 if have_container; then
@@ -478,41 +511,42 @@ PY
   assert "/tmp/fslock is shared, so any user can run a supervisor" \
     docker exec "${CONTAINER}" test -w /tmp/fslock
 
-  # The OpenCode server belongs to the user, not to root. Checked against a
+  # The primary service belongs to the user, not to root. Checked against a
   # listing we know is real, so an error cannot masquerade as absence.
   sys_daemons=$(sys_pitchfork list 2>/dev/null || true)
   if [[ -z "${sys_daemons}" ]]; then
     bad "could not read the root supervisor's daemons"
-  elif grep -q "opencode" <<<"${sys_daemons}"; then
-    bad "opencode is still a system daemon"
+  elif grep -qE "(^|[^-])primary( |$)" <<<"${sys_daemons}"; then
+    bad "the primary service is a system daemon"
   else
-    ok "opencode is not in the root supervisor"
+    ok "the primary service is not in the root supervisor"
   fi
 
   user_daemons=$(docker exec -u dev "${CONTAINER}" bash -lc 'pitchfork list' 2>/dev/null || true)
-  if [ "${OPENCODE_ENABLE}" = true ]; then
-    grep -qE "opencode +running" <<<"${user_daemons}" \
-      && ok "opencode runs in the dev user's own supervisor" \
-      || bad "opencode is not running under dev: ${user_daemons:-none}"
+  if [ "${PRIMARY_SUPERVISED}" = true ]; then
+    grep -qE "primary +running" <<<"${user_daemons}" \
+      && ok "the primary service runs in the dev user's own supervisor" \
+      || bad "the primary service is not running under dev: ${user_daemons:-none}"
 
-    # ...and its parent really is that supervisor, not PID 1.
-    parent=$(docker exec "${CONTAINER}" bash -c '
-      pid=$(pgrep -f "opencode(\.exe)? serve" | head -1)
+    # ...and its parent really is that supervisor, not PID 1. Found by what is
+    # listening on the primary port, so it holds for any primary.
+    parent=$(docker exec -u dev "${CONTAINER}" bash -c '
+      pid=$(ss -ltnpH "sport = :'"${PRIMARY_PORT}"'" | grep -o "pid=[0-9]*" | head -1 | cut -d= -f2)
       while [ -n "$pid" ] && [ "$pid" != 1 ]; do
         args=$(ps -o args= -p "$pid")
         case "$args" in *"supervisor run"*) echo "$args"; exit 0 ;; esac
         pid=$(ps -o ppid= -p "$pid" | tr -d " ")
       done' 2>/dev/null || true)
     case "${parent}" in
-      *--container*) bad "opencode hangs off the root supervisor (${parent})" ;;
-      *supervisor\ run*) ok "opencode's supervisor is the unprivileged one" ;;
-      *) bad "could not trace opencode to a supervisor: ${parent:-none}" ;;
+      *--container*) bad "the primary service hangs off the root supervisor (${parent})" ;;
+      *supervisor\ run*) ok "the primary service's supervisor is the unprivileged one" ;;
+      *) bad "could not trace the primary service to a supervisor: ${parent:-none}" ;;
     esac
   else
-    if grep -qE "opencode" <<<"${user_daemons}"; then
-      bad "opencode is defined despite OPENCODE_ENABLE=false: ${user_daemons}"
+    if grep -qE "primary" <<<"${user_daemons}"; then
+      bad "a primary daemon is defined though nothing is to be supervised: ${user_daemons}"
     else
-      ok "no opencode daemon is defined while disabled"
+      ok "no primary daemon is defined while nothing is to be supervised"
     fi
   fi
 
@@ -547,23 +581,24 @@ PY
 
   head_ "Credentials"
 
-  if [ "${OPENCODE_ENABLE}" != true ]; then
-    skip "gateway credentials in the agent's process (no OpenCode server to inspect)"
+  if [ "${PRIMARY_SUPERVISED}" != true ]; then
+    skip "gateway credentials in the agent's process (no primary service to inspect)"
   fi
-  if [ "${OPENCODE_ENABLE}" = true ]; then
+  if [ "${PRIMARY_SUPERVISED}" = true ]; then
 
   # A secret passed with -e stays in the container config, but it must not
-  # reach the daemons — the OpenCode server runs code the agent was asked to run.
+  # reach the daemons — the primary service runs code the agent was asked to run.
+  # Found by what listens on the primary port, so it holds for any primary.
   leak=$(docker exec -u dev "${CONTAINER}" sh -c '
-    p=$(pgrep -f "opencode(\.exe)? serve" | head -1)
+    p=$(ss -ltnpH "sport = :'"${PRIMARY_PORT}"'" | grep -o "pid=[0-9]*" | head -1 | cut -d= -f2)
     if [ -z "$p" ]; then echo no-process; exit 0; fi
     tr "\0" "\n" < /proc/$p/environ |
       grep -cE "^(GOOGLE_CLIENT_SECRET|GITHUB_CLIENT_SECRET|GATEWAY_PASSWORD|OAUTH2_PROXY_COOKIE_SECRET)=" || true
   ' 2>/dev/null || true)
   case "${leak}" in
-    0)  ok "gateway credentials are absent from the OpenCode server's environment" ;;
-    no-process) bad "the OpenCode server is not running, so nothing was checked" ;;
-    "") bad "could not read the OpenCode server's environment" ;;
+    0)  ok "gateway credentials are absent from the primary service's environment" ;;
+    no-process) bad "nothing is listening on the primary port, so nothing was checked" ;;
+    "") bad "could not read the primary service's environment" ;;
     *)  bad "${leak} gateway credential(s) visible to the agent's own process" ;;
   esac
   fi

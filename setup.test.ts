@@ -88,7 +88,7 @@ function envOf(dir: string): Record<string, string> {
 }
 
 const BASE = {
-  opencodeEnable: true,
+  preset: "opencode",
   rootlessDocker: false,
   sshKeys: "ssh-ed25519 AAAA test@host",
   sshPort: 2222,
@@ -175,16 +175,61 @@ test("booleans are emitted canonically", () => {
   run(
     {
       ...LOCAL,
-      opencodeEnable: false,
+      preset: "vanilla",
       primaryPort: 3000,
       rootlessDocker: true,
     },
     dir,
   );
   const env = envOf(dir);
-  for (const k of ["OPENCODE_ENABLE", "DOCKER_ROOTLESS_ENABLE"]) {
+  for (const k of ["DOCKER_ROOTLESS_ENABLE"]) {
     assertMatch(env[k], /^(true|false)$/, `${k}=${env[k]} is not canonical`);
   }
+});
+
+test("the vanilla preset takes a command, and $PORT survives Compose", () => {
+  // Compose expands $VAR in a double-quoted .env value, which would hand the
+  // command an empty port. It has to come out single-quoted.
+  const dir = tmp();
+  const r = run(
+    {
+      ...LOCAL,
+      preset: "vanilla",
+      primaryPort: 3000,
+      primaryCommand: "npm run dev -- --port $PORT",
+    },
+    dir,
+  );
+  assertEquals(r.code, 0);
+  const env = readText(`${dir}/.env`);
+  assertStringIncludes(env, "AGENT_ENV_PRESET=vanilla");
+  assertStringIncludes(env, "PRIMARY_COMMAND='npm run dev -- --port $PORT'");
+  assertEquals(envOf(dir).PRIMARY_COMMAND, "npm run dev -- --port $PORT");
+});
+
+test("the opencode preset runs its own server, so a command is refused", () => {
+  const dir = tmp();
+  const r = run({ ...LOCAL, preset: "opencode", primaryCommand: "node app.js" }, dir);
+  assertEquals(r.code, 2);
+  assert(!existsSync(`${dir}/compose.yaml`));
+});
+
+test("a command that cannot be quoted for Compose is refused", () => {
+  const dir = tmp();
+  const r = run(
+    { ...LOCAL, preset: "vanilla", primaryPort: 3000, primaryCommand: `sh -c 'echo $PORT'` },
+    dir,
+  );
+  assertEquals(r.code, 1);
+  assertStringIncludes(r.stdout, "cannot contain both");
+});
+
+test("an answers file from before presets still means what it said", () => {
+  const dir = tmp();
+  const { preset: _, ...old } = LOCAL;
+  const r = run({ ...old, opencodeEnable: false, primaryPort: 3000 } as never, dir);
+  assertEquals(r.code, 0);
+  assertEquals(envOf(dir).AGENT_ENV_PRESET, "vanilla");
 });
 
 test("a public domain with no authentication is refused", () => {

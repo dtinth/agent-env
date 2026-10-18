@@ -17,10 +17,10 @@ health_path="$(value HEALTH_PATH)";   health_path="${health_path:-~env/healthz}"
 # The gateway is the one thing that is always true of a healthy container.
 curl -fsS --max-time 4 "http://127.0.0.1:${gateway_port}/${health_path}" >/dev/null
 
-# And OpenCode, only when it is supposed to be there. Deliberately not the
-# primary-service port when OpenCode is off: nothing is required to be listening
-# there, and the gateway already answers with the environment index if it isn't.
-if [[ "$(value OPENCODE_ENABLE)" == true ]]; then
-  opencode_port="$(value PRIMARY_PORT)"; opencode_port="${opencode_port:-3000}"
-  exec 3<>"/dev/tcp/127.0.0.1/${opencode_port}"
+# And the primary service, only when the image is supervising one. Deliberately
+# not the primary port otherwise: nothing is required to be listening there, and
+# the gateway already answers with the environment index if it isn't.
+if [[ "$(value PRIMARY_SUPERVISED)" == true ]]; then
+  primary_port="$(value PRIMARY_PORT)"; primary_port="${primary_port:-3000}"
+  exec 3<>"/dev/tcp/127.0.0.1/${primary_port}"
 fi

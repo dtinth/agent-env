@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Keeps the gateway's credential for the OpenCode server current. A --service
+# Keeps the gateway's credential for the OpenCode server current. This is the
+# one place that credential exists, and it is wired to the opencode preset's own
+# server only: a primary the preset does not own never gets an import of it.
+# A --service
 # server mints its own password and records it in the user's service.json; this
 # copies it into the snippet the Caddyfile imports and reloads Caddy on change.
 # Runs as root: it reads the user's state and talks to Caddy's admin socket.
@@ -9,7 +12,7 @@ value() { sed -n "s/^$1=//p" "${env_file}" | head -1; }
 user="$(value USER_NAME)"
 port="$(value PRIMARY_PORT)"
 state="/home/${user}/.local/state/opencode/service.json"
-snippet=/run/agent-env/opencode-auth.caddy
+snippet=/run/agent-env/primary-auth.caddy
 current=""
 
 while sleep 1; do

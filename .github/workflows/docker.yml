@@ -67,7 +67,7 @@ jobs:
               github) answers='{"mode":"caddy","domain":"gh.example.com","httpsPort":8443,"authMode":"github","githubClientId":"Iv1.0123456789abcdef","githubOrg":"acme","githubTeam":"platform"}' ;;
               tailscale) answers='{"mode":"tailscale","tsHostname":"work.tail1234.ts.net","authMode":"none"}' ;;
             esac
-            common='"opencodeEnable":true,"rootlessDocker":true,"sshKeys":"ssh-ed25519 AAAA t@h","sshPort":2222,"workspaceKind":"volume","timezone":"UTC"'
+            common='"preset":"opencode","rootlessDocker":true,"sshKeys":"ssh-ed25519 AAAA t@h","sshPort":2222,"workspaceKind":"volume","timezone":"UTC"'
             echo "${answers%\}}, ${common}}" > "${dir}/a.json"
             # Plain node, as a person runs it: the wizard needs nothing installed.
             node setup.ts --answers "${dir}/a.json" --out "${dir}"
@@ -192,12 +192,12 @@ jobs:
           CONTAINER=agent-env ./scripts/smoke-test.sh \
             http://localhost:8080 "dev:${password}"
 
-      # OPENCODE_ENABLE=false is a supported deployment, and it is the one the
+      # The vanilla preset is a supported deployment, and it is the one the
       # default run cannot reach: a different handler at /, no credential
-      # injection, a login shell instead of the TUI, and a healthcheck that has
-      # to stop probing a port that is deliberately not there. Untested, it
-      # would only break for whoever turned it off first.
-      - name: Smoke test with OpenCode off
+      # injection, no agent installed, and a healthcheck that has to stop probing
+      # a port that is deliberately not there. Untested, it would only break for
+      # whoever chose it first.
+      - name: Smoke test, vanilla preset
         env:
           IMAGE: ${{ steps.ref.outputs.image }}
         run: |
@@ -215,18 +215,18 @@ jobs:
             -p 8082:8080 \
             -e AUTH_MODE=basic \
             -e "GATEWAY_PASSWORD=${password}" \
-            -e OPENCODE_ENABLE=false \
+            -e AGENT_ENV_PRESET=vanilla \
             -e PUBLIC_URL=http://localhost:8082 \
             -e SMOKE_OVERSIZE_FILE=/etc/ssl/certs/ca-certificates.crt \
             "${IMAGE}"
 
-          # The healthcheck must go healthy with no OpenCode server at all —
+          # The healthcheck must go healthy with no primary service at all —
           # that is the regression this run exists to catch.
           for _ in $(seq 1 60); do
             state=$(docker inspect -f '{{.State.Health.Status}}' agent-env-noc)
             [ "$state" = healthy ] && break
             if [ "$state" = unhealthy ]; then
-              echo "::error::OpenCode-off container went unhealthy"
+              echo "::error::vanilla container went unhealthy"
               docker logs agent-env-noc; exit 1
             fi
             sleep 5
@@ -234,6 +234,41 @@ jobs:
 
           CONTAINER=agent-env-noc ./scripts/smoke-test.sh \
             http://localhost:8082 "dev:${password}"
+
+      # PRIMARY_COMMAND is the one way the image supervises something it did not
+      # choose at /. It has to be the thing that answers there, get the port in
+      # $PORT, and never be handed a credential meant for a preset's own server.
+      - name: Smoke test, vanilla preset with a supplied command
+        env:
+          IMAGE: ${{ steps.ref.outputs.image }}
+        run: |
+          set -euo pipefail
+          password="ci-$(openssl rand -hex 12)"
+
+          docker rm -f agent-env-cmd >/dev/null 2>&1 || true
+          docker run -d --name agent-env-cmd --shm-size=2g \
+            -p 8083:8080 \
+            -e AUTH_MODE=basic \
+            -e "GATEWAY_PASSWORD=${password}" \
+            -e AGENT_ENV_PRESET=vanilla \
+            -e 'PRIMARY_COMMAND=python3 -m http.server "$PORT" --bind 127.0.0.1' \
+            -e 'SMOKE_PRIMARY_EXPECT=Directory listing' \
+            -e PUBLIC_URL=http://localhost:8083 \
+            "${IMAGE}"
+
+          # Healthy means the healthcheck found the command listening on the port.
+          for _ in $(seq 1 60); do
+            state=$(docker inspect -f '{{.State.Health.Status}}' agent-env-cmd)
+            [ "$state" = healthy ] && break
+            if [ "$state" = unhealthy ]; then
+              echo "::error::container with a supplied command went unhealthy"
+              docker logs agent-env-cmd; exit 1
+            fi
+            sleep 5
+          done
+
+          CONTAINER=agent-env-cmd ./scripts/smoke-test.sh \
+            http://localhost:8083 "dev:${password}"
 
       # The smoke suite tests one running container, so it can only ever see
       # one way of configuring the gate. What varies between the rest is how
@@ -250,6 +285,7 @@ jobs:
         run: |
           docker logs agent-env 2>&1 | tail -200 || true
           docker logs agent-env-noc 2>&1 | tail -200 || true
+          docker logs agent-env-cmd 2>&1 | tail -200 || true
 
       - name: Record the digest
         if: github.event_name != 'pull_request'

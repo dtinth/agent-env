@@ -1,0 +1,11 @@
+# The opencode preset's tools, installed into the home volume and upgraded at
+# every start. The entrypoint copies this to ~/.config/mise/conf.d/ on every
+# start, so edits there are lost: to pin a version, declare the tool yourself in
+# ~/.config/mise/config.toml, which takes precedence.
+#
+# `allow_builds` lets the package's postinstall script run. mise skips scripts by
+# default, and both of these use theirs to select a native binary.
+
+[tools]
+"npm:@opencode/cli" = { version = "latest", allow_builds = ["@opencode/cli"] }
+"npm:agent-browser" = { version = "latest", allow_builds = ["agent-browser"] }
