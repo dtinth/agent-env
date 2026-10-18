@@ -1,6 +1,9 @@
 {
   "name": "@dtinth/agent-env-setup",
-  "exports": "./setup.ts",
+  "exports": {
+    ".": "./setup.ts",
+    "./generate": "./generate.ts"
+  },
   "tasks": {
     "check": "deno check setup.ts setup_test.ts && deno lint && deno fmt --check",
     "test": "deno test -A"
@@ -8,13 +11,17 @@
   "fmt": {
     "include": [
       "setup.ts",
-      "setup_test.ts"
+      "setup_test.ts",
+      "generate.ts",
+      "generate_test.ts"
     ]
   },
   "lint": {
     "include": [
       "setup.ts",
-      "setup_test.ts"
+      "setup_test.ts",
+      "generate.ts",
+      "generate_test.ts"
     ]
   },
   "imports": {

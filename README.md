@@ -72,6 +72,13 @@ wrong. It also does the things that are tedious by hand and easy to forget:
 - Publishes `:80` alongside `:8443` in domain mode, because ACME only ever
   validates on 80 or 443 and never on the port you serve from.
 
+The output is just those two files: the Caddy and Tailscale sidecar configs are
+inlined in `compose.yaml` as `configs:` content (Docker Compose 2.23.1 or newer).
+So the pair can be pasted into Dockge, Dokploy, or anything else that takes a
+compose stack and an env file. The generation logic is `generate.ts`, a pure,
+dependency-free module (`generate(answers, { existingEnv })` returns the files)
+that a web UI can use as well as the wizard.
+
 **Re-running it is the point.** It reads back what it wrote, offers those as the
 defaults, and keeps the secrets already in `.env` — so it upgrades a deployment
 as well as creating one.

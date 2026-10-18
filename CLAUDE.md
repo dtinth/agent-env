@@ -11,8 +11,11 @@ workstation. The moving parts:
   `rootfs/usr/local/bin/entrypoint.sh`; it validates configuration, renders the
   Caddyfile and the pitchfork daemon definitions, then execs pitchfork as PID 1.
 - `scripts/smoke-test.sh` — end-to-end check against a *running* container.
-- `setup.ts` / `setup_test.ts` — the Deno deployment wizard. `deno task check`
-  and `deno task test` cover these; they need no container.
+- `setup.ts` / `setup_test.ts` — the Deno deployment wizard: prompts, files,
+  exit codes. `generate.ts` / `generate_test.ts` — the pure module it calls,
+  answers in, `compose.yaml` + `.env` out, no Deno APIs, so a web UI can reuse
+  it. `deno task check` and `deno task test` cover all four; they need no
+  container.
 - `.github/workflows/docker.yml` — builds per-arch, smoke-tests each, then
   publishes.
 

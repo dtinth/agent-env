@@ -47,6 +47,23 @@ function run(
   return { code: out.code, stdout: new TextDecoder().decode(out.stdout), dir };
 }
 
+/**
+ * The body of an inline `configs:` entry, unindented and unescaped — what
+ * compose hands the sidecar.
+ */
+function inlineConfig(compose: string, name: string): string {
+  const m = new RegExp(
+    `^  ${name}:\n    content: \\|\n((?:      .*\n|\n)*)`,
+    "m",
+  )
+    .exec(compose);
+  assert(m, `no inline config named ${name}`);
+  return m[1].split("\n").map((l) => l.slice(6)).join("\n").replaceAll(
+    "$$",
+    "$",
+  );
+}
+
 function tmp(): string {
   return Deno.makeTempDirSync({ prefix: "agent-env-setup-" });
 }
@@ -126,7 +143,7 @@ Deno.test("each mode generates a complete, self-consistent set of files", () => 
     const [name, answers, extra] of [
       ["local", LOCAL, []],
       ["caddy", CADDY, []],
-      ["tailscale", TS, ["ts-serve.json"]],
+      ["tailscale", TS, []],
     ] as const
   ) {
     const dir = tmp();
@@ -407,7 +424,9 @@ Deno.test("the tailnet dashboard is served on the port it advertises", () => {
   const dir = tmp();
   run(TS, dir);
   const advertised = Number(new URL(envOf(dir).DASHBOARD_PUBLIC_URL).port);
-  const serve = JSON.parse(Deno.readTextFileSync(`${dir}/ts-serve.json`));
+  const serve = JSON.parse(
+    inlineConfig(Deno.readTextFileSync(`${dir}/compose.yaml`), "ts-serve"),
+  );
   assert(
     Object.keys(serve.TCP).includes(String(advertised)),
     `advertises :${advertised} but serves ${Object.keys(serve.TCP).join(", ")}`,
@@ -609,13 +628,25 @@ Deno.test("caddy mode inlines the Caddyfile in compose.yaml", () => {
   assertStringIncludes(compose, "\treverse_proxy agent-env:8080");
 });
 
-Deno.test("a Caddyfile from an older generation is reported as stale", () => {
+Deno.test("sidecar files from an older generation are reported as stale", () => {
+  for (const [answers, f] of [[CADDY, "Caddyfile"], [TS, "ts-serve.json"]]) {
+    const dir = tmp();
+    Deno.writeTextFileSync(`${dir}/${f}`, "old\n");
+    const r = run(answers as Record<string, unknown>, dir, ["--force"]);
+    assertEquals(r.code, 0);
+    assertStringIncludes(r.stdout, `${f} is left over`);
+    assertEquals(Deno.readTextFileSync(`${dir}/${f}`), "old\n");
+  }
+});
+
+Deno.test("tailscale mode inlines its serve config in compose.yaml", () => {
   const dir = tmp();
-  Deno.writeTextFileSync(`${dir}/Caddyfile`, "old\n");
-  const r = run(CADDY, dir, ["--force"]);
-  assertEquals(r.code, 0);
-  assertStringIncludes(r.stdout, "no longer used");
-  assertEquals(Deno.readTextFileSync(`${dir}/Caddyfile`), "old\n");
+  assertEquals(run(TS, dir).code, 0);
+  assert(!existsSync(`${dir}/ts-serve.json`), "wrote a separate ts-serve.json");
+  const compose = Deno.readTextFileSync(`${dir}/compose.yaml`);
+  assertStringIncludes(compose, "        target: /config/serve.json");
+  const serve = JSON.parse(inlineConfig(compose, "ts-serve"));
+  assert(serve.Web["work.tail1234.ts.net:443"], "serve config lost its host");
 });
 
 Deno.test("a malformed domain is rejected", () => {
