@@ -276,13 +276,8 @@ that is up and answering its own 502 shows its own error, which is what you want
 while debugging it. A genuinely broken `/~env/` service is likewise never
 papered over.
 
-Two other things follow `OPENCODE_ENABLE`:
+One other thing follows `OPENCODE_ENABLE`:
 
-- **The browser terminal becomes a login shell.** The default `TERMINAL=opencode`
-  runs the OpenCode TUI; with no server to attach to it would sit on a connect
-  loop, so it gives you a shell instead. Set `TERMINAL` to any command (say
-  `claude`) to run that in the terminal under a login shell, in the workspace,
-  whether or not OpenCode is on.
 - **No credential is injected at `/`.** The gateway normally adds the OpenCode
   server's own basic-auth header on the way through. That credential exists to
   reach OpenCode and nothing else — it is never sent to a primary service that
@@ -397,8 +392,7 @@ See [`.env.example`](.env.example) for the annotated list. The essentials:
 | `SSH_PASSWORD` | — | Enables password auth (prefer keys) |
 | `DESKTOP_ENABLE` | `true` | XFCE + noVNC |
 | `DESKTOP_RESOLUTION` | `1920x1080x24` | Virtual display geometry, `WxH` or `WxHxD` |
-| `TTYD_ENABLE` | `true` | Browser TUI at `/~env/terminal` |
-| `TERMINAL` | `opencode` | What the browser terminal runs: `opencode` (the TUI), `shell`, or any command such as `claude`. Formerly `TTYD_COMMAND` (`tui`), still read |
+| `TTYD_ENABLE` | `true` | Browser terminal (a login shell) at `/~env/terminal` |
 | `AB_DASHBOARD_ENABLE` | `true` | agent-browser dashboard on its own port |
 | `MISE_TOOLS` | — | Extra global tools, e.g. `python@3.13 go@latest` |
 | `USER_SUPERVISOR_ENABLE` | `true` | Run the dev user's own pitchfork at boot |
@@ -472,7 +466,7 @@ docker exec -it agent-env agent-env top         # pitchfork's interactive dashbo
 docker exec -it agent-env agent-env config      # the rendered gateway config
 docker exec -it agent-env agent-env daemons     # the rendered daemon definitions
 docker exec -it agent-env agent-env restart opencode
-docker exec -it agent-env agent-env tui         # attach the TUI from a shell
+docker exec -it agent-env agent-env tui         # attach the OpenCode TUI from a shell
 ```
 
 ### Supervision

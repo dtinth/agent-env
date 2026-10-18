@@ -278,32 +278,13 @@ PY' 2>/dev/null
   fi
 fi
 
-# Read out of the rendered config rather than over HTTP, so it holds in every
-# auth mode: ttyd exists to run the OpenCode TUI, and with no server to attach
-# to it would sit on a connect loop instead of giving you a usable terminal.
+# The browser terminal is a login shell whatever else is configured. Read from
+# the running process rather than over HTTP, so it holds in every auth mode.
 if have_container; then
-  # The entrypoint's rule, restated from what the container was *asked* for:
-  # a shell when TERMINAL says so, and a shell regardless once OpenCode is
-  # off. Comparing the published value against itself would prove nothing, and
-  # assuming the default would fail a container that legitimately asked for a
-  # shell with OpenCode still on. TTYD_COMMAND and `tui` are the old spellings.
-  requested=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER}" 2>/dev/null \
-    | sed -n -e 's/^TERMINAL=//p' -e 's/^TTYD_COMMAND=//p' | head -1 | tr -d '\r')
-  case "${requested}" in
-    ""|tui|opencode) want_cmd=opencode ;;
-    *)               want_cmd="${requested}" ;;
-  esac
-  [ "${want_cmd}" = opencode ] && [ "${OPENCODE_ENABLE}" != true ] && want_cmd=shell
-
-  # `agent-env tui` runs from an SSH login shell, which inherits neither the
-  # container's environment nor pitchfork's, and the ttyd daemon reads the same
-  # file. Both take the answer from the published file, so it has to say what
-  # was decided — a terminal that waits for a server nobody started is the
-  # failure this catches.
-  pub_cmd=$(runtime_var TERMINAL)
-  [[ "${pub_cmd}" == "${want_cmd}" ]] \
-    && ok "TERMINAL is published as ${want_cmd} for every reader" \
-    || bad "published TERMINAL is '${pub_cmd:-unset}', expected ${want_cmd}"
+  ttyd_args=$(docker exec "${CONTAINER}" pgrep -a -x ttyd 2>/dev/null | tr -d '\r')
+  [[ "${ttyd_args}" == *"/opt/agent-env/bin/terminal" ]] \
+    && ok "the browser terminal runs a login shell" \
+    || bad "ttyd is not running the terminal wrapper: ${ttyd_args:-no ttyd process}"
 else
   skip "what the browser terminal runs (no container to look inside)"
 fi
