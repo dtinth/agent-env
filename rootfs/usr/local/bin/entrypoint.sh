@@ -451,6 +451,16 @@ boot_start = true
 "
 fi
 
+# Daemon logs are kept on disk, and a chatty daemon fills it. Pitchfork prunes
+# both supervisors' logs hourly: whichever of the two limits is hit first wins.
+LOG_RETENTION_LINES="${LOG_RETENTION_LINES:-10000}"
+LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-7}"
+[[ "${LOG_RETENTION_LINES}" =~ ^[0-9]+$ && "${LOG_RETENTION_DAYS}" =~ ^[0-9]+$ ]] \
+  || die "LOG_RETENTION_LINES and LOG_RETENTION_DAYS must be whole numbers"
+pf_retention="line_retention = ${LOG_RETENTION_LINES}
+time_retention = \"${LOG_RETENTION_DAYS}d\"
+"
+
 pf_begin="# >>> agent-env managed — rewritten on every start, edits here are lost >>>"
 pf_end="# <<< agent-env managed <<<"
 pf_block="${RUN_DIR}/primary-daemon.toml"
@@ -470,7 +480,8 @@ cat > "${pf_block}" <<BLOCK
 ${pf_begin}
 # Keep your own daemons above this block: in TOML, anything following a table
 # header belongs to that table.
-${pf_primary}${pf_dufs}${pf_docker}${pf_end}
+[settings.logs]
+${pf_retention}${pf_primary}${pf_dufs}${pf_docker}${pf_end}
 BLOCK
 
 python3 - "${user_pf_config}" "${pf_block}" "${pf_begin}" "${pf_end}" <<'MERGE'
@@ -1386,7 +1397,7 @@ log_level = "${PITCHFORK_LOG_LEVEL:-info}"
 [settings.logs]
 # The container's log driver stamps its own timestamps.
 timestamp = false
-
+${pf_retention}
 # Inherited by every daemon below.
 [env]
 HOME = "${USER_HOME}"
