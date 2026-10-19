@@ -34,15 +34,17 @@ Or try it locally with basic auth:
 
 ```bash
 docker run -d --name agent-env --shm-size=2g \
-  -p 8080:8080 -p 2222:22 \
-  -e AUTH_MODE=basic -e GATEWAY_PASSWORD=changeme \
+  -p 127.0.0.1:8080:8080 -p 127.0.0.1:2222:22 \
+  -e AUTH_MODE=basic \
   -e PUBLIC_URL=http://localhost:8080 \
   -e AGENT_ENV_PRESET=opencode \
   -v agent-env-workspace:/workspace -v agent-env-home:/home/dev \
+  -v agent-env-state:/var/lib/agent-env \
   ghcr.io/dtinth/agent-env
 ```
 
-Open <http://localhost:8080> and sign in as `dev` / `changeme`;
+The ports are bound to this machine only. A password is generated and printed
+by `docker logs agent-env`; sign in at <http://localhost:8080> as `dev` with it.
 <http://localhost:8080/~env/> lists everything the environment serves.
 
 ## Things to know
