@@ -865,3 +865,12 @@ test("the home directory can come from the host", () => {
   assertStringIncludes(compose, '"./home:/home/dev"');
   assert(!/^ {2}home:$/m.test(compose));
 });
+
+test("the wizard takes a desktop size, scale and backend from an answers file", () => {
+  const dir = tmp();
+  run({ ...LOCAL, desktopSize: "2560x1440", desktopScale: 150, desktopBackend: "selkies" }, dir);
+  const compose = readText(`${dir}/compose.yaml`);
+  assertStringIncludes(compose, "DESKTOP_RESOLUTION=2560x1440x24");
+  assertStringIncludes(compose, "DESKTOP_DPI=144");
+  assertStringIncludes(compose, "DESKTOP_BACKEND=selkies");
+});

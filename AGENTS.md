@@ -213,7 +213,7 @@ code: if you change behaviour described here, change it here too.
 
 ## The configurator
 
-The browser form and `node setup.ts` ask about eight things and produce `compose.yaml` and `.env`, using the
+The browser form and `node setup.ts` ask about a dozen things and produce `compose.yaml` and `.env`, using the
 same code, so they agree. The first question decides the rest:
 
 | Where it runs | What you get |
@@ -535,6 +535,7 @@ See [`.env.example`](.env.example) for the annotated list. The essentials:
 | `DESKTOP_ENABLE` | `true` | XFCE + noVNC |
 | `DESKTOP_BACKEND` | `novnc` | `novnc` or `selkies` (prototype; see [Selkies backend](#selkies-backend-prototype)) |
 | `DESKTOP_RESOLUTION` | `1920x1080x24` | Virtual display geometry, `WxH` or `WxHxD` |
+| `DESKTOP_DPI` | `96` | Text and window scale (`192` is 200%, for a 4K screen); sets Xvfb's DPI, XFCE's `Xft/DPI` and `Xft.dpi` |
 | `TTYD_ENABLE` | `true` | Browser terminal (a login shell) at `/~env/terminal` |
 | `MISE_TOOLS` | — | Extra global tools, e.g. `python@3.13 go@latest` |
 | `USER_SUPERVISOR_ENABLE` | `true` | Run the dev user's own pitchfork at boot |
@@ -981,6 +982,12 @@ Geometry comes from the environment, either as one value or as parts:
 # or, equivalently
 -e DESKTOP_WIDTH=1600 -e DESKTOP_HEIGHT=900 -e DESKTOP_DEPTH=24
 ```
+
+The configurator asks for the same thing in friendlier terms: a screen size from a menu
+(or typed) and a text-and-window size of 100–300%, which it writes as `DESKTOP_RESOLUTION` and
+`DESKTOP_DPI` (96 × the percentage). Both are applied in the desktop session itself, so XFCE and
+Chromium follow. Choosing the defaults writes nothing, and a value you put in `.env` by hand is
+kept unless the configurator is asked for something else.
 
 An unparseable value fails at startup with a message naming the expected form,
 rather than leaving you with a dead display.

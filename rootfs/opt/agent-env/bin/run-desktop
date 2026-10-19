@@ -15,4 +15,14 @@ for _ in $(seq 1 60); do
 done
 
 xrdb -merge /etc/X11/Xresources 2>/dev/null || true
-exec dbus-launch --exit-with-session xfce4-session
+
+# DESKTOP_DPI is what scales text and widgets. Xvfb's -dpi only changes what the
+# display reports, and XFCE keeps its own 96 in xfconf, so set that too, along
+# with the X resource that Chromium and plain X clients read.
+dpi="${DESKTOP_DPI:-96}"
+echo "Xft.dpi: ${dpi}" | xrdb -merge 2>/dev/null || true
+exec dbus-launch --exit-with-session sh -c '
+  xfconf-query -c xsettings -p /Xft/DPI -n -t int -s "$1" 2>/dev/null || true
+  # Cursor and icons are in pixels, not points, so they follow the scale too.
+  xfconf-query -c xsettings -p /Gtk/CursorThemeSize -n -t int -s "$(( 24 * $1 / 96 ))" 2>/dev/null || true
+  exec xfce4-session' sh "${dpi}"

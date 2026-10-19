@@ -162,3 +162,61 @@ test("with both bind-mounted, /workspace's owner wins and home needs a path", ()
     ["homePath"],
   );
 });
+
+test("the Selkies desktop is written to compose.yaml, and noVNC leaves no trace", () => {
+  const selkies = generate({ ...BASIC, desktopBackend: "selkies" }, { randomSecret: fixed });
+  assert(selkies["compose.yaml"].includes("DESKTOP_BACKEND=selkies"));
+  const novnc = generate(
+    { ...BASIC, desktopBackend: "novnc" },
+    { existingEnv: "DESKTOP_BACKEND=selkies\n" },
+  );
+  assert(!novnc[".env"].includes("DESKTOP_BACKEND"));
+  assert(!novnc["compose.yaml"].includes("DESKTOP_BACKEND"));
+});
+
+test("Selkies is refused on plain http away from localhost, and only then", () => {
+  const proxied = { ...BASIC, behindProxy: true, desktopBackend: "selkies" as const };
+  const bad = validate({ ...proxied, publicUrl: "http://box.lan:8080" });
+  assertEquals(
+    bad.map((p) => p.field),
+    ["desktopBackend"],
+  );
+  assertEquals(validate({ ...proxied, publicUrl: "https://box.example.com" }), []);
+  assertEquals(validate({ ...proxied, publicUrl: "http://localhost:9000" }), []);
+  assertEquals(validate({ ...BASIC, desktopBackend: "selkies" }), []);
+  assertEquals(
+    validate({ ...proxied, publicUrl: "http://box.lan:8080", desktopBackend: "novnc" }),
+    [],
+  );
+});
+
+test("screen size and text scale become DESKTOP_RESOLUTION and DESKTOP_DPI", () => {
+  const big = generate(
+    { ...BASIC, desktopSize: "3840x2160", desktopScale: 200 },
+    { randomSecret: fixed },
+  );
+  assert(big["compose.yaml"].includes("DESKTOP_RESOLUTION=3840x2160x24"));
+  assert(big["compose.yaml"].includes("DESKTOP_DPI=192"));
+  // The defaults say nothing, so a value written into .env by hand is left alone;
+  // choosing a size or scale replaces it.
+  const kept = generate(
+    { ...BASIC, desktopSize: "1920x1080", desktopScale: 100 },
+    { existingEnv: "DESKTOP_RESOLUTION=800x600x24\n" },
+  );
+  assert(kept[".env"].includes("DESKTOP_RESOLUTION=800x600x24"));
+  const chosen = generate(
+    { ...BASIC, desktopSize: "1280x720" },
+    { existingEnv: "DESKTOP_RESOLUTION=800x600x24\n" },
+  );
+  assert(!chosen[".env"].includes("800x600"));
+  assert(chosen["compose.yaml"].includes("DESKTOP_RESOLUTION=1280x720x24"));
+});
+
+test("a screen size or scale the display cannot use is refused", () => {
+  const fields = (a: object) => validate({ ...BASIC, ...a }).map((p) => p.field);
+  assertEquals(fields({ desktopSize: "big" }), ["desktopSize"]);
+  assertEquals(fields({ desktopSize: "100x100" }), ["desktopSize"]);
+  assertEquals(fields({ desktopScale: 90 }), ["desktopScale"]);
+  assertEquals(fields({ desktopScale: 150.5 }), ["desktopScale"]);
+  assertEquals(fields({ desktopSize: "2200x1300", desktopScale: 125 }), []);
+});
