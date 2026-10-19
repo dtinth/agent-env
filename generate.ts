@@ -61,6 +61,8 @@ export interface Answers {
   sshKeys: string;
   sshPort?: number;
   workspace: Workspace;
+  /** Where /home/dev lives; a Docker volume when absent. */
+  home?: Workspace;
   timezone: string;
 }
 // ---------------------------------------------------------------------------
@@ -433,6 +435,20 @@ export function validate(a: Answers): Problem[] {
       field("workspacePath", CHECKS.workspacePath(a.workspace.path));
     }
   }
+  if (a.home?.kind === "path") {
+    required("homePath", a.home.path);
+    if (a.home.path) field("homePath", CHECKS.workspacePath(a.home.path));
+    if (a.workspace?.kind !== "path") {
+      for (const [key, id] of [
+        ["homeUid", a.home.puid],
+        ["homeGid", a.home.pgid],
+      ] as const) {
+        if (id !== undefined && !(Number.isInteger(id) && id >= 0)) {
+          field(key, "a numeric user or group ID, like 1000");
+        }
+      }
+    }
+  }
   // The cross-answer checks assume the answers they read are well-formed.
   if (out.length) return out;
 
@@ -612,10 +628,12 @@ export function renderEnv(
   set("DOCKER_ROOTLESS_ENABLE", bool(a.rootlessDocker));
   const ssh = normaliseSshKeys(a.sshKeys);
   if (ssh) set("SSH_AUTHORIZED_KEYS", ssh);
-  if (a.workspace.kind === "path") {
-    // Matches the owner of the directory mounted at /workspace.
-    set("PUID", String(a.workspace.puid ?? 1000));
-    set("PGID", String(a.workspace.pgid ?? 1000));
+  // The container's user takes the owner of whichever directory is bind-mounted;
+  // /workspace's wins if both are, since there is only one user.
+  const owner = a.workspace.kind === "path" ? a.workspace : a.home?.kind === "path" ? a.home : null;
+  if (owner) {
+    set("PUID", String(owner.puid ?? 1000));
+    set("PGID", String(owner.pgid ?? 1000));
   }
 
   if (a.mode === "tailscale") {
@@ -770,7 +788,11 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
   }
   L.push("      # The whole home directory, so a tool the agent installs survives");
   L.push("      # being recreated on a new image.");
-  L.push("      - home:/home/dev");
+  if (a.home?.kind === "path") {
+    L.push(`      - ${yamlString(`${hostPathFor(a.home.path ?? "")}:/home/dev`)}`);
+  } else {
+    L.push("      - home:/home/dev");
+  }
   L.push("      # Keeps the generated SSH host keys across image updates.");
   L.push("      - agent-env-state:/var/lib/agent-env");
   L.push("");
@@ -851,7 +873,7 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
 
   L.push("volumes:");
   if (a.workspace.kind !== "path") L.push("  workspace:");
-  L.push("  home:");
+  if (a.home?.kind !== "path") L.push("  home:");
   L.push("  agent-env-state:");
   if (a.mode === "caddy") {
     L.push("  caddy_data:");

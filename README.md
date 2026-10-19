@@ -728,6 +728,11 @@ SSH client config, and any tool the agent installs into `~/.local/bin`,
 itself is gone the moment you recreate the container on a new image. The
 entrypoint warns if it or the state directory is not a mount.
 
+Either of the first two can be a host directory instead of a Docker volume — the
+configurator and `setup.ts` both offer it for each. The container runs as the owner of
+the directory it is given (`PUID`/`PGID`), so with both bind-mounted, `/workspace`'s
+owner wins and the home directory should be owned by the same user.
+
 A *named* volume is seeded from the image on first use, so the dotfiles the
 image ships arrive as normal. A *bind* mount arrives empty, so the entrypoint
 copies in anything missing without touching what is already there.

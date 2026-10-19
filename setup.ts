@@ -562,27 +562,13 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
     prev.workspace?.kind ?? "volume",
   );
 
-  let workspace: Workspace = { kind: "volume" };
-  if (wsKind === "path") {
-    let path = await ask(
-      "workspacePath",
-      "Host directory to mount at /workspace",
-      prev.workspace?.path ?? "",
-      { validate: CHECKS.workspacePath },
-    );
-    if (hostPathFor(path) !== path) {
-      note(
-        C.dim(
-          `  Reading "${path}" as "${hostPathFor(path)}" — compose treats a bare name as a volume.`,
-        ),
-      );
-      path = hostPathFor(path);
-    }
+  // Owner of a bind-mounted directory, which the container's user must match.
+  // Relative paths in the compose file resolve against the compose file, which
+  // lives in --out — not against wherever this was run from.
+  const ownerOf = (path: string) => {
     let puid = 1000,
       pgid = 1000;
     try {
-      // Relative paths in the compose file resolve against the compose file,
-      // which lives in --out — not against wherever this was run from.
       const st = statSync(path.startsWith("/") ? path : `${outDir.replace(/\/$/, "")}/${path}`);
       if (typeof st.uid === "number") puid = st.uid;
       if (typeof st.gid === "number") pgid = st.gid;
@@ -594,7 +580,59 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
         `Cannot stat ${path} — defaulting PUID/PGID to 1000:1000, fix in compose.yaml if that is wrong.`,
       );
     }
-    workspace = { kind: "path", path, puid, pgid };
+    return { puid, pgid };
+  };
+
+  const askHostPath = async (key: string, label: string, previous: string) => {
+    const path = await ask(key, label, previous, { validate: CHECKS.workspacePath });
+    if (hostPathFor(path) === path) return path;
+    note(
+      C.dim(
+        `  Reading "${path}" as "${hostPathFor(path)}" — compose treats a bare name as a volume.`,
+      ),
+    );
+    return hostPathFor(path);
+  };
+
+  let workspace: Workspace = { kind: "volume" };
+  if (wsKind === "path") {
+    const path = await askHostPath(
+      "workspacePath",
+      "Host directory to mount at /workspace",
+      prev.workspace?.path ?? "",
+    );
+    workspace = { kind: "path", path, ...ownerOf(path) };
+  }
+
+  // 6. The home directory holds logins, dotfiles and installed tools. A host
+  //    directory makes them easy to back up and inspect.
+  const homeKind = await select<"volume" | "path">(
+    "homeKind",
+    "Where should the home directory (/home/dev) come from?",
+    [
+      {
+        value: "volume",
+        label: "A Docker volume",
+        hint: "Managed by Docker; survives recreation.",
+      },
+      {
+        value: "path",
+        label: "A directory on this host",
+        hint: "Back up or inspect logins and dotfiles directly.",
+      },
+    ],
+    prev.home?.kind ?? "volume",
+  );
+
+  let home: Workspace = { kind: "volume" };
+  if (homeKind === "path") {
+    const path = await askHostPath(
+      "homePath",
+      "Host directory to mount at /home/dev",
+      prev.home?.path ?? "",
+    );
+    // One container user owns both, so /workspace's IDs win if it is a path too.
+    home = { kind: "path", path, ...(workspace.kind === "path" ? {} : ownerOf(path)) };
   }
 
   const timezone = await ask(
@@ -638,6 +676,7 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
     sshKeys,
     sshPort,
     workspace,
+    home,
     timezone,
   };
 }

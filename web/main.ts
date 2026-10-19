@@ -121,6 +121,15 @@ function readAnswers(): Answers {
             pgid: num("pgid") ?? 1000,
           }
         : { kind: "volume" },
+    home:
+      radio("homeKind") === "path"
+        ? {
+            kind: "path",
+            path: text("homePath") && hostPathFor(text("homePath")),
+            puid: num("homeUid") ?? 1000,
+            pgid: num("homeGid") ?? 1000,
+          }
+        : { kind: "volume" },
     timezone: text("timezone") || "UTC",
   };
   if (authMode === "google") {
@@ -191,6 +200,12 @@ function writeAnswers(a: Partial<Answers>): void {
     set("workspacePath", a.workspace.path);
     set("puid", a.workspace.puid);
     set("pgid", a.workspace.pgid);
+  }
+  if (a.home) {
+    pick("homeKind", a.home.kind);
+    set("homePath", a.home.path);
+    set("homeUid", a.home.puid);
+    set("homeGid", a.home.pgid);
   }
 }
 

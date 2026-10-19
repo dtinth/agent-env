@@ -857,3 +857,11 @@ test("allow lists do not survive a change of sign-in", () => {
     assert(!(k in env), `${k} outlived the switch to basic auth`);
   }
 });
+
+test("the home directory can come from the host", () => {
+  const dir = tmp();
+  run({ ...LOCAL, homeKind: "path", homePath: "home" }, dir);
+  const compose = readText(`${dir}/compose.yaml`);
+  assertStringIncludes(compose, '"./home:/home/dev"');
+  assert(!/^ {2}home:$/m.test(compose));
+});
