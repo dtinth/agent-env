@@ -1350,13 +1350,17 @@ for entry in "${declared[@]}"; do
     # A registry or CDN hiccup fails an install that works a moment later, and a
     # tool that is missing at start stays missing until the next restart. So try
     # a few times, and keep the last error for the log instead of discarding it.
+    # Only quick failures are retried: an attempt that hangs to its timeout is
+    # not tried again, which keeps the added wait small.
     installed=false
+    started=${SECONDS}
     for attempt in 1 2 3; do
       if install_err=$(mise_user timeout 300 mise install --yes "${tool}" 2>&1); then
         installed=true
         break
       fi
-      (( attempt < 3 )) && { warn "installing mise tool ${tool} failed (attempt ${attempt}/3); retrying"; sleep $(( attempt * 5 )); }
+      (( attempt < 3 && SECONDS - started < 20 )) || break
+      { warn "installing mise tool ${tool} failed (attempt ${attempt}/3); retrying"; sleep $(( attempt * 5 )); }
     done
     "${installed}" || { warn "could not install mise tool ${tool}: $(tail -n 5 <<<"${install_err}")"; continue; }
   fi
