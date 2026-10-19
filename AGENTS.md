@@ -995,6 +995,19 @@ resizing, so noVNC's client-side scaling is what adapts to your window. Change
 different geometry. Set `VNC_PASSWORD` for a second factor in front of the
 desktop specifically, and `VNC_VIEW_ONLY=true` for a read-only session.
 
+### Selkies backend (prototype)
+
+`DESKTOP_BACKEND=selkies` swaps x11vnc + websockify for [Selkies](https://selkies.io),
+installed from PyPI into `/opt/selkies` (see the Dockerfile). It attaches to the same
+`:1` display, so XFCE and headed agent-browser show up as before. A `pulseaudio` daemon
+with a null sink `output` provides audio. Caddy passes `/~env/desktop/*` through
+unstripped (Selkies runs with `--subfolder`); its own login is off and it listens on
+loopback only, so the gateway is the only way in. Differences from noVNC to know about:
+the page needs HTTPS or `localhost` (plain HTTP on another host fails with "requires a
+secure connection"); the first page is the one read-write client and later ones join
+view-only with `#shared`; resizing is off because Xvfb is fixed at `DESKTOP_RESOLUTION`.
+Run the smoke test with `SMOKE_DESKTOP_BACKEND=selkies`. The default stays `novnc`.
+
 ### Files
 
 [dufs](https://github.com/sigoden/dufs) serves the workspace at

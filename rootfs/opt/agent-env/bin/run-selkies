@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Selkies web desktop on the existing virtual display, loopback only.
+#
+# It attaches to the display Xvfb already serves, so XFCE and headed
+# agent-browser are visible to it exactly as they are to x11vnc. The gateway is
+# the only way in: Selkies' own login is off, it binds loopback, and it is
+# mounted under --subfolder so Caddy can pass the path through unchanged.
+set -euo pipefail
+export DISPLAY="${DESKTOP_DISPLAY:-:1}"
+
+for _ in $(seq 1 60); do
+  xdpyinfo -display "${DISPLAY}" >/dev/null 2>&1 && break
+  sleep 0.5
+done
+
+args=(
+  --addr=127.0.0.1
+  --port="${SELKIES_PORT:-6081}"
+  --subfolder="${SELKIES_SUBFOLDER:-/~env/desktop}"
+  --enable-basic-auth=false
+  --enable-https=false
+  --file-manager-path="${WORKSPACE_DIR:-/workspace}"
+)
+
+# The display is a fixed-size Xvfb (DESKTOP_RESOLUTION): it has no RandR modes
+# beyond that one, so resizing to the browser window is switched off and the
+# client scales instead, as noVNC does.
+if [[ "${SELKIES_ENABLE_RESIZE:-false}" != "true" ]]; then
+  args+=(--enable-resize=false)
+fi
+
+
+exec /opt/selkies/bin/selkies "${args[@]}"

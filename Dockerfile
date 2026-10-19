@@ -132,6 +132,25 @@ RUN set -eux; \
     dockerd --version; rootlesskit --version; docker compose version
 
 # ---------------------------------------------------------------------------
+# Selkies, the alternative web desktop (DESKTOP_BACKEND=selkies).
+#
+# From PyPI rather than the project's .deb: the wheels are published for amd64
+# and arm64 (pixelflux and pcmflux, the native capture and encode halves, are
+# manylinux_2_28 wheels), and they install into a venv of their own that
+# nothing else on the system depends on. Inert unless the backend is chosen.
+# ---------------------------------------------------------------------------
+ARG SELKIES_VERSION=2.0.0
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    set -eux; \
+    apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-venv pulseaudio pulseaudio-utils x11-xserver-utils libxcb-shm0 \
+    && python3 -m venv /opt/selkies \
+    && /opt/selkies/bin/pip install --no-cache-dir "selkies==${SELKIES_VERSION}" \
+    && /opt/selkies/bin/selkies --help >/dev/null \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
 # mise (installed system-wide, shims exposed on PATH for every login shell).
 # ---------------------------------------------------------------------------
 ENV MISE_DATA_DIR=/opt/mise \

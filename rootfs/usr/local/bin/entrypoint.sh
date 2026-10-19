@@ -180,6 +180,9 @@ DESKTOP_RESOLUTION="${DESKTOP_RESOLUTION:-1920x1080x24}"
 DESKTOP_DISPLAY="${DESKTOP_DISPLAY:-:1}"
 VNC_PORT="${VNC_PORT:-5900}"
 NOVNC_PORT="${NOVNC_PORT:-6080}"
+# How the desktop reaches the browser: noVNC (x11vnc + websockify) or Selkies.
+DESKTOP_BACKEND="${DESKTOP_BACKEND:-novnc}"
+SELKIES_PORT="${SELKIES_PORT:-6081}"
 
 TTYD_ENABLE="${TTYD_ENABLE:-true}"
 TTYD_PORT="${TTYD_PORT:-7681}"
@@ -538,6 +541,7 @@ fi
   echo "SSH_PORT=${SSH_PORT}"
   echo "DESKTOP_DISPLAY=${DESKTOP_DISPLAY}"
   echo "DESKTOP_ENABLE=$(canon "${DESKTOP_ENABLE}")"
+  echo "DESKTOP_BACKEND=${DESKTOP_BACKEND}"
   echo "TTYD_ENABLE=$(canon "${TTYD_ENABLE}")"
   echo "SSH_ENABLE=$(canon "${SSH_ENABLE}")"
   echo "USER_NAME=${USER_NAME}"
@@ -625,6 +629,16 @@ setup_xauth() {
   export XAUTHORITY="${XAUTHORITY_FILE}"
   log "display ${DESKTOP_DISPLAY} is cookie-protected (${XAUTHORITY_FILE})"
 }
+
+case "${DESKTOP_BACKEND}" in
+  novnc) ;;
+  selkies)
+    if [[ ! -x /opt/selkies/bin/selkies ]]; then
+      die "DESKTOP_BACKEND=selkies, but this image has no Selkies install at /opt/selkies"
+    fi
+    ;;
+  *) die "DESKTOP_BACKEND must be 'novnc' or 'selkies', not '${DESKTOP_BACKEND}'" ;;
+esac
 
 if is_true "${DESKTOP_ENABLE}"; then
   setup_xauth
@@ -1029,7 +1043,7 @@ EOF
       svc "/${TTYD_PATH}/" "Terminal" "A login shell, over a websocket"
     fi
     is_true "${DESKTOP_ENABLE}" \
-      && svc "/${DESKTOP_PATH}/" "Desktop" "XFCE on a virtual display, over noVNC"
+      && svc "/${DESKTOP_PATH}/" "Desktop" "XFCE on a virtual display, over ${DESKTOP_BACKEND}"
     is_true "${DUFS_ENABLE}" \
       && svc "/${DUFS_PATH}/" "Files" "Browse, upload and download the workspace"
     if is_true "${USER_SUPERVISOR_ENABLE}" && is_true "${USER_WEB_ENABLE}"; then
@@ -1146,7 +1160,19 @@ EOF
 			}
 EOF
 
-    if is_true "${DESKTOP_ENABLE}"; then
+    if is_true "${DESKTOP_ENABLE}" && [[ "${DESKTOP_BACKEND}" == selkies ]]; then
+      cat <<EOF
+
+			# Selkies is started with --subfolder, so every route it serves
+			# (page, websockets, API) already carries the prefix: pass the path
+			# through unstripped, as ttyd gets it. Its own basic auth is off;
+			# it listens on loopback only and this gateway is the way in.
+			redir /${DESKTOP_PATH} /${DESKTOP_PATH}/
+			handle /${DESKTOP_PATH}/* {
+				reverse_proxy 127.0.0.1:${SELKIES_PORT}
+			}
+EOF
+    elif is_true "${DESKTOP_ENABLE}"; then
       cat <<EOF
 
 			# noVNC resolves its websocket relative to the page it was loaded
@@ -1432,6 +1458,8 @@ DESKTOP_DISPLAY = "${DESKTOP_DISPLAY}"
 DESKTOP_RESOLUTION = "${DESKTOP_RESOLUTION}"
 VNC_PORT = "${VNC_PORT}"
 NOVNC_PORT = "${NOVNC_PORT}"
+SELKIES_PORT = "${SELKIES_PORT}"
+SELKIES_SUBFOLDER = "/${DESKTOP_PATH}"
 TTYD_PORT = "${TTYD_PORT}"
 TTYD_WRITABLE = "${TTYD_WRITABLE}"
 TTYD_PATH = "${TTYD_PATH}"
@@ -1470,17 +1498,32 @@ EOF
         'depends = ["xvfb", "dbus"]' \
         'retry = true'
 
-      emit_daemon x11vnc "/opt/agent-env/bin/run-x11vnc" \
-        "user = \"${USER_NAME}\"" \
-        'depends = ["xvfb"]' \
-        'retry = true' \
-        "ready_port = ${VNC_PORT}"
+      if [[ "${DESKTOP_BACKEND}" == selkies ]]; then
+        # Selkies captures the same display and adds audio through a
+        # PulseAudio null sink, so it takes the place of x11vnc + websockify.
+        emit_daemon pulseaudio "/opt/agent-env/bin/run-pulseaudio" \
+          "user = \"${USER_NAME}\"" \
+          'retry = true' \
+          "ready_cmd = \"test -S ${XDG_RUNTIME_DIR}/pulse/native\""
 
-      emit_daemon novnc "/opt/agent-env/bin/run-novnc" \
-        "user = \"${USER_NAME}\"" \
-        'depends = ["x11vnc"]' \
-        'retry = true' \
-        "ready_port = ${NOVNC_PORT}"
+        emit_daemon selkies "/opt/agent-env/bin/run-selkies" \
+          "user = \"${USER_NAME}\"" \
+          'depends = ["xvfb", "desktop", "pulseaudio"]' \
+          'retry = true' \
+          "ready_port = ${SELKIES_PORT}"
+      else
+        emit_daemon x11vnc "/opt/agent-env/bin/run-x11vnc" \
+          "user = \"${USER_NAME}\"" \
+          'depends = ["xvfb"]' \
+          'retry = true' \
+          "ready_port = ${VNC_PORT}"
+
+        emit_daemon novnc "/opt/agent-env/bin/run-novnc" \
+          "user = \"${USER_NAME}\"" \
+          'depends = ["x11vnc"]' \
+          'retry = true' \
+          "ready_port = ${NOVNC_PORT}"
+      fi
     fi
 
     if is_true "${TTYD_ENABLE}"; then
