@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# PulseAudio with one null sink, "output": the desktop's applications play into
+# it and Selkies captures its monitor to stream the audio. Only runs with
+# DESKTOP_BACKEND=selkies.
+#
+# -n skips default.pa, which would probe for hardware that a container does not
+# have. The sink is loaded before the socket module so the socket appearing
+# means the sink is already there.
+set -euo pipefail
+
+pulseaudio --kill >/dev/null 2>&1 || true
+exec pulseaudio -n --daemonize=no --exit-idle-time=-1 --disallow-exit \
+  -L "module-null-sink sink_name=output rate=48000 channels=2" \
+  -L "module-native-protocol-unix"

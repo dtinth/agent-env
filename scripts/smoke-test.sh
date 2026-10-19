@@ -11,6 +11,14 @@ set -uo pipefail
 BASE="${1:-http://localhost:8080}"
 AUTH="${2:-dev:changeme}"
 CONTAINER="${CONTAINER:-agent-env}"
+# What serves the desktop: novnc (default) or selkies. Set it to match the
+# container's DESKTOP_BACKEND; the checks that are specific to one are chosen here.
+SMOKE_DESKTOP_BACKEND="${SMOKE_DESKTOP_BACKEND:-novnc}"
+if [[ "${SMOKE_DESKTOP_BACKEND}" == selkies ]]; then
+  DESKTOP_PAGE=""; DESKTOP_WS="api/websockets"
+else
+  DESKTOP_PAGE="vnc.html"; DESKTOP_WS="websockify"
+fi
 
 pass=0; fail=0; skipped=0
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; pass=$((pass+1)); }
@@ -110,7 +118,7 @@ else
   esac
 fi
 
-for path in / "/${ENV_PREFIX}/" "/${TTYD_PATH}/" "/${DESKTOP_PATH}/vnc.html"; do
+for path in / "/${ENV_PREFIX}/" "/${TTYD_PATH}/" "/${DESKTOP_PATH}/${DESKTOP_PAGE}"; do
   c=$(code "${BASE}${path}")
   case "$c" in
     200) ok "${path} serves (200)" ;;
@@ -387,7 +395,7 @@ else
   skip "the daemons' readiness probes (no container to look inside)"
 fi
 
-head_ "VNC websocket (browser path)"
+head_ "Desktop websocket (browser path)"
 # --http1.1 matters over TLS: curl would otherwise negotiate HTTP/2, where
 # `Connection: Upgrade` is not a thing, and the request would arrive upstream as
 # a plain GET and 404. Browsers open wss:// over HTTP/1.1, which is what this
@@ -396,9 +404,9 @@ if [ "${oauth_gate}" != true ]; then
   c=$(curl -s -o /dev/null --max-time 6 --http1.1 -w '%{http_code}' -u "${AUTH}" \
         -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
         -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
-        "${BASE}/${DESKTOP_PATH}/websockify")
-  [[ "$c" == 101 ]] && ok "websockify upgrade (101 Switching Protocols)" \
-                    || bad "websockify upgrade returned $c"
+        "${BASE}/${DESKTOP_PATH}/${DESKTOP_WS}")
+  [[ "$c" == 101 ]] && ok "${DESKTOP_WS} upgrade (101 Switching Protocols)" \
+                    || bad "${DESKTOP_WS} upgrade returned $c"
 else
   skip "the websockify upgrade (the OAuth gate answers before websockify does)"
 fi
@@ -423,7 +431,9 @@ if have_container; then
   [[ -n "$geom" ]] && ok "X display up (${geom## })" || bad "no X display on :1"
 
   # Several viewers must be able to share the desktop at once.
-  if docker exec "${CONTAINER}" python3 - <<'PY'; then
+  if [[ "${SMOKE_DESKTOP_BACKEND}" == selkies ]]; then
+    skip "4 simultaneous VNC clients (Selkies has one read-write page and view-only links)"
+  elif docker exec "${CONTAINER}" python3 - <<'PY'; then
 import socket, sys, threading, time
 res = {}
 def c(n):
