@@ -18,6 +18,8 @@ unset PITCHFORK_CONFIG_DIR
 export PITCHFORK_STATE_DIR="${PITCHFORK_STATE_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/pitchfork}"
 mkdir -p "${PITCHFORK_STATE_DIR}" "${HOME}/.config/pitchfork"
 
+/opt/agent-env/bin/compact-pf-logs "${PITCHFORK_STATE_DIR}/logs" || true
+
 args=(--boot)
 
 # The web UI is told its prefix so it can be reverse-proxied under a path.
