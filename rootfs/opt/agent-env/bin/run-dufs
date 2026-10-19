@@ -14,16 +14,16 @@ args=(
   --bind 127.0.0.1
   --port "${DUFS_PORT:-5000}"
   --path-prefix "/${DUFS_PATH:-~env/files}"
-  # Enough to actually manage files. Deliberately not --allow-all: that adds
-  # --allow-symlink, which would let a symlink walk outside the served root.
-  --allow-upload
-  --allow-delete
-  --allow-search
-  --allow-archive
+  # Everything, symlinks included: a symlink in the workspace to somewhere else
+  # on the box should work. dufs runs as the user, so it reaches nothing they
+  # can't, and it is behind the gateway's auth.
+  --allow-all
+  # Serve a directory's index.html instead of its listing.
+  --render-try-index
 )
 
-# DUFS_ARGS overrides nothing above; it appends, so you can add --allow-symlink,
-# --hidden, --auth or anything else dufs takes.
+# DUFS_ARGS overrides nothing above; it appends, so you can add --hidden, --auth
+# or anything else dufs takes.
 if [[ -n "${DUFS_ARGS:-}" ]]; then
   read -ra extra <<<"${DUFS_ARGS}"
   args+=("${extra[@]}")
