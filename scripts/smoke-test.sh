@@ -728,10 +728,14 @@ with open("/etc/mise/mise.lock", "rb") as fh:
       || bad "a symlink was not followed: ${link}"
 
     # --render-try-index: a directory with an index.html serves it, not a listing.
+    # A name of its own, created with mkdir (no -p) so an existing directory is
+    # never written to, and removed with rm -f/rmdir so only what we made goes.
+    site="smoke-site-$$"
     docker exec -u dev "${CONTAINER}" sh -c \
-      'mkdir -p /workspace/smoke-site && echo smoke-index-page > /workspace/smoke-site/index.html' 2>/dev/null || true
-    idx=$(curl -s --max-time 15 -u "${AUTH}" "${BASE}/${DUFS_PATH}/smoke-site/")
-    docker exec -u dev "${CONTAINER}" rm -rf /workspace/smoke-site 2>/dev/null || true
+      "mkdir /workspace/${site} && echo smoke-index-page > /workspace/${site}/index.html" 2>/dev/null || true
+    idx=$(curl -s --max-time 15 -u "${AUTH}" "${BASE}/${DUFS_PATH}/${site}/")
+    docker exec -u dev "${CONTAINER}" sh -c \
+      "rm -f /workspace/${site}/index.html; rmdir /workspace/${site}" 2>/dev/null || true
     grep -q smoke-index-page <<<"${idx}" \
       && ok "a directory's index.html is served in place of its listing" \
       || bad "index.html was not rendered for a directory"
