@@ -528,6 +528,12 @@ pitchfork captures each daemon's output into its own log store, which is what
 PID 1's stdout, so `docker logs -f agent-env` and your log driver still see the lot,
 prefixed with `[global/<daemon>]`.
 
+Logs are rotated so they cannot fill the disk. pitchfork prunes both supervisors'
+stores hourly, keeping the last `LOG_RETENTION_LINES` lines (default `10000`) per
+daemon and nothing older than `LOG_RETENTION_DAYS` days (default `7`). The compose
+file the configurator writes also caps Docker's own copy of the output
+(`json-file`, 3 × 10 MB per container).
+
 Run `scripts/smoke-test.sh` against a live container to check the whole thing:
 
 ```bash

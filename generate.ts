@@ -686,6 +686,12 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
   L.push("    image: ghcr.io/dtinth/agent-env:latest");
   L.push("    pull_policy: always");
   L.push("    restart: unless-stopped");
+  L.push("    # Docker keeps every line of output forever unless told otherwise.");
+  L.push("    logging:");
+  L.push("      driver: json-file");
+  L.push("      options:");
+  L.push('        max-size: "10m"');
+  L.push('        max-file: "3"');
   L.push("");
   L.push("    environment:");
   // Compose interpolates $ in a value, so a literal one is $$.
@@ -773,6 +779,11 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
     L.push("  caddy:");
     L.push("    image: caddy:2-alpine");
     L.push("    restart: unless-stopped");
+    L.push("    logging:");
+    L.push("      driver: json-file");
+    L.push("      options:");
+    L.push('        max-size: "10m"');
+    L.push('        max-file: "3"');
     L.push("    ports:");
     L.push("      # ACME validates on 80 (HTTP-01) or 443 (TLS-ALPN-01) and nowhere");
     L.push("      # else, so this stays published even though the site is served on");
@@ -795,6 +806,11 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
     L.push("    image: tailscale/tailscale:stable");
     L.push("    hostname: " + (a.tsHostname ?? "agent-env").split(".")[0]);
     L.push("    restart: unless-stopped");
+    L.push("    logging:");
+    L.push("      driver: json-file");
+    L.push("      options:");
+    L.push('        max-size: "10m"');
+    L.push('        max-file: "3"');
     L.push("    environment:");
     L.push("      - TS_AUTHKEY");
     L.push("      - TS_STATE_DIR=/var/lib/tailscale");
