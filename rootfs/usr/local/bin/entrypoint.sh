@@ -1347,8 +1347,18 @@ for entry in "${declared[@]}"; do
   tool="${entry% *}"; present="${entry##* }"
   [[ "${tool}" == npm:* ]] && ! "${npm_up}" && continue
   if [[ "${present}" != true ]]; then
-    mise_user timeout 300 mise install --yes "${tool}" >/dev/null 2>&1 \
-      || { warn "could not install mise tool ${tool}"; continue; }
+    # A registry or CDN hiccup fails an install that works a moment later, and a
+    # tool that is missing at start stays missing until the next restart. So try
+    # a few times, and keep the last error for the log instead of discarding it.
+    installed=false
+    for attempt in 1 2 3; do
+      if install_err=$(mise_user timeout 300 mise install --yes "${tool}" 2>&1); then
+        installed=true
+        break
+      fi
+      (( attempt < 3 )) && { warn "installing mise tool ${tool} failed (attempt ${attempt}/3); retrying"; sleep $(( attempt * 5 )); }
+    done
+    "${installed}" || { warn "could not install mise tool ${tool}: $(tail -n 5 <<<"${install_err}")"; continue; }
   fi
   mise_user timeout 300 mise upgrade --yes "${tool}" >/dev/null 2>&1 \
     || warn "could not upgrade mise tool ${tool}; using what is installed"
