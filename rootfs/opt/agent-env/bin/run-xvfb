@@ -41,7 +41,7 @@ else
   exit 1
 fi
 
-# X over TCP is off unless asked for; see the remote-display notes in the README.
+# X over TCP is off unless asked for; see the remote-display notes in AGENTS.md.
 if [[ "${X_TCP_ENABLE:-false}" == "true" ]]; then
   echo "X is listening on TCP port $(( 6000 + ${display#:} )) — cookie required"
 else

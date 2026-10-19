@@ -172,7 +172,7 @@ SSH_PORT="${SSH_PORT:-22}"
 # Everything this image serves for itself lives under one reserved prefix, so
 # whatever answers at / keeps its entire path space. Not configurable on
 # purpose: it is a documented contract, and a knob here would only make the
-# README wrong. The `~` keeps it clear of any path a real application routes.
+# docs wrong. The `~` keeps it clear of any path a real application routes.
 ENV_PREFIX='~env'
 
 DESKTOP_ENABLE="${DESKTOP_ENABLE:-true}"
@@ -408,7 +408,7 @@ docker_rootless_preflight() {
     for flag in "${missing[@]}"; do warn "    ${flag}"; done
     warn "Rootless Docker is disabled. Add those to your docker run / compose"
     warn "service and recreate the container. See 'Docker inside the container'"
-    warn "in the README for what each one is for."
+    warn "in AGENTS.md for what each one is for."
     return 1
   fi
   return 0

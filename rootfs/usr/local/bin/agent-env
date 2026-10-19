@@ -148,7 +148,7 @@ case "${1:-help}" in
   x-cookie)
     # The hex cookie for the virtual display, for pointing a GUI application on
     # another machine at it. See "Running a GUI app from your own machine" in
-    # the README.
+    # AGENTS.md.
     exec xauth -f "${XAUTHORITY:-/home/${USER_NAME:-dev}/.Xauthority}" \
       list "${DESKTOP_DISPLAY:-:1}"
     ;;

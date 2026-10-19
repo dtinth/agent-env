@@ -101,7 +101,7 @@ RUN set -eux; \
 #
 # Present in the image but never started unless DOCKER_ROOTLESS_ENABLE=true,
 # because a rootless daemon needs the host to relax the container's sandbox —
-# see the README. The engine runs as the dev user, under their own supervisor.
+# see AGENTS.md. The engine runs as the dev user, under their own supervisor.
 # ---------------------------------------------------------------------------
 RUN set -eux; \
     case "${TARGETARCH}" in \
