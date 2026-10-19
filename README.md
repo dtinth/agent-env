@@ -899,16 +899,17 @@ files as `dev`, shows up in `/pitchfork` beside the OpenCode server, and
 `pitchfork restart dufs` needs no sudo. It binds loopback, so the gateway's
 authentication is what stands in front of it.
 
-Upload, delete, search and archive are on. `--allow-symlink` is deliberately
-off, so a symlink inside the workspace cannot be used to browse the rest of the
-filesystem — the smoke suite checks that. Add it back, or anything else dufs
-takes, with `DUFS_ARGS`:
+It runs with `--allow-all` (upload, delete, search, archive and symlinks) and
+`--render-try-index`, so a symlink in the workspace is followed and a directory
+with an `index.html` serves that instead of a listing. dufs runs as `dev`, so a
+symlink reaches nothing `dev` couldn't already read. Add anything else dufs
+takes with `DUFS_ARGS`:
 
 ```bash
 DUFS_ENABLE=false        # turn it off
 DUFS_ROOT=/srv/shared    # serve something other than /workspace
 DUFS_PATH=~env/files     # the path it lives under
-DUFS_ARGS=--allow-symlink
+DUFS_ARGS='--hidden .git'
 ```
 
 dufs is installed by mise from `mise/config.toml`, so it is pinned and

@@ -716,13 +716,26 @@ with open("/etc/mise/mise.lock", "rb") as fh:
   fi
   fi
 
-  # --allow-symlink is deliberately not set, so a symlink must not escape root.
-  docker exec -u dev "${CONTAINER}" sh -c 'ln -sfn /etc /workspace/smoke-escape' 2>/dev/null || true
-  esc=$(code "${BASE}/${DUFS_PATH}/smoke-escape/passwd")
-  docker exec -u dev "${CONTAINER}" rm -f /workspace/smoke-escape 2>/dev/null || true
-  [[ "${esc}" == 404 || "${esc}" == 403 || "${esc}" == 302 ]] \
-    && ok "a symlink cannot escape the served root (${esc})" \
-    || bad "symlink escaped the served root: ${esc}"
+  # --allow-all, so a symlink in the workspace is followed.
+  if [ "${oauth_gate}" = true ]; then
+    skip "the symlink and index.html checks (the OAuth gate answers before dufs does)"
+  else
+    docker exec -u dev "${CONTAINER}" sh -c 'ln -sfn /etc /workspace/smoke-link' 2>/dev/null || true
+    link=$(code "${BASE}/${DUFS_PATH}/smoke-link/passwd")
+    docker exec -u dev "${CONTAINER}" rm -f /workspace/smoke-link 2>/dev/null || true
+    [[ "${link}" == 200 ]] \
+      && ok "a symlink in the workspace is followed (${link})" \
+      || bad "a symlink was not followed: ${link}"
+
+    # --render-try-index: a directory with an index.html serves it, not a listing.
+    docker exec -u dev "${CONTAINER}" sh -c \
+      'mkdir -p /workspace/smoke-site && echo smoke-index-page > /workspace/smoke-site/index.html' 2>/dev/null || true
+    idx=$(curl -s --max-time 15 -u "${AUTH}" "${BASE}/${DUFS_PATH}/smoke-site/")
+    docker exec -u dev "${CONTAINER}" rm -rf /workspace/smoke-site 2>/dev/null || true
+    grep -q smoke-index-page <<<"${idx}" \
+      && ok "a directory's index.html is served in place of its listing" \
+      || bad "index.html was not rendered for a directory"
+  fi
 
   head_ "pitchfork web UI"
   if [ "${USER_WEB_ENABLE}" != true ]; then

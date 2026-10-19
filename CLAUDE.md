@@ -72,7 +72,7 @@ and container name, and a third adds a supplied command (`-e 'PRIMARY_COMMAND=py
 -m http.server "$PORT" --bind 127.0.0.1' -e 'SMOKE_PRIMARY_EXPECT=Directory listing'`) —
 see the `Smoke test, vanilla preset` steps in `.github/workflows/docker.yml`.
 
-A clean run reports 74 passed (opencode preset) and 77 (vanilla), 0 failed,
+A clean run reports 75 passed (opencode preset) and 78 (vanilla), 0 failed,
 and one skip each — the oversized `*_FILE` guard when the container was not
 given one, and the credential-isolation check when there is no primary service
 to inspect. Skips are counted and printed rather than dropped, so a total that
