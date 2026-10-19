@@ -530,8 +530,10 @@ prefixed with `[global/<daemon>]`.
 
 Logs are rotated so they cannot fill the disk. pitchfork prunes both supervisors'
 stores hourly, keeping the last `LOG_RETENTION_LINES` lines (default `10000`) per
-daemon and nothing older than `LOG_RETENTION_DAYS` days (default `7`). The compose
-file the configurator writes also caps Docker's own copy of the output
+daemon and nothing older than `LOG_RETENTION_DAYS` days (default `7`). The
+store is kept in SQLite's auto-vacuum mode, so pruning gives the disk space back, and
+pitchfork's own `pitchfork.log` is limited to warnings and emptied on each start. The
+compose file the configurator writes also caps Docker's own copy of the output
 (`json-file`, 3 × 10 MB per container).
 
 Run `scripts/smoke-test.sh` against a live container to check the whole thing:

@@ -8,6 +8,12 @@ services:
     image: agent-env:latest
     container_name: agent-env
     restart: unless-stopped
+    # Docker keeps every line of output forever unless told otherwise.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
     env_file:
       - path: .env

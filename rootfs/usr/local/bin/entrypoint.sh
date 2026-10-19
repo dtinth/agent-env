@@ -453,6 +453,8 @@ fi
 
 # Daemon logs are kept on disk, and a chatty daemon fills it. Pitchfork prunes
 # both supervisors' logs hourly: whichever of the two limits is hit first wins.
+# The user's supervisor is told through the [env] it inherits (below) rather than
+# a [settings.logs] table in its own config, which the person may already have.
 LOG_RETENTION_LINES="${LOG_RETENTION_LINES:-10000}"
 LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-7}"
 [[ "${LOG_RETENTION_LINES}" =~ ^[0-9]+$ && "${LOG_RETENTION_DAYS}" =~ ^[0-9]+$ ]] \
@@ -480,8 +482,7 @@ cat > "${pf_block}" <<BLOCK
 ${pf_begin}
 # Keep your own daemons above this block: in TOML, anything following a table
 # header belongs to that table.
-[settings.logs]
-${pf_retention}${pf_primary}${pf_dufs}${pf_docker}${pf_end}
+${pf_primary}${pf_dufs}${pf_docker}${pf_end}
 BLOCK
 
 python3 - "${user_pf_config}" "${pf_block}" "${pf_begin}" "${pf_end}" <<'MERGE'
@@ -1393,6 +1394,9 @@ container = true
 
 [settings.general]
 log_level = "${PITCHFORK_LOG_LEVEL:-info}"
+# Pitchfork's own pitchfork.log is append-only and never pruned; keep it to the
+# things worth reading.
+log_file_level = "warn"
 
 [settings.logs]
 # The container's log driver stamps its own timestamps.
@@ -1400,6 +1404,9 @@ timestamp = false
 ${pf_retention}
 # Inherited by every daemon below.
 [env]
+PITCHFORK_LOG_LINE_RETENTION = "${LOG_RETENTION_LINES}"
+PITCHFORK_LOG_TIME_RETENTION = "${LOG_RETENTION_DAYS}d"
+PITCHFORK_LOG_FILE_LEVEL = "warn"
 HOME = "${USER_HOME}"
 USER = "${USER_NAME}"
 DISPLAY = "${DESKTOP_DISPLAY}"
@@ -1515,6 +1522,11 @@ EOF
 }
 
 render_pitchfork
+
+# SQLite never hands deleted pages back, so pruning alone leaves logs.db at its
+# peak size. Make the store shrink as it is pruned, before pitchfork opens it.
+/opt/agent-env/bin/compact-pf-logs "${PITCHFORK_STATE_DIR}/logs" \
+  || warn "could not compact the pitchfork log store; its disk use is unbounded"
 
 # ---------------------------------------------------------------------------
 # Summary

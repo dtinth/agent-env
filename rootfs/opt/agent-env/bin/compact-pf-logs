@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Keep one pitchfork supervisor's log directory from growing without bound.
+#
+# Retention deletes rows from logs.db, but SQLite keeps the freed pages, so the
+# file stays at its peak size. auto_vacuum = FULL returns them as rows go. It
+# only takes effect through a VACUUM, so this converts an existing database and
+# creates an empty one in that mode if there is none (pitchfork's own
+# CREATE ... IF NOT EXISTS then leaves the setting alone).
+#
+# Also empties pitchfork.log, which pitchfork only ever appends to. Run before
+# the supervisor starts: it must not have the database open.
+set -euo pipefail
+
+dir="${1:?usage: compact-pf-logs <logs dir>}"
+mkdir -p "${dir}/pitchfork"
+: > "${dir}/pitchfork/pitchfork.log"
+
+python3 -I - "${dir}/logs.db" <<'PY'
+import sqlite3, sys
+
+conn = sqlite3.connect(sys.argv[1], timeout=30, isolation_level=None)
+if conn.execute("PRAGMA auto_vacuum").fetchone()[0] != 1:
+    conn.execute("PRAGMA auto_vacuum = FULL")
+    conn.execute("VACUUM")
+conn.close()
+PY

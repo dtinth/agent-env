@@ -27,6 +27,12 @@ services:
     # image: ghcr.io/dtinth/agent-env@sha256:...
     pull_policy: always
     restart: unless-stopped
+    # Docker keeps every line of output forever unless told otherwise.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
     environment:
       # --- Where it lives -------------------------------------------------
