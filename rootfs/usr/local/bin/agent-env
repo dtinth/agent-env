@@ -118,7 +118,7 @@ case "${1:-help}" in
         "Terminal" \
         "${base}" "${TTYD_PATH:-${prefix}/terminal}"
     [[ "${DESKTOP_ENABLE:-true}" == "true" ]] && \
-      printf 'Desktop (noVNC) : %s/%s/\n' "${base}" "${DESKTOP_PATH:-${prefix}/desktop}"
+      printf 'Desktop (%s) : %s/%s/\n' "$([[ "${DESKTOP_BACKEND:-novnc}" == selkies ]] && echo Selkies || echo noVNC)" "${base}" "${DESKTOP_PATH:-${prefix}/desktop}"
     [[ "${DUFS_ENABLE:-true}" == "true" ]] && \
       printf 'Files           : %s/%s/\n' "${base}" "${DUFS_PATH:-${prefix}/files}"
     [[ "${USER_WEB_ENABLE:-true}" == "true" ]] && \

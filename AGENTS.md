@@ -337,7 +337,7 @@ does, so whatever answers at `/` owns its entire path space:
 | `/~env/` | index of what this environment is running |
 | `/~env/healthz` | health probe, never behind auth |
 | `/~env/terminal` | a login shell, over ttyd |
-| `/~env/desktop` | XFCE over noVNC |
+| `/~env/desktop` | XFCE over noVNC, or Selkies with `DESKTOP_BACKEND=selkies` |
 | `/~env/files` | the workspace file manager |
 | `/~env/daemons` | redirects to `/pitchfork` (see below) |
 
@@ -533,6 +533,7 @@ See [`.env.example`](.env.example) for the annotated list. The essentials:
 | `SSH_AUTHORIZED_KEYS` | — | Newline- or `;`-separated public keys |
 | `SSH_PASSWORD` | — | Enables password auth (prefer keys) |
 | `DESKTOP_ENABLE` | `true` | XFCE + noVNC |
+| `DESKTOP_BACKEND` | `novnc` | `novnc` or `selkies` (prototype; see [Selkies backend](#selkies-backend-prototype)) |
 | `DESKTOP_RESOLUTION` | `1920x1080x24` | Virtual display geometry, `WxH` or `WxHxD` |
 | `TTYD_ENABLE` | `true` | Browser terminal (a login shell) at `/~env/terminal` |
 | `MISE_TOOLS` | — | Extra global tools, e.g. `python@3.13 go@latest` |
@@ -991,7 +992,7 @@ this by opening four concurrent RFB connections.
 
 Resolution is fixed for the life of the display: Xvfb has no dynamic RandR
 resizing, so noVNC's client-side scaling is what adapts to your window. Change
-`DESKTOP_RESOLUTION` and `agent-env restart xvfb` (then `desktop`, `x11vnc`) for a
+`DESKTOP_RESOLUTION` and `agent-env restart xvfb` (then `desktop`, `x11vnc`; under Selkies, `selkies`) for a
 different geometry. Set `VNC_PASSWORD` for a second factor in front of the
 desktop specifically, and `VNC_VIEW_ONLY=true` for a read-only session.
 
@@ -1162,8 +1163,10 @@ base image or the pinned tools have broken.
                     └────────────────────────────────────────────────┘
 ```
 
+With `DESKTOP_BACKEND=selkies`, `selkies` on :6081 replaces websockify and x11vnc and captures `Xvfb :1` directly.
+
 `Xvfb :1` also backs headed Chromium, which is why agent-browser sessions show
-up on the noVNC desktop.
+up on the desktop (noVNC, or Selkies with `DESKTOP_BACKEND=selkies`).
 
 ## Layout
 
