@@ -270,6 +270,40 @@
           <p class="hint" data-show="workspaceKind=path">
             Use the directory owner's IDs (<code>stat -c '%u %g' DIR</code>) so files stay yours.
           </p>
+          <div class="choices two">
+            <label class="choice">
+              <input type="radio" name="homeKind" value="volume" checked />
+              <span><strong>Home in a Docker volume</strong><small>Managed by Docker.</small></span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="homeKind" value="path" />
+              <span
+                ><strong>Home from a host directory</strong
+                ><small>Back up or inspect logins and dotfiles.</small></span
+              >
+            </label>
+          </div>
+          <div data-show="homeKind=path" class="row">
+            <label class="field grow">
+              <span>Host directory for <code>/home/dev</code></span>
+              <input name="homePath" placeholder="/srv/home" />
+              <em class="error" data-error="homePath"></em>
+            </label>
+            <label class="field narrow" data-show="workspaceKind=volume">
+              <span>Owner UID</span>
+              <input name="homeUid" inputmode="numeric" value="1000" />
+              <em class="error" data-error="homeUid"></em>
+            </label>
+            <label class="field narrow" data-show="workspaceKind=volume">
+              <span>Owner GID</span>
+              <input name="homeGid" inputmode="numeric" value="1000" />
+              <em class="error" data-error="homeGid"></em>
+            </label>
+          </div>
+          <p class="hint" data-show="homeKind=path">
+            The container runs as one user, so it takes the IDs of the first directory above that is
+            a host path.
+          </p>
           <label class="field narrow">
             <span>Time zone</span>
             <input name="timezone" />

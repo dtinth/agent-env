@@ -136,3 +136,29 @@ test("authorized_keys text is accepted as pasted", () => {
   );
   assert(!files[".env"].includes("SSH_AUTHORIZED_KEYS"));
 });
+
+test("the home directory can be a bind mount, and sets the container's owner", () => {
+  const files = generate(
+    { ...BASIC, home: { kind: "path", path: "home", puid: 1234, pgid: 4321 } },
+    { randomSecret: fixed },
+  );
+  const compose = files["compose.yaml"];
+  assert(compose.includes('"./home:/home/dev"'));
+  assert(!compose.includes("home:/home/dev\n"));
+  assert(!/^ {2}home:$/m.test(compose), "declared a volume nothing uses");
+  assert(compose.includes('"PUID=1234"') && compose.includes('"PGID=4321"'));
+});
+
+test("with both bind-mounted, /workspace's owner wins and home needs a path", () => {
+  const a: Answers = {
+    ...BASIC,
+    workspace: { kind: "path", path: "/srv/code", puid: 10, pgid: 20 },
+    home: { kind: "path", path: "/srv/home", puid: 30, pgid: 40 },
+  };
+  const compose = generate(a, { randomSecret: fixed })["compose.yaml"];
+  assert(compose.includes('"PUID=10"') && compose.includes('"PGID=20"'));
+  assertEquals(
+    validate({ ...a, home: { kind: "path", path: "" } }).map((p) => p.field),
+    ["homePath"],
+  );
+});
