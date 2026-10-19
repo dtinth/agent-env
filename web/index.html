@@ -208,6 +208,36 @@
             <input name="primaryCommand" placeholder="npm run dev -- --port $PORT" />
             <em class="error" data-error="primaryCommand"></em>
           </label>
+          <div class="field">
+            <span>How should the desktop reach your browser?</span>
+            <label class="check">
+              <input type="radio" name="desktopBackend" value="novnc" checked />
+              noVNC <small>(works everywhere; several people can drive it at once)</small>
+            </label>
+            <label class="check">
+              <input type="radio" name="desktopBackend" value="selkies" />
+              Selkies, a prototype
+              <small>(audio and smoother video; needs https or localhost; one person drives)</small>
+            </label>
+            <em class="error" data-error="desktopBackend"></em>
+          </div>
+          <label class="field narrow">
+            <span>Desktop screen size</span>
+            <select name="desktopSizePick"></select>
+          </label>
+          <label class="field narrow" data-show="desktopSizePick=custom">
+            <span>Width × height <small>(like 2200x1300)</small></span>
+            <input name="desktopSizeCustom" placeholder="2200x1300" />
+            <em class="error" data-error="desktopSize"></em>
+          </label>
+          <label class="field narrow">
+            <span
+              >Text and window size
+              <small>(raise it on a high-resolution screen; 200% suits 4K)</small></span
+            >
+            <select name="desktopScale"></select>
+            <em class="error" data-error="desktopScale"></em>
+          </label>
           <label class="check">
             <input type="checkbox" name="rootlessDocker" />
             Let the agent run its own containers (rootless Docker)

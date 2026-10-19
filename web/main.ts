@@ -12,6 +12,10 @@ import {
   generate,
   hostPathFor,
   type Mode,
+  DEFAULT_DESKTOP_SIZE,
+  DESKTOP_SCALES,
+  DESKTOP_SIZES,
+  type DesktopBackend,
   type Preset,
   type Problem,
   publicUrlFor,
@@ -82,8 +86,11 @@ function text(name: string): string {
 function checked(name: string): boolean {
   return (el(name) as HTMLInputElement).checked;
 }
+/** The chosen value of a radio group, or of a menu of the same name. */
 function radio(name: string): string {
-  return form.querySelector<HTMLInputElement>(`input[name="${name}"]:checked`)?.value ?? "";
+  const picked = form.querySelector<HTMLInputElement>(`input[name="${name}"]:checked`);
+  if (picked) return picked.value;
+  return form.querySelector<HTMLSelectElement>(`select[name="${name}"]`)?.value ?? "";
 }
 function num(name: string): number | undefined {
   const v = text(name);
@@ -107,6 +114,14 @@ function readAnswers(): Answers {
     tsHostname: mode === "tailscale" ? text("tsHostname") : undefined,
     authMode,
     preset,
+    desktopBackend: radio("desktopBackend") as DesktopBackend,
+    desktopSize:
+      radio("desktopSizePick") === "custom"
+        ? text("desktopSizeCustom")
+            .toLowerCase()
+            .replace(/\s*[x×]\s*/, "x")
+        : radio("desktopSizePick"),
+    desktopScale: Number(radio("desktopScale")),
     primaryPort: preset === "vanilla" ? num("primaryPort") : undefined,
     primaryCommand: preset === "vanilla" ? text("primaryCommand") || undefined : undefined,
     rootlessDocker: checked("rootlessDocker"),
@@ -171,6 +186,13 @@ function writeAnswers(a: Partial<Answers>): void {
   pick("mode", a.mode);
   pick("authMode", a.authMode);
   pick("preset", a.preset);
+  pick("desktopBackend", a.desktopBackend);
+  if (a.desktopSize) {
+    const known = DESKTOP_SIZES.some((s) => s.value === a.desktopSize);
+    set("desktopSizePick", known ? a.desktopSize : "custom");
+    if (!known) set("desktopSizeCustom", a.desktopSize);
+  }
+  set("desktopScale", a.desktopScale);
   set("behindProxy", a.behindProxy);
   if (a.behindProxy) set("publicUrl", a.publicUrl);
   for (const k of [
@@ -384,6 +406,26 @@ document.querySelector<HTMLInputElement>("#load-answers")!.addEventListener("cha
   }
   render();
 });
+
+// The menus come from generate.ts, so the form and the wizard cannot drift apart.
+const fill = (name: string, options: { value: string; label: string }[], chosen: string) => {
+  const menu = form.querySelector<HTMLSelectElement>(`select[name="${name}"]`)!;
+  for (const o of options) menu.add(new Option(o.label, o.value));
+  menu.value = chosen;
+};
+fill(
+  "desktopSizePick",
+  [...DESKTOP_SIZES, { value: "custom", label: "Something else…" }],
+  DEFAULT_DESKTOP_SIZE,
+);
+fill(
+  "desktopScale",
+  DESKTOP_SCALES.map((s) => ({
+    value: String(s),
+    label: s === 100 ? "100% (normal)" : s === 200 ? "200% (HiDPI)" : `${s}%`,
+  })),
+  "100",
+);
 
 // Start from what this browser saw last, or from the wizard's own defaults.
 el("timezone").value = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";

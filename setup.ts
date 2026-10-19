@@ -42,6 +42,9 @@ import {
   generate,
   hostPathFor,
   type Mode,
+  DEFAULT_DESKTOP_SIZE,
+  type DesktopBackend,
+  DESKTOP_SIZES,
   type Preset,
   portClashProblem,
   type Problem,
@@ -475,6 +478,72 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
     ],
     prev.preset ?? "vanilla",
   );
+  const desktopBackend = await select<DesktopBackend>(
+    "desktopBackend",
+    "How should the desktop reach your browser?",
+    [
+      {
+        value: "novnc",
+        label: "noVNC",
+        hint: "works everywhere, several people can drive it at once",
+      },
+      {
+        value: "selkies",
+        label: "Selkies (prototype)",
+        hint: "audio and smoother video; needs https or localhost, one person drives",
+      },
+    ],
+    prev.desktopBackend ?? "novnc",
+  );
+  const knownSize = (v: string | undefined) => DESKTOP_SIZES.some((s) => s.value === v);
+  const sizeCheck = (v: string) => (/^\d{3,5}x\d{3,5}$/.test(v) ? null : "write it like 1920x1080");
+  let desktopSize: string;
+  if ("desktopSize" in preset) {
+    // An --answers file names the size outright; there is no menu to pick from.
+    desktopSize = await ask("desktopSize", "Screen size", DEFAULT_DESKTOP_SIZE, {
+      validate: sizeCheck,
+    });
+  } else {
+    const pick = await select<string>(
+      "desktopSizePick",
+      "How big should the desktop screen be?",
+      [
+        ...DESKTOP_SIZES.map((s) => ({ value: s.value as string, label: s.label })),
+        { value: "custom", label: "Something else", hint: "you type width and height" },
+      ],
+      prev.desktopSize && !knownSize(prev.desktopSize)
+        ? "custom"
+        : (prev.desktopSize ?? DEFAULT_DESKTOP_SIZE),
+    );
+    desktopSize =
+      pick === "custom"
+        ? await ask(
+            "desktopSizeCustom",
+            "Width x height, like 2200x1300",
+            prev.desktopSize ?? DEFAULT_DESKTOP_SIZE,
+            {
+              validate: sizeCheck,
+            },
+          )
+        : pick;
+  }
+  desktopSize = desktopSize.toLowerCase();
+  // A number in an answers file, a menu string at the prompt.
+  if ("desktopScale" in preset) preset.desktopScale = String(preset.desktopScale);
+  const desktopScale = Number(
+    await select<string>(
+      "desktopScale",
+      "How large should text and windows look? (raise it on a high-resolution screen)",
+      [
+        { value: "100", label: "100%", hint: "normal" },
+        { value: "125", label: "125%" },
+        { value: "150", label: "150%" },
+        { value: "200", label: "200%", hint: "HiDPI, for a 4K screen" },
+        { value: "300", label: "300%" },
+      ],
+      String(prev.desktopScale ?? 100),
+    ),
+  );
   let primaryPort: number | undefined;
   let primaryCommand: string | undefined;
   // Not asked under opencode, so an answers file naming one would be dropped
@@ -670,6 +739,9 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
     allowedEmailDomains,
     gatewayUser,
     preset: agentPreset,
+    desktopBackend,
+    desktopSize,
+    desktopScale,
     primaryPort,
     primaryCommand,
     rootlessDocker,

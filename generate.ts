@@ -21,6 +21,24 @@ export const VERSION = 1;
 
 export const PRESETS = ["opencode", "vanilla"] as const;
 export type Preset = (typeof PRESETS)[number];
+export const DESKTOP_BACKENDS = ["novnc", "selkies"] as const;
+export type DesktopBackend = (typeof DESKTOP_BACKENDS)[number];
+
+export const DEFAULT_DESKTOP_SIZE = "1920x1080";
+/** Sizes the forms offer by name; any other WxH is a custom size. */
+export const DESKTOP_SIZES = [
+  { value: "1280x720", label: "1280 × 720 (HD)" },
+  { value: "1920x1080", label: "1920 × 1080 (Full HD)" },
+  { value: "2560x1440", label: "2560 × 1440 (QHD)" },
+  { value: "3840x2160", label: "3840 × 2160 (4K)" },
+] as const;
+/** Text and UI size as a percentage; 100 is 96 DPI. */
+export const DESKTOP_SCALES = [100, 125, 150, 200, 300] as const;
+
+/** The DPI a scale percentage means. */
+export function dpiFor(scale: number): number {
+  return Math.round((96 * scale) / 100);
+}
 export const ANSWERS_FILE = "agent-env.setup.json";
 
 export type Mode = "local" | "caddy" | "tailscale";
@@ -57,6 +75,12 @@ export interface Answers {
   primaryPort?: number;
   /** A command the container supervises at / (vanilla only). */
   primaryCommand?: string;
+  /** How the desktop reaches the browser; absent means noVNC. */
+  desktopBackend?: DesktopBackend;
+  /** Virtual screen size as "WxH"; absent means 1920x1080. */
+  desktopSize?: string;
+  /** Text and UI size in percent (100 = 96 DPI); absent means 100. */
+  desktopScale?: number;
   rootlessDocker: boolean;
   sshKeys: string;
   sshPort?: number;
@@ -407,6 +431,35 @@ export function validate(a: Answers): Problem[] {
       field("githubTeam", CHECKS.githubTeam(a.githubTeam, a.githubOrg));
     }
   }
+  if (a.desktopBackend !== undefined && !DESKTOP_BACKENDS.includes(a.desktopBackend)) {
+    field("desktopBackend", "must be novnc or selkies");
+  } else if (a.desktopBackend === "selkies") {
+    // Selkies' page refuses to start outside a secure context: https, or
+    // localhost. noVNC has no such rule, so this is the one place to say so.
+    const url = publicUrlFor(a);
+    if (
+      !url.startsWith("https://") &&
+      !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(url)
+    ) {
+      field(
+        "desktopBackend",
+        "Selkies needs https or localhost; this URL is plain http on another host. Use noVNC, or serve it over https.",
+      );
+    }
+  }
+  if (a.desktopSize !== undefined) {
+    const m = /^(\d{3,5})x(\d{3,5})$/.exec(a.desktopSize);
+    if (!m) {
+      field("desktopSize", "write it as width × height, like 1920x1080");
+    } else if (+m[1] < 640 || +m[1] > 7680 || +m[2] < 480 || +m[2] > 4320) {
+      field("desktopSize", "between 640×480 and 7680×4320");
+    }
+  }
+  if (a.desktopScale !== undefined) {
+    if (!Number.isInteger(a.desktopScale) || a.desktopScale < 100 || a.desktopScale > 400) {
+      field("desktopScale", "a whole percentage from 100 to 400");
+    }
+  }
   if (a.preset === "vanilla") port("primaryPort", a.primaryPort);
   if (a.primaryCommand) {
     if (a.preset !== "vanilla") {
@@ -570,6 +623,7 @@ export function renderEnv(
     "GITHUB_CLIENT_ID",
     "GATEWAY_USER",
     "AGENT_ENV_PRESET",
+    "DESKTOP_BACKEND",
     "PRIMARY_PORT",
     "PRIMARY_COMMAND",
     "DOCKER_ROOTLESS_ENABLE",
@@ -621,6 +675,11 @@ export function renderEnv(
   }
 
   set("AGENT_ENV_PRESET", a.preset);
+  if (a.desktopBackend === "selkies") set("DESKTOP_BACKEND", "selkies");
+  if (a.desktopSize && a.desktopSize !== DEFAULT_DESKTOP_SIZE) {
+    set("DESKTOP_RESOLUTION", `${a.desktopSize}x24`);
+  }
+  if (a.desktopScale && a.desktopScale !== 100) set("DESKTOP_DPI", String(dpiFor(a.desktopScale)));
   if (a.preset === "vanilla") {
     set("PRIMARY_PORT", String(a.primaryPort ?? 3000));
     if (a.primaryCommand) set("PRIMARY_COMMAND", a.primaryCommand);
@@ -644,7 +703,7 @@ export function renderEnv(
   L.push("");
 
   // Anything else already in .env is the operator's — a provider key, a
-  // MISE_TOOLS list, a DESKTOP_RESOLUTION. This file is theirs to edit, and a
+  // MISE_TOOLS list, a DESKTOP_DEPTH. This file is theirs to edit, and a
   // generator that silently drops what it does not recognise makes "re-run it"
   // advice you cannot follow.
   const carried = Object.keys(keep)
