@@ -9,7 +9,7 @@
 # It does, however, need the *host* to have relaxed the sandbox around this
 # container — user namespaces, CAP_SYS_ADMIN for newuidmap, a writable
 # /proc/sys and /dev/net/tun. The entrypoint checks for those and says so if
-# any are missing; see `docker rootless` in the README.
+# any are missing; see `docker rootless` in AGENTS.md.
 set -euo pipefail
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"

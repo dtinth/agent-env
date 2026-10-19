@@ -512,7 +512,7 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
   );
   if (rootlessDocker) {
     note(
-      C.dim("  Adds five host flags that widen the sandbox. See the README before shipping this."),
+      C.dim("  Adds five host flags that widen the sandbox. See AGENTS.md before shipping this."),
     );
     if (mode === "tailscale") {
       warn("Rootless Docker inside the Tailscale network namespace is UNTESTED.");
