@@ -368,8 +368,9 @@ export function fieldsFromAnswers(a: Partial<Answers>): Partial<Fields> {
  * keeps them in agent-env.setup.json rather than compose.yaml, and that file
  * is accepted in the same box, since it is the same thing to the person.
  */
-export function readImport(text: string): { answers: Partial<Answers> } | { error: string } {
-  if (!text.trim()) return { answers: {} };
+export function readImport(text: string): { answers: Partial<Answers> | null } | { error: string } {
+  // Nothing pasted: only the .env is being brought in, and the form stays as it is.
+  if (!text.trim()) return { answers: null };
   const fromCompose = answersFromCompose(text);
   if (fromCompose) return { answers: fromCompose };
   try {
@@ -442,8 +443,13 @@ export function useConfigurator() {
   // Answers set on purpose, so the mode's default gate leaves them alone.
   const [touched] = useState(() => new Set<string>(start.chosen ? ["authMode"] : []));
   const [minted, setMinted] = useState(loadSecrets);
-  /** Answers came back from a previous visit, but the secrets beside them did not. */
-  const restoredWithoutSecrets = start.restored && loadSecrets().size === 0;
+  // Answers came back from a previous visit, but the secrets beside them did
+  // not. Decided once, before generate() mints any: from then on this tab has
+  // secrets of its own, and they are still not the deployment's. It lasts
+  // until that .env is imported or new secrets are chosen on purpose.
+  const [missingSecrets, setMissingSecrets] = useState(
+    () => start.restored && loadSecrets().size === 0,
+  );
 
   const stableSecret = (bytes: number, key: string): string => {
     if (!minted.has(key)) {
@@ -456,10 +462,19 @@ export function useConfigurator() {
     const fresh = new Map<string, string>();
     saveSecrets(fresh);
     setMinted(fresh);
+    setMissingSecrets(false);
   };
+  const keepNewSecrets = () => setMissingSecrets(false);
 
-  /** Replace the answers with imported ones, and keep the secrets of the .env given. */
-  const importDeployment = (answers: Partial<Answers>, env: string) => {
+  /**
+   * Replace the answers with imported ones, if any were given, and keep the
+   * secrets of the .env given. A .env on its own leaves the answers alone.
+   */
+  const importDeployment = (answers: Partial<Answers> | null, env: string) => {
+    if (!answers) {
+      setFields((f) => ({ ...f, existingEnv: env }));
+      return;
+    }
     touched.add("authMode");
     setFields((f) => ({
       ...DEFAULT_FIELDS,
@@ -513,7 +528,8 @@ export function useConfigurator() {
     problemsIn,
     rerollSecrets,
     importDeployment,
-    restoredWithoutSecrets: restoredWithoutSecrets && !fields.existingEnv.trim(),
+    keepNewSecrets,
+    restoredWithoutSecrets: missingSecrets && !fields.existingEnv.trim(),
   };
 }
 export type Configurator = ReturnType<typeof useConfigurator>;
