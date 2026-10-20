@@ -26,9 +26,11 @@ Google-authenticated workstation. The moving parts:
   only erasable TypeScript (no enums, namespaces or parameter properties).
 - `generate.ts` — the pure module both front ends call: answers in,
   `compose.yaml` + `.env` out, no runtime APIs.
-- `web/` — the browser configurator, a form over `generate.ts`, built with
-  Vite+ (`vite.config.ts`) and published to GitHub Pages by
-  `.github/workflows/pages.yml`.
+- `web/` — the browser configurator, a Preact stepper over `generate.ts`
+  styled with the dt.in.th tokens claw uses (dark only), built with Vite+
+  (`vite.config.ts`) and published to GitHub Pages by
+  `.github/workflows/pages.yml`. `?demo` and `?demo=ready` start it from a
+  half-filled and a complete deployment, for screenshots.
 - `vp check` (format, lint, typecheck) and `vp test` (`*.test.ts`, Vitest) cover
   all of the above; `vp build` builds the page to `dist/`, `vp dev` serves it.
   None of them need a container. Run `vp install` first.
@@ -243,12 +245,17 @@ compose stack and an env file. The generation logic is `generate.ts`, a pure,
 dependency-free module (`generate(answers, { existingEnv })` returns the files)
 that both the wizard and the configurator call.
 
-In the browser, paste your current `.env` under "Updating an existing
-deployment?" for the same effect.
-
 **Re-running it is the point.** It reads back what it wrote, offers those as the
 defaults, and keeps the secrets already in `.env` — so it upgrades a deployment
-as well as creating one.
+as well as creating one. The answers ride in `compose.yaml` itself, on one
+`x-agent-env:` line at the end: Compose ignores `x-` keys, and the value is JSON,
+which YAML reads as-is, so reading it back needs no YAML parser. Keep it on one
+line if you edit the file. A deployment from before this has its answers in
+`agent-env.setup.json` instead; that is still read, and the wizard then says the
+file can go.
+
+In the browser, **Import existing…** in the header does the same: give it your
+`compose.yaml` (or an old `agent-env.setup.json`) and `.env`.
 
 ```bash
 node setup.ts --out ~/agent-env-deploy   # again, later: answers pre-filled, secrets kept

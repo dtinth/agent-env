@@ -1,13 +1,14 @@
-/** Pieces every prototype layout shares: fields, section bodies, the files panel. */
+/** The configurator's pieces: fields, section bodies, import, the files panel. */
 
 import type { ComponentChildren } from "preact";
 import { useState } from "preact/hooks";
-import { ANSWERS_FILE, DESKTOP_SCALES, DESKTOP_SIZES } from "../../generate.ts";
+import { ANSWERS_KEY, DESKTOP_SCALES, DESKTOP_SIZES } from "../../generate.ts";
 import {
   type Configurator,
   type FieldName,
   type Fields,
   FIELD_LABELS,
+  readImport,
   type SectionId,
   sectionOf,
 } from "./model.ts";
@@ -523,23 +524,6 @@ function Storage({ c }: { c: Configurator }) {
   );
 }
 
-export function Existing({ c }: { c: Configurator }) {
-  return (
-    <Text
-      c={c}
-      name="existingEnv"
-      label={
-        <>
-          Your current <code>.env</code>
-        </>
-      }
-      hint="— its secrets and extra keys are kept"
-      multiline
-      mono
-    />
-  );
-}
-
 export function SectionBody({ c, id }: { c: Configurator; id: SectionId }) {
   switch (id) {
     case "where":
@@ -551,15 +535,132 @@ export function SectionBody({ c, id }: { c: Configurator; id: SectionId }) {
     case "storage":
       return <Storage c={c} />;
     case "files":
-      return <Existing c={c} />;
+      return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Import
+// ---------------------------------------------------------------------------
+
+/** A box that takes pasted text, or the text of a file picked into it. */
+function Paste(props: {
+  label: ComponentChildren;
+  hint: ComponentChildren;
+  value: string;
+  onInput: (v: string) => void;
+  accept?: string;
+  error?: string;
+  rows: number;
+}) {
+  return (
+    <label class={`field ${props.error ? "has-error" : ""}`}>
+      <span class="label">
+        {props.label} <small>{props.hint}</small>
+      </span>
+      <textarea
+        class="mono"
+        rows={props.rows}
+        spellcheck={false}
+        value={props.value}
+        placeholder="Paste it here, or choose the file below."
+        onInput={(e) => props.onInput(e.currentTarget.value)}
+      />
+      <input
+        type="file"
+        accept={props.accept}
+        onChange={async (e) => {
+          const file = e.currentTarget.files?.[0];
+          if (file) props.onInput(await file.text());
+        }}
+      />
+      {props.error && <em class="error">{props.error}</em>}
+    </label>
+  );
+}
+
+/**
+ * Bring an existing deployment back: its compose.yaml for the answers, its
+ * .env for the secrets in use. Neither leaves the page.
+ */
+export function ImportDialog({ c, onClose }: { c: Configurator; onClose: () => void }) {
+  const [compose, setCompose] = useState("");
+  const [env, setEnv] = useState(c.fields.existingEnv);
+  const [error, setError] = useState<string>();
+  const submit = (e: Event) => {
+    e.preventDefault();
+    const read = readImport(compose);
+    if ("error" in read) {
+      setError(read.error);
+      return;
+    }
+    c.importDeployment(read.answers, env);
+    onClose();
+  };
+  return (
+    <div
+      class="overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="import-title"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <form class="card dialog" onSubmit={submit}>
+        <h2 id="import-title">Import an existing deployment</h2>
+        <p class="muted">
+          Its answers come back into the form, and the secrets already in use are kept. Nothing you
+          paste leaves this page.
+        </p>
+        <Paste
+          label={<code>compose.yaml</code>}
+          hint={<>— the answers, from its {ANSWERS_KEY} line</>}
+          value={compose}
+          onInput={(v) => {
+            setCompose(v);
+            setError(undefined);
+          }}
+          accept=".yaml,.yml,.json"
+          error={error}
+          rows={6}
+        />
+        <Paste
+          label={<code>.env</code>}
+          hint="— optional; its secrets and extra keys are kept"
+          value={env}
+          onInput={setEnv}
+          rows={4}
+        />
+        <footer class="dialog-foot">
+          <button type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" class="primary" disabled={!compose.trim() && !env.trim()}>
+            Import
+          </button>
+        </footer>
+      </form>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
 // Output
 // ---------------------------------------------------------------------------
 
-const FILE_NAMES = ["compose.yaml", ".env", ANSWERS_FILE];
+const FILE_NAMES = ["compose.yaml", ".env"];
+
+function download(name: string, body: string): void {
+  // Not text/plain: browsers append ".txt" to a name like ".env" for that.
+  const blob = new Blob([body], { type: "application/octet-stream" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  // Some browsers drop a leading dot; "env" saved this way still needs renaming.
+  a.download = name;
+  a.click();
+  // Revoked on the next tick, not now: some browsers start the download
+  // asynchronously and would find the URL already gone.
+  setTimeout(() => URL.revokeObjectURL(a.href), 0);
+}
 
 export function FilesPanel({ c, class: cls }: { c: Configurator; class?: string }) {
   const [current, setCurrent] = useState("compose.yaml");
@@ -587,8 +688,16 @@ export function FilesPanel({ c, class: cls }: { c: Configurator; class?: string 
           >
             {copied ? "Copied" : "Copy"}
           </button>
-          <button class="small" disabled={!body}>
+          <button class="small" disabled={!body} onClick={() => download(current, body ?? "")}>
             Download
+          </button>
+          <button
+            class="small"
+            disabled={!body}
+            onClick={c.rerollSecrets}
+            title="Pick fresh random values for the generated password and cookie secret. Keys from an imported .env are left alone."
+          >
+            Re-roll secrets
           </button>
         </div>
       </div>
