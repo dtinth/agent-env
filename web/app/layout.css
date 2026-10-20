@@ -149,9 +149,10 @@ button.link:hover {
   font-weight: 600;
   font-size: 14px;
 }
+/* The same as "Opens at": muted, in the body font. */
 .c-row-value {
-  font: 400 12.5px var(--font-mono);
-  color: var(--fg-warm);
+  font-size: 0.85rem;
+  color: var(--fg-muted);
 }
 .c-issue {
   font-size: 12.5px;
