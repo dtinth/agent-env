@@ -1,0 +1,123 @@
+.a-page {
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 1.5rem 2rem 2rem;
+}
+.a-head {
+  display: flex;
+  align-items: baseline;
+  gap: 1.2rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.2rem;
+}
+.a-head p {
+  margin: 0;
+}
+.a-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+.a-tabs button {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.15rem;
+  text-align: left;
+  background: var(--bg-base);
+  border: 1px solid var(--border-weak);
+  border-top: 3px solid var(--border-weak);
+  box-shadow: var(--shadow-offset);
+  padding: 0.6rem 0.8rem 0.65rem;
+}
+.a-tabs button[aria-selected="true"] {
+  border-top-color: var(--accent-lime);
+  background: linear-gradient(to bottom, #2e3022, var(--bg-base));
+}
+.a-tabs button.attention {
+  border-top-color: var(--warn);
+}
+.a-tabs button.attention[aria-selected="true"] {
+  border-top-color: var(--warn);
+  background: linear-gradient(to bottom, #2f2d1c, var(--bg-base));
+}
+.a-tab-title {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 15px;
+}
+.a-tab-title .icon {
+  margin-left: auto;
+}
+.a-num {
+  font-family: var(--font-mono);
+  color: var(--fg-muted);
+  font-size: 0.8rem;
+}
+.a-tab-summary {
+  font: 400 12.5px var(--font-mono);
+  color: var(--fg-warm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.a-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+.a-form {
+  padding: 1.2rem 1.4rem;
+}
+.a-foot {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-weak);
+}
+.a-side {
+  position: sticky;
+  top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  max-height: calc(100vh - 2rem);
+}
+.a-files {
+  min-height: 20rem;
+  flex: 1;
+}
+.a-problems {
+  padding: 0.7rem 0.9rem;
+  border-color: #5d5520;
+}
+.a-existing summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+}
+.a-existing .field {
+  margin-top: 0.5rem;
+}
+@media (max-width: 1000px) {
+  .a-page {
+    padding: 1rem;
+  }
+  .a-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .a-main {
+    grid-template-columns: 1fr;
+  }
+  .a-side {
+    position: static;
+    max-height: none;
+  }
+  .choices {
+    grid-template-columns: 1fr !important;
+  }
+}

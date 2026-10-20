@@ -1,0 +1,123 @@
+.b-shell {
+  display: grid;
+  grid-template-columns: 17rem minmax(28rem, 1fr) minmax(26rem, 0.9fr);
+  height: 100vh;
+}
+.b-side {
+  background: var(--bg-deep);
+  border-right: 1px solid var(--border-weak);
+  padding: 1.4rem 1rem;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1.2rem;
+}
+.b-side h1 {
+  line-height: 1.15;
+  padding: 0 0.4rem;
+}
+.b-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.b-tabs button {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  text-align: left;
+  background: none;
+  border: none;
+  border-left: 3px solid transparent;
+  box-shadow: none;
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  padding: 0.5rem 0.6rem;
+}
+.b-tabs button:hover {
+  background: var(--bg-base);
+}
+.b-tabs button[aria-selected="true"] {
+  border-left-color: var(--accent-lime);
+  background: var(--bg-base);
+}
+.b-tab-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 15px;
+}
+.b-tabs button[aria-selected="true"] .b-tab-title {
+  color: var(--accent-lime);
+}
+.b-tab-summary {
+  font: 400 12px var(--font-mono);
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.b-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--warn);
+  border: 1px solid #5d5520;
+  border-radius: 999px;
+  padding: 0 0.4rem;
+}
+.b-status {
+  overflow-wrap: anywhere;
+  margin-top: auto;
+  border-top: 1px solid var(--border-weak);
+  padding: 1rem 0.4rem 0;
+}
+.b-status h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.b-status .ok-head {
+  color: var(--ok);
+}
+.b-status .warn-head {
+  color: var(--warn);
+}
+.b-main {
+  overflow: auto;
+  padding: 1.6rem 2rem 3rem;
+}
+.b-section-head {
+  margin-bottom: 1.2rem;
+}
+.b-section-head p {
+  margin: 0;
+}
+.b-existing {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-weak);
+}
+.b-existing summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+  font-weight: 600;
+  font-size: 14px;
+}
+.b-files {
+  margin: 1rem 1rem 1rem 0;
+  height: calc(100vh - 2rem);
+}
+@media (max-width: 1100px) {
+  .b-shell {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+  .b-files {
+    margin: 0 1rem 1rem;
+    height: 70vh;
+  }
+  .choices {
+    grid-template-columns: 1fr !important;
+  }
+}
