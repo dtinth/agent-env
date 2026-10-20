@@ -145,6 +145,15 @@ const TS = {
   tsHostname: "work.tail1234.ts.net",
   authMode: "none",
 };
+const PLATFORM = {
+  ...BASE,
+  sshPort: undefined,
+  mode: "none",
+  publicUrl: "https://agent.example.com",
+  authMode: "github",
+  githubClientId: "Iv1.0123456789abcdef",
+  githubUsers: "octocat",
+};
 
 // ---------------------------------------------------------------------------
 
@@ -401,7 +410,10 @@ test("PUBLIC_URL matches what each mode actually serves", () => {
   const cases: [Record<string, unknown>, string][] = [
     [LOCAL, "http://localhost:8080"],
     [CADDY, "https://agent.example.com:8443"],
+    // 443 unless asked otherwise; 80 is published for ACME either way.
+    [{ ...CADDY, httpsPort: undefined }, "https://agent.example.com"],
     [TS, "https://work.tail1234.ts.net"],
+    [PLATFORM, "https://agent.example.com"],
   ];
   for (const [answers, expected] of cases) {
     const dir = tmp();
@@ -610,6 +622,46 @@ test("caddy mode inlines the Caddyfile in compose.yaml", () => {
   assertStringIncludes(compose, "  caddyfile:\n    content: |\n");
   assertStringIncludes(compose, "      agent.example.com:");
   assertStringIncludes(compose, "\treverse_proxy agent-env:8080");
+});
+
+test("on a platform nothing is published, only exposed", () => {
+  // Dokploy and the like route to the container through their own proxy, so a
+  // published port would only bypass it or collide with another stack.
+  const dir = tmp();
+  assertEquals(run(PLATFORM, dir).code, 0);
+  const c = readText(`${dir}/compose.yaml`);
+  assert(!/^\s+ports:/m.test(c), "a port was published");
+  assertStringIncludes(c, '    expose:\n      - "8080"\n      - "22"\n');
+  assert(!/^ {2}(caddy|tailscale):/m.test(c), "a sidecar was added");
+
+  // The URL is the platform's, so there is nothing to derive it from.
+  const missing = tmp();
+  assertEquals(run({ ...PLATFORM, publicUrl: "" }, missing).code, 2);
+});
+
+test("an IP address gets a six-day certificate, and no Google sign-in", () => {
+  // Let's Encrypt issues IP certificates only on its shortlived profile, so
+  // Caddy has to ask for it, or every attempt is refused.
+  const ip = { ...CADDY, domain: "203.0.113.7", authMode: "basic", gatewayUser: "dev" };
+  const dir = tmp();
+  assertEquals(run(ip, dir).code, 0);
+  const caddyfile = inlineConfig(readText(`${dir}/compose.yaml`), "caddyfile");
+  assertStringIncludes(caddyfile, "203.0.113.7:8443 {");
+  assertStringIncludes(caddyfile, "\t\tissuer acme {\n\t\t\tprofile shortlived\n\t\t}");
+
+  // A name keeps the ordinary 90-day certificate.
+  const named = tmp();
+  run(CADDY, named);
+  assert(!inlineConfig(readText(`${named}/compose.yaml`), "caddyfile").includes("shortlived"));
+
+  // Google's redirect URI rules: "Hosts cannot be raw IP addresses."
+  const google = tmp();
+  assertEquals(run({ ...CADDY, domain: "203.0.113.7" }, google).code, 1);
+  assert(!existsSync(`${google}/compose.yaml`), "compose.yaml written despite refusing");
+
+  // Something that only looks like an address is still not a hostname.
+  const bad = tmp();
+  assertEquals(run({ ...ip, domain: "203.0.113.256" }, bad).code, 2);
 });
 
 test("sidecar files from an older generation are reported as stale", () => {

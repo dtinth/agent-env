@@ -177,8 +177,22 @@ function Where({ c }: { c: Configurator }) {
             title: "A tailnet",
             desc: "Via Tailscale. The tailnet is the boundary; SSH and mosh just work.",
           },
+          {
+            value: "none",
+            title: "None",
+            desc: "Dokploy, Coolify and the like route to it. No ports are published.",
+          },
         ]}
       />
+      {f.mode === "none" && (
+        <Text
+          c={c}
+          name="publicUrl"
+          label="The URL the platform serves this at"
+          hint="(route it to port 8080)"
+          placeholder="https://agent.example.com"
+        />
+      )}
       {f.mode === "local" && (
         <>
           <Check c={c} name="behindProxy">
@@ -201,6 +215,7 @@ function Where({ c }: { c: Configurator }) {
             c={c}
             name="domain"
             label="Domain name"
+            hint="(or the host's IPv4 address)"
             placeholder="agent.example.com"
             class="grow"
           />
@@ -463,7 +478,7 @@ function Storage({ c }: { c: Configurator }) {
           mono
           class="grow"
         />
-        {f.mode !== "tailscale" && (
+        {f.mode !== "tailscale" && f.mode !== "none" && (
           <Text c={c} name="sshPort" label="SSH host port" class="narrow" />
         )}
       </div>

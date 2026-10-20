@@ -42,6 +42,7 @@ import {
   DEFAULT_NAME,
   generate,
   hostPathFor,
+  isIPv4,
   LEGACY_ANSWERS_FILE,
   type Mode,
   DEFAULT_DESKTOP_SIZE,
@@ -264,6 +265,11 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
         label: "A tailnet, via Tailscale",
         hint: "Adds a Tailscale sidecar. The tailnet is the boundary; SSH and mosh just work.",
       },
+      {
+        value: "none",
+        label: "None: a platform routes to it",
+        hint: "For Dokploy, Coolify and the like. Publishes no ports; the platform's proxy reaches port 8080.",
+      },
     ],
     prev.mode ?? "local",
   );
@@ -293,15 +299,29 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
       : "http://localhost:8080";
   }
 
+  if (mode === "none") {
+    publicUrl = await ask(
+      "publicUrl",
+      "The URL the platform serves this at",
+      prev.publicUrl ?? "https://agent.example.com",
+      { validate: CHECKS.publicUrl },
+    );
+  }
+
   if (mode === "caddy") {
-    domain = await ask("domain", "Domain name", prev.domain ?? "agent.example.com", {
-      validate: CHECKS.domain,
-    });
+    // An IPv4 address works too: Caddy asks Let's Encrypt for a six-day
+    // certificate, the only kind it issues for an address.
+    domain = await ask(
+      "domain",
+      "Domain name, or this host's public IPv4 address",
+      prev.domain ?? "agent.example.com",
+      { validate: CHECKS.domain },
+    );
     // A non-standard HTTPS port is fine — Google allows ports in redirect URIs,
     // and one hostname across several ports shares the session cookie, which is
-    // host-scoped. Port 443 is offered but not assumed: it is often taken.
+    // host-scoped. 80 is published for ACME either way.
     httpsPort = Number(
-      await ask("httpsPort", "HTTPS port to serve on", String(prev.httpsPort ?? 8443), {
+      await ask("httpsPort", "HTTPS port to serve on", String(prev.httpsPort ?? 443), {
         validate: CHECKS.port,
       }),
     );
@@ -329,7 +349,8 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
   // 2. Who gets in. The mode decides what is reasonable here, which is the
   //    single best reason for this script to exist.
   const authDefault: AuthMode =
-    prev.authMode ?? (mode === "tailscale" ? "none" : mode === "caddy" ? "google" : "basic");
+    prev.authMode ??
+    (mode === "tailscale" ? "none" : mode === "caddy" || mode === "none" ? "google" : "basic");
 
   if (mode === "tailscale" && authDefault === "none") {
     note();
@@ -368,7 +389,7 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
 
   const refused = refusal({ mode, authMode });
   if (refused) fail(refused);
-  if (authMode === "none" && mode === "local" && behindProxy) {
+  if (authMode === "none" && ((mode === "local" && behindProxy) || mode === "none")) {
     warn("AUTH_MODE=none with a proxy in front: make sure the proxy is the one authenticating.");
   }
 
@@ -608,10 +629,10 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
   }
 
   // On a tailnet SSH is reached on the tailnet address with nothing published,
-  // which is the one place this does not need asking. Everywhere else it is a
-  // host port, and 2222 is often already taken.
+  // and a platform publishes nothing at all, so neither needs asking. Everywhere
+  // else it is a host port, and 2222 is often already taken.
   let sshPort: number | undefined;
-  if (mode !== "tailscale") {
+  if (mode !== "tailscale" && mode !== "none") {
     sshPort = Number(
       await ask("sshPort", "Host port for SSH", String(prev.sshPort ?? 2222), {
         validate: CHECKS.port,
@@ -879,7 +900,8 @@ async function main() {
     note(`  1. Put your ${which} client secret in .env (${key}).`);
     note(`  2. Register this redirect URI: ${answers.publicUrl}/oauth2/callback`);
   }
-  if (answers.mode === "caddy") {
+  // An address needs no record; it is already where it points.
+  if (answers.mode === "caddy" && !isIPv4(answers.domain ?? "")) {
     note(
       `  ${
         oauth ? "3" : "1"
@@ -888,6 +910,11 @@ async function main() {
   }
   if (answers.mode === "tailscale") {
     note(`  ${oauth ? "3" : "1"}. Put a tagged, reusable auth key in .env (TS_AUTHKEY).`);
+  }
+  if (answers.mode === "none") {
+    note(
+      `  ${oauth ? "3" : "1"}. Have the platform route ${answers.publicUrl} to port 8080 of the agent-env service.`,
+    );
   }
   note(`  ${"docker compose up -d"}`);
   note(`  ${"docker compose exec agent-env agent-env urls"}`);

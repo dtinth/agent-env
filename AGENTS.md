@@ -221,8 +221,9 @@ same code, so they agree. The first question decides the rest:
 | Where it runs | What you get |
 |---|---|
 | **This machine only** | Ports bound to `127.0.0.1`. Put your own proxy in front if you want it reachable. |
-| **A public domain** | A Caddy sidecar that gets a certificate from Let's Encrypt. |
+| **A public domain** | A Caddy sidecar that gets a certificate from Let's Encrypt, on 443 unless you pick another port. The "domain" can be the host's IPv4 address: Let's Encrypt certifies one only on its six-day `shortlived` profile, which the Caddyfile then asks for. Google sign-in refuses an IP in its redirect URI, so that is refused too; a name like `203-0-113-7.sslip.io` gets round it with an ordinary certificate. |
 | **A tailnet** | A Tailscale sidecar. The tailnet is the boundary, and SSH and mosh work with nothing published. |
+| **None** | For Dokploy, Coolify and other platforms that route to the container themselves. No ports are published; `expose:` lists 8080 and 22 for the platform's benefit, and you give the URL it serves. SSH and mosh are only reachable if the platform forwards them. |
 
 That choice sets `PUBLIC_URL`, the port layout, which sidecars exist, and the
 sensible default for authentication — which is most of what there is to get
@@ -235,8 +236,8 @@ wrong. It also does the things that are tedious by hand and easy to forget:
 - Emits all four rootless-Docker host flags together, or none — three out of
   four leaves the daemon down.
 - Reads `PUID`/`PGID` off a host directory you mount, so files stay yours.
-- Publishes `:80` alongside `:8443` in domain mode, because ACME only ever
-  validates on 80 or 443 and never on the port you serve from.
+- Publishes `:80` alongside the HTTPS port in domain mode, because ACME only
+  ever validates on 80 or 443, and the HTTPS port may be neither.
 - Names the deployment (`agent-env` unless you say otherwise). The name is the
   Compose project, so two deployments on one host need different names, or the
   second takes over the first's containers and volumes. It is also the
