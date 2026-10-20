@@ -15,6 +15,7 @@ import {
   DEFAULT_NAME,
   DESKTOP_SIZES,
   generate,
+  isIPv4,
   LEGACY_ANSWERS_FILE,
   hostPathFor,
   type Mode,
@@ -33,7 +34,7 @@ export const DEFAULT_FIELDS = {
   behindProxy: false,
   publicUrl: "",
   domain: "",
-  httpsPort: "8443",
+  httpsPort: "443",
   acmeEmail: "",
   tsHostname: "",
   authMode: "basic",
@@ -112,7 +113,7 @@ export function toAnswers(f: Fields): Answers {
     primaryCommand: preset === "vanilla" ? f.primaryCommand.trim() || undefined : undefined,
     rootlessDocker: f.rootlessDocker,
     sshKeys: f.sshKeys.trim(),
-    sshPort: mode === "tailscale" ? undefined : num(f.sshPort),
+    sshPort: mode === "tailscale" || mode === "none" ? undefined : num(f.sshPort),
     workspace:
       f.workspaceKind === "path"
         ? {
@@ -145,7 +146,10 @@ export function toAnswers(f: Fields): Answers {
     a.allowedEmailDomains = f.allowedEmailDomains.trim();
   }
   if (authMode === "basic") a.gatewayUser = f.gatewayUser.trim() || "dev";
-  a.publicUrl = publicUrlFor({ ...a, publicUrl: behindProxy ? f.publicUrl.trim() : "" });
+  a.publicUrl = publicUrlFor({
+    ...a,
+    publicUrl: behindProxy || mode === "none" ? f.publicUrl.trim() : "",
+  });
   return a;
 }
 
@@ -167,6 +171,7 @@ const MODE_LABEL: Record<Mode, string> = {
   local: "This machine",
   caddy: "Public domain",
   tailscale: "Tailnet",
+  none: "Platform",
 };
 const AUTH_LABEL: Record<AuthMode, string> = {
   google: "Google",
@@ -326,7 +331,7 @@ export function fieldsFromAnswers(a: Partial<Answers>): Partial<Fields> {
   put("name", a.name);
   put("mode", a.mode);
   put("behindProxy", a.behindProxy);
-  if (a.behindProxy) put("publicUrl", a.publicUrl);
+  if (a.behindProxy || a.mode === "none") put("publicUrl", a.publicUrl);
   put("domain", a.domain);
   put("httpsPort", str(a.httpsPort));
   put("acmeEmail", a.acmeEmail);
@@ -400,7 +405,10 @@ export function nextSteps(a: Answers): string[] {
     steps.push(`Put your ${which} client secret in .env (${key}).`);
     steps.push(`Register the redirect URI ${a.publicUrl}/oauth2/callback.`);
   }
-  if (a.mode === "caddy") steps.push(`Point an A record for ${a.domain} at the host.`);
+  if (a.mode === "caddy" && !isIPv4(a.domain ?? ""))
+    steps.push(`Point an A record for ${a.domain} at the host.`);
+  if (a.mode === "none")
+    steps.push(`Have the platform route ${a.publicUrl} to port 8080 of the agent-env service.`);
   if (a.mode === "tailscale")
     steps.push("Put a tagged, reusable Tailscale auth key in .env (TS_AUTHKEY).");
   steps.push("Save both files in one directory and run docker compose up -d.");
@@ -496,7 +504,12 @@ export function useConfigurator() {
       const next = { ...f, [name]: value };
       // As the wizard does: the mode decides the sensible gate until it is picked.
       if (name === "mode" && !touched.has("authMode")) {
-        next.authMode = value === "tailscale" ? "none" : value === "caddy" ? "google" : "basic";
+        next.authMode =
+          value === "tailscale"
+            ? "none"
+            : value === "caddy" || value === "none"
+              ? "google"
+              : "basic";
       }
       return next;
     });

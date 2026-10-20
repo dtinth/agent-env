@@ -50,7 +50,11 @@ export const ANSWERS_KEY = "x-agent-env";
  */
 export const LEGACY_ANSWERS_FILE = "agent-env.setup.json";
 
-export type Mode = "local" | "caddy" | "tailscale";
+/**
+ * Where it runs. "none" publishes nothing: a platform such as Dokploy or
+ * Coolify routes to the container itself, so ports would only get in its way.
+ */
+export type Mode = "local" | "caddy" | "tailscale" | "none";
 export type AuthMode = "google" | "github" | "basic" | "none";
 
 export interface Workspace {
@@ -238,9 +242,9 @@ export const CHECKS: {
     return null;
   },
   domain: (v: string): string | null =>
-    /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i.test(v)
+    /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i.test(v) || isIPv4(v)
       ? null
-      : "a bare hostname, no scheme and no port",
+      : "a bare hostname or IPv4 address, no scheme and no port",
   port: PORT,
   // Written into the Caddyfile as a directive argument, so the same class of
   // problem as the workspace path: anything outside an address could become
@@ -283,6 +287,18 @@ export const CHECKS: {
 };
 
 /**
+ * A dotted-quad IPv4 address. Let's Encrypt certifies those, but only on its
+ * six-day shortlived profile, so a public domain that is an address needs
+ * Caddy to ask for that profile.
+ */
+export function isIPv4(v: string): boolean {
+  const parts = v.split(".");
+  return (
+    parts.length === 4 && parts.every((p) => /^(0|[1-9][0-9]{0,2})$/.test(p) && Number(p) <= 255)
+  );
+}
+
+/**
  * Compose reads a bare relative path as a named volume, and there is no such
  * volume, so it rejects the file. "./" is what was meant.
  */
@@ -295,10 +311,11 @@ export function publicUrlFor(
   a: Pick<Answers, "mode" | "behindProxy" | "publicUrl" | "domain" | "httpsPort" | "tsHostname">,
 ): string {
   if (a.mode === "caddy") {
-    const port = a.httpsPort ?? 8443;
+    const port = a.httpsPort ?? 443;
     return `https://${a.domain}${port === 443 ? "" : `:${port}`}`;
   }
   if (a.mode === "tailscale") return `https://${a.tsHostname}`;
+  if (a.mode === "none") return a.publicUrl;
   return a.behindProxy ? a.publicUrl : "http://localhost:8080";
 }
 
@@ -418,8 +435,8 @@ export function validate(a: Answers): Problem[] {
     if (v !== undefined) field(key, PORT(String(v)));
   };
 
-  if (!["local", "caddy", "tailscale"].includes(a.mode)) {
-    field("mode", "expected one of local, caddy, tailscale");
+  if (!["local", "caddy", "tailscale", "none"].includes(a.mode)) {
+    field("mode", "expected one of local, caddy, tailscale, none");
     return out;
   }
   if (!["google", "github", "basic", "none"].includes(a.authMode)) {
@@ -428,7 +445,7 @@ export function validate(a: Answers): Problem[] {
   }
 
   if (a.name !== undefined) field("name", CHECKS.name(a.name));
-  if (a.mode === "local" && a.behindProxy) {
+  if ((a.mode === "local" && a.behindProxy) || a.mode === "none") {
     required("publicUrl", a.publicUrl);
     if (a.publicUrl) field("publicUrl", CHECKS.publicUrl(a.publicUrl));
   }
@@ -443,6 +460,13 @@ export function validate(a: Answers): Problem[] {
     if (a.tsHostname) field("tsHostname", CHECKS.tsHostname(a.tsHostname));
   }
   if (a.authMode === "google") {
+    // Google's redirect URI rules: "Hosts cannot be raw IP addresses."
+    if (a.mode === "caddy" && a.domain && isIPv4(a.domain)) {
+      field(
+        "domain",
+        `Google sign-in refuses an IP address in its redirect URI. Use a name for it, like ${a.domain.replace(/\./g, "-")}.sslip.io, or GitHub or password sign-in`,
+      );
+    }
     required("googleClientId", a.googleClientId);
     if (a.googleClientId) {
       field("googleClientId", CHECKS.googleClientId(a.googleClientId));
@@ -820,6 +844,14 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
     L.push("    network_mode: service:tailscale");
     L.push("    depends_on:");
     L.push("      - tailscale");
+  } else if (a.mode === "none") {
+    // A platform's proxy reaches the container on its own network. Published
+    // ports would bypass it, and on a shared host they would collide.
+    L.push("    # Nothing is published: the platform routes to the gateway on 8080.");
+    L.push("    # These say what listens, for its routing; Docker ignores them.");
+    L.push("    expose:");
+    L.push(`      - "${gp}"`);
+    L.push('      - "22"');
   } else if (a.mode === "caddy") {
     L.push("    # HTTP is not published: the caddy service in front is the only");
     L.push("    # way in. SSH is raw TCP, which Caddy cannot proxy, so it is");
@@ -1019,6 +1051,15 @@ export function renderCaddyfile(a: Answers): string {
   }
   L.push("");
   L.push(`${a.domain}:${extPort} {`);
+  if (a.domain && isIPv4(a.domain)) {
+    L.push("\t# Let's Encrypt certifies an IP address only on its six-day profile;");
+    L.push("\t# Caddy renews it well before then.");
+    L.push("\ttls {");
+    L.push("\t\tissuer acme {");
+    L.push("\t\t\tprofile shortlived");
+    L.push("\t\t}");
+    L.push("\t}");
+  }
   L.push("\treverse_proxy agent-env:8080");
   L.push("}");
   return L.join("\n") + "\n";
