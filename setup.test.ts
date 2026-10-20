@@ -357,26 +357,36 @@ test("the name is the project and the hostname, and tells deployments apart", ()
   const plain = tmp();
   run(LOCAL, plain);
   const p = readText(`${plain}/compose.yaml`);
-  assertMatch(p, /^name: agent-env$/m);
-  assertMatch(p, /^ {4}hostname: agent-env$/m);
+  assertMatch(p, /^name: "agent-env"$/m);
+  assertMatch(p, /^ {4}hostname: "agent-env"$/m);
 
   // A second deployment on the host is its own project, so it gets its own
   // containers and volumes instead of taking over the first's.
   const named = tmp();
   run({ ...LOCAL, name: "work-2" }, named);
   const n = readText(`${named}/compose.yaml`);
-  assertMatch(n, /^name: work-2$/m);
-  assertMatch(n, /^ {4}hostname: work-2$/m);
+  assertMatch(n, /^name: "work-2"$/m);
+  assertMatch(n, /^ {4}hostname: "work-2"$/m);
   // And a re-run remembers it.
   run(LOCAL, named);
-  assertMatch(readText(`${named}/compose.yaml`), /^name: work-2$/m);
+  assertMatch(readText(`${named}/compose.yaml`), /^name: "work-2"$/m);
+
+  // Compose wants both as strings, and unquoted YAML reads these as a number,
+  // a float, null and a boolean.
+  for (const name of ["123", "1e2", "null", "true"]) {
+    const dir = tmp();
+    run({ ...LOCAL, name }, dir);
+    const c = readText(`${dir}/compose.yaml`);
+    assertStringIncludes(c, `\nname: "${name}"\n`);
+    assertStringIncludes(c, `\n    hostname: "${name}"\n`);
+  }
 
   // Under Tailscale the sidecar owns the hostname; Docker refuses one on a
   // service that shares its network namespace.
   const ts = tmp();
   run({ ...TS, name: "work-2" }, ts);
   const t = readText(`${ts}/compose.yaml`);
-  assertMatch(t, /^name: work-2$/m);
+  assertMatch(t, /^name: "work-2"$/m);
   const agentBlock = t.slice(t.indexOf("agent-env:"), t.indexOf("tailscale:"));
   assert(!/^\s+hostname:/m.test(agentBlock), "hostname declared alongside network_mode");
 

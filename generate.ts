@@ -782,7 +782,9 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
   const name = a.name ?? DEFAULT_NAME;
   L.push("# The project name. Containers and volumes are named after it, so each");
   L.push("# deployment on one host needs its own.");
-  L.push(`name: ${name}`);
+  // Quoted, as is the hostname: a name like 123 or true is a valid hostname,
+  // and unquoted YAML would read it as a number or a boolean.
+  L.push(`name: ${yamlString(name)}`);
   L.push("");
   L.push("services:");
   L.push("  agent-env:");
@@ -791,7 +793,7 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
   L.push("    restart: unless-stopped");
   // Under Tailscale the container shares the sidecar's network namespace, and
   // with it the sidecar's hostname; Docker refuses one of its own there.
-  if (a.mode !== "tailscale") L.push(`    hostname: ${name}`);
+  if (a.mode !== "tailscale") L.push(`    hostname: ${yamlString(name)}`);
   L.push("    # Docker keeps every line of output forever unless told otherwise.");
   L.push("    logging:");
   L.push("      driver: json-file");
@@ -914,7 +916,7 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
   if (a.mode === "tailscale") {
     L.push("  tailscale:");
     L.push("    image: tailscale/tailscale:stable");
-    L.push("    hostname: " + (a.tsHostname ?? "agent-env").split(".")[0]);
+    L.push("    hostname: " + yamlString((a.tsHostname ?? DEFAULT_NAME).split(".")[0]));
     L.push("    restart: unless-stopped");
     L.push("    logging:");
     L.push("      driver: json-file");
