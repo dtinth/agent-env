@@ -101,6 +101,11 @@ button.link:hover {
 .c-form {
   padding: 1.4rem 1.6rem;
 }
+/* The first field in a step: room below it rather than above. */
+.field.c-name {
+  max-width: 24rem;
+  margin: 0 0 1.2rem;
+}
 .c-foot {
   display: flex;
   justify-content: space-between;
