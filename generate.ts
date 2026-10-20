@@ -3,7 +3,7 @@
  *
  *   import { generate, validate } from "./generate.ts";
  *   const files = generate(answers, { existingEnv });
- *   // { ".env": "...", "compose.yaml": "...", "agent-env.setup.json": "..." }
+ *   // { ".env": "...", "compose.yaml": "..." }
  *
  * A pure function of its input: no filesystem, no prompts, no runtime APIs, no
  * imports — it runs unchanged in Node and in a browser. The same module backs
@@ -13,8 +13,8 @@
  * The deployment is a compose.yaml and a .env and nothing else: sidecar
  * config is inlined in compose.yaml as `configs:` content, so the pair can be
  * pasted into Dockge, Dokploy, or any other tool that takes a compose stack.
- * The third file, agent-env.setup.json, is not deployed; it records the
- * answers so the next run can offer them as defaults.
+ * The answers themselves ride along in compose.yaml under `x-agent-env`, so
+ * the next run can offer them as defaults; `answersFromCompose` reads them.
  */
 
 export const VERSION = 1;
@@ -39,7 +39,13 @@ export const DESKTOP_SCALES = [100, 125, 150, 200, 300] as const;
 export function dpiFor(scale: number): number {
   return Math.round((96 * scale) / 100);
 }
-export const ANSWERS_FILE = "agent-env.setup.json";
+/** The top-level key in compose.yaml that records the answers it was made from. */
+export const ANSWERS_KEY = "x-agent-env";
+/**
+ * Where the answers lived before they moved into compose.yaml. Read, never
+ * written, so a deployment made by an older version still upgrades.
+ */
+export const LEGACY_ANSWERS_FILE = "agent-env.setup.json";
 
 export type Mode = "local" | "caddy" | "tailscale";
 export type AuthMode = "google" | "github" | "basic" | "none";
@@ -939,7 +945,36 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
     L.push("  caddy_config:");
   }
   if (a.mode === "tailscale") L.push("  ts-state:");
+  L.push("");
+  L.push("# The answers this file was made from, so the next run can offer them");
+  L.push("# again. Compose ignores x- keys. Keep it on one line.");
+  L.push(`${ANSWERS_KEY}: ${answersLine(a)}`);
   return L.join("\n") + "\n";
+}
+
+/**
+ * JSON is YAML, so the answers ride in compose.yaml as one flow mapping that
+ * needs no YAML parser to read back. Compose interpolates $ in extension
+ * fields too, so a literal one is $$ — `$PORT` in a command would otherwise
+ * be expanded to nothing, with a warning, on every `up`.
+ */
+function answersLine(a: Answers): string {
+  return JSON.stringify(a).replace(/\$/g, "$$$$");
+}
+
+/**
+ * The answers a compose.yaml written by `generate` carries, or null when it
+ * has none — one from before they moved here, or one written by hand.
+ */
+export function answersFromCompose(text: string): Partial<Answers> | null {
+  const m = new RegExp(`^${ANSWERS_KEY}:[ \\t]*(\\{.*\\})[ \\t]*$`, "m").exec(text);
+  if (!m) return null;
+  try {
+    const v: unknown = JSON.parse(m[1].replace(/\$\$/g, "$"));
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Partial<Answers>) : null;
+  } catch {
+    return null;
+  }
 }
 
 export function renderCaddyfile(a: Answers): string {
@@ -1012,6 +1047,5 @@ export function generate(answers: Answers, options: GenerateOptions = {}): Recor
   return {
     ".env": env.text,
     "compose.yaml": renderCompose(answers, env),
-    [ANSWERS_FILE]: JSON.stringify(answers, null, 2) + "\n",
   };
 }

@@ -36,11 +36,12 @@ import { createInterface, type Interface } from "node:readline";
 import {
   allowListProblem,
   type Answers,
-  ANSWERS_FILE,
+  answersFromCompose,
   type AuthMode,
   CHECKS,
   generate,
   hostPathFor,
+  LEGACY_ANSWERS_FILE,
   type Mode,
   DEFAULT_DESKTOP_SIZE,
   type DesktopBackend,
@@ -788,7 +789,11 @@ async function main() {
   }
 
   const p = (f: string) => `${outDir.replace(/\/$/, "")}/${f}`;
-  const prev: Partial<Answers> = JSON.parse(readIfExists(p(ANSWERS_FILE)) ?? "{}");
+  // The answers live in compose.yaml now; a deployment from before that still
+  // has them in the file beside it.
+  const prev: Partial<Answers> =
+    answersFromCompose(readIfExists(p("compose.yaml")) ?? "") ??
+    JSON.parse(readIfExists(p(LEGACY_ANSWERS_FILE)) ?? "{}");
   const answers = await collect(prev);
   // collect() has already asked about everything validate() checks, one
   // question at a time; this is the backstop, not the first line.
@@ -798,9 +803,7 @@ async function main() {
   });
 
   note();
-  const clobber = Object.keys(files).filter(
-    (f) => f !== ANSWERS_FILE && readIfExists(p(f)) !== null,
-  );
+  const clobber = Object.keys(files).filter((f) => readIfExists(p(f)) !== null);
   if (clobber.length && !force && !interactive) {
     note(C.r("These already exist, and this is not an interactive run:"));
     note(`  ${clobber.join(", ")}`);
@@ -846,9 +849,9 @@ async function main() {
     note(`${C.g("wrote")} ${final}`);
   }
 
-  // Both are inlined in compose.yaml now, so a copy on disk is from an older
-  // generation whatever the mode.
-  const stale = ["Caddyfile", "ts-serve.json"].filter(
+  // All three are inlined in compose.yaml now, so a copy on disk is from an
+  // older generation whatever the mode.
+  const stale = ["Caddyfile", "ts-serve.json", LEGACY_ANSWERS_FILE].filter(
     (f) => !(f in files) && readIfExists(p(f)) !== null,
   );
   if (stale.length) {

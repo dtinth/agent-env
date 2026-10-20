@@ -1,14 +1,20 @@
 /**
- * Shared state for the configurator prototypes: the form as a flat record of
- * fields, turned into generate.ts Answers exactly as web/main.ts does it, plus
- * the sections the layouts group those fields into.
+ * The configurator's state: the form as a flat record of fields, turned into
+ * generate.ts Answers the way the setup.ts wizard's collect() shapes them, plus
+ * the sections the steps group those fields into. The rules — what is valid,
+ * what each answer turns into — all live in generate.ts, so the two front ends
+ * cannot disagree.
  */
 
-import { useMemo, useState } from "preact/hooks";
+import { useEffect, useMemo, useState } from "preact/hooks";
 import {
   type Answers,
+  answersFromCompose,
+  ANSWERS_KEY,
   type AuthMode,
+  DESKTOP_SIZES,
   generate,
+  LEGACY_ANSWERS_FILE,
   hostPathFor,
   type Mode,
   type DesktopBackend,
@@ -276,11 +282,108 @@ export function sectionOf(p: Problem): SectionId | undefined {
 // The hook every layout uses
 // ---------------------------------------------------------------------------
 
-const minted = new Map<string, string>();
-const stableSecret = (bytes: number, key: string): string => {
-  if (!minted.has(key)) minted.set(key, randomSecret(bytes));
-  return minted.get(key)!;
-};
+/**
+ * Secrets are minted once per key and then held, so the password on screen
+ * does not change with every keystroke, or with a reload of this tab. They are
+ * kept in sessionStorage, not localStorage: a credential should not outlive
+ * the visit on this machine. Across visits, importing the .env in use is the
+ * way to keep them. Re-rolling clears this.
+ */
+const SECRETS_KEY = "agent-env-configurator:secrets";
+const STORAGE_KEY = "agent-env-configurator:answers";
+
+function loadSecrets(): Map<string, string> {
+  try {
+    return new Map(
+      Object.entries(
+        JSON.parse(sessionStorage.getItem(SECRETS_KEY) ?? "{}") as Record<string, string>,
+      ),
+    );
+  } catch {
+    return new Map();
+  }
+}
+function saveSecrets(minted: Map<string, string>): void {
+  try {
+    sessionStorage.setItem(SECRETS_KEY, JSON.stringify(Object.fromEntries(minted)));
+  } catch {
+    // Blocked storage: secrets still hold for as long as the page is open.
+  }
+}
+
+/** Saved answers, back into the form's fields: the inverse of `toAnswers`. */
+export function fieldsFromAnswers(a: Partial<Answers>): Partial<Fields> {
+  const f: Partial<Fields> = {};
+  const str = (v: string | number | undefined) => (v === undefined ? undefined : String(v));
+  const put = <K extends FieldName>(k: K, v: Fields[K] | undefined) => {
+    if (v !== undefined && v !== null) f[k] = v;
+  };
+  put("mode", a.mode);
+  put("behindProxy", a.behindProxy);
+  if (a.behindProxy) put("publicUrl", a.publicUrl);
+  put("domain", a.domain);
+  put("httpsPort", str(a.httpsPort));
+  put("acmeEmail", a.acmeEmail);
+  put("tsHostname", a.tsHostname);
+  put("authMode", a.authMode);
+  put("googleClientId", a.googleClientId);
+  put("githubClientId", a.githubClientId);
+  put("githubUsers", a.githubUsers);
+  put("githubOrg", a.githubOrg);
+  put("githubTeam", a.githubTeam);
+  put("allowedEmails", a.allowedEmails);
+  put("allowedEmailDomains", a.allowedEmailDomains);
+  put("gatewayUser", a.gatewayUser);
+  put("preset", a.preset);
+  put("primaryPort", str(a.primaryPort));
+  put("primaryCommand", a.primaryCommand);
+  put("desktopBackend", a.desktopBackend);
+  if (a.desktopSize) {
+    const known = DESKTOP_SIZES.some((s) => s.value === a.desktopSize);
+    put("desktopSizePick", known ? a.desktopSize : "custom");
+    if (!known) put("desktopSizeCustom", a.desktopSize);
+  }
+  put("desktopScale", str(a.desktopScale));
+  put("rootlessDocker", a.rootlessDocker);
+  put("sshKeys", a.sshKeys);
+  put("sshPort", str(a.sshPort));
+  put("timezone", a.timezone);
+  if (a.workspace) {
+    put("workspaceKind", a.workspace.kind);
+    put("workspacePath", a.workspace.path);
+    put("puid", str(a.workspace.puid));
+    put("pgid", str(a.workspace.pgid));
+  }
+  if (a.home) {
+    put("homeKind", a.home.kind);
+    put("homePath", a.home.path);
+    put("homeUid", str(a.home.puid));
+    put("homeGid", str(a.home.pgid));
+  }
+  return f;
+}
+
+/**
+ * The answers in what was pasted, or why there are none. An older deployment
+ * keeps them in agent-env.setup.json rather than compose.yaml, and that file
+ * is accepted in the same box, since it is the same thing to the person.
+ */
+export function readImport(text: string): { answers: Partial<Answers> } | { error: string } {
+  if (!text.trim()) return { answers: {} };
+  const fromCompose = answersFromCompose(text);
+  if (fromCompose) return { answers: fromCompose };
+  try {
+    const v: unknown = JSON.parse(text);
+    if (v && typeof v === "object" && !Array.isArray(v) && "mode" in v) {
+      return { answers: v as Partial<Answers> };
+    }
+  } catch {
+    // Not the legacy file either; say what was expected below.
+  }
+  return {
+    error: `No ${ANSWERS_KEY} answers in this. Paste a compose.yaml made by this page or setup.ts, or the ${LEGACY_ANSWERS_FILE} an older version wrote beside it.`,
+  };
+}
 
 export function nextSteps(a: Answers): string[] {
   const steps: string[] = [];
@@ -298,17 +401,73 @@ export function nextSteps(a: Answers): string[] {
   return steps;
 }
 
-export function useConfigurator() {
-  const param = new URLSearchParams(location.search).get("demo");
-  const demo = param !== null;
-  const [fields, setFields] = useState<Fields>(() => ({
+/** Where the form starts: this browser's last answers, or the wizard's defaults. */
+function initialFields(): { fields: Fields; restored: boolean; chosen: boolean } {
+  const base = {
     ...DEFAULT_FIELDS,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
-    ...(demo ? DEMO_FIELDS : {}),
-    // ?demo=ready fills in the one answer the demo leaves out, so files show.
-    ...(param === "ready" ? { allowedEmailDomains: "example.com" } : {}),
-  }));
-  const [touched] = useState(() => new Set<string>(demo ? Object.keys(DEMO_FIELDS) : []));
+  };
+  // ?demo and ?demo=ready start from a half-filled and a complete public
+  // deployment, for screenshots; nothing is read from or saved to storage.
+  const demo = new URLSearchParams(location.search).get("demo");
+  if (demo !== null) {
+    return {
+      fields: {
+        ...base,
+        ...DEMO_FIELDS,
+        ...(demo === "ready" ? { allowedEmailDomains: "example.com" } : {}),
+      },
+      restored: false,
+      chosen: true,
+    };
+  }
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      return {
+        fields: { ...base, ...fieldsFromAnswers(JSON.parse(saved) as Partial<Answers>) },
+        restored: true,
+        chosen: true,
+      };
+    }
+  } catch {
+    // Unreadable or unavailable: start fresh.
+  }
+  return { fields: base, restored: false, chosen: false };
+}
+
+export function useConfigurator() {
+  const [start] = useState(initialFields);
+  const [fields, setFields] = useState<Fields>(start.fields);
+  // Answers set on purpose, so the mode's default gate leaves them alone.
+  const [touched] = useState(() => new Set<string>(start.chosen ? ["authMode"] : []));
+  const [minted, setMinted] = useState(loadSecrets);
+  /** Answers came back from a previous visit, but the secrets beside them did not. */
+  const restoredWithoutSecrets = start.restored && loadSecrets().size === 0;
+
+  const stableSecret = (bytes: number, key: string): string => {
+    if (!minted.has(key)) {
+      minted.set(key, randomSecret(bytes));
+      saveSecrets(minted);
+    }
+    return minted.get(key)!;
+  };
+  const rerollSecrets = () => {
+    const fresh = new Map<string, string>();
+    saveSecrets(fresh);
+    setMinted(fresh);
+  };
+
+  /** Replace the answers with imported ones, and keep the secrets of the .env given. */
+  const importDeployment = (answers: Partial<Answers>, env: string) => {
+    touched.add("authMode");
+    setFields((f) => ({
+      ...DEFAULT_FIELDS,
+      timezone: f.timezone,
+      ...fieldsFromAnswers(answers),
+      existingEnv: env,
+    }));
+  };
 
   const set = <K extends FieldName>(name: K, value: Fields[K]) => {
     touched.add(name);
@@ -324,16 +483,37 @@ export function useConfigurator() {
 
   const answers = useMemo(() => toAnswers(fields), [fields]);
   const problems = useMemo(() => validate(answers), [answers]);
+  // An invalid form has no files. Keeping the last valid ones would let Copy
+  // and Download export a deployment that no longer matches the answers.
   const files = useMemo(
     () =>
       problems.length
         ? null
         : generate(answers, { existingEnv: fields.existingEnv, randomSecret: stableSecret }),
-    [answers, problems, fields.existingEnv],
+    [answers, problems, fields.existingEnv, minted],
   );
+  useEffect(() => {
+    if (!files || new URLSearchParams(location.search).has("demo")) return;
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(answers));
+    } catch {
+      // Private mode or blocked storage: the page works without it.
+    }
+  }, [files]);
   const errorFor = (field: string) => problems.find((p) => p.field === field)?.message;
   const problemsIn = (id: SectionId) => problems.filter((p) => sectionOf(p) === id);
 
-  return { fields, set, answers, problems, files, errorFor, problemsIn };
+  return {
+    fields,
+    set,
+    answers,
+    problems,
+    files,
+    errorFor,
+    problemsIn,
+    rerollSecrets,
+    importDeployment,
+    restoredWithoutSecrets: restoredWithoutSecrets && !fields.existingEnv.trim(),
+  };
 }
 export type Configurator = ReturnType<typeof useConfigurator>;

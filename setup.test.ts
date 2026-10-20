@@ -157,7 +157,7 @@ test("each mode generates a complete, self-consistent set of files", () => {
     const dir = tmp();
     const r = run(answers, dir);
     assertEquals(r.code, 0, `${name} exited ${r.code}`);
-    for (const f of [".env", "compose.yaml", "agent-env.setup.json", ...extra]) {
+    for (const f of [".env", "compose.yaml", ...extra]) {
       assert(statSync(`${dir}/${f}`).isFile(), `${name} did not write ${f}`);
     }
   }
@@ -873,4 +873,21 @@ test("the wizard takes a desktop size, scale and backend from an answers file", 
   assertStringIncludes(compose, "DESKTOP_RESOLUTION=2560x1440x24");
   assertStringIncludes(compose, "DESKTOP_DPI=144");
   assertStringIncludes(compose, "DESKTOP_BACKEND=selkies");
+});
+
+test("answers from before they moved into compose.yaml are still offered", () => {
+  // A deployment made by an older version has agent-env.setup.json beside it
+  // and no x-agent-env key. Its answers must still come back as defaults.
+  const dir = tmp();
+  const vanilla = { ...LOCAL, preset: "vanilla", primaryPort: 3000 };
+  writeText(
+    `${dir}/agent-env.setup.json`,
+    JSON.stringify({ ...vanilla, primaryCommand: "node app.js" }),
+  );
+  const r = run(vanilla, dir);
+  assertEquals(r.code, 0);
+  assertEquals(envOf(dir).PRIMARY_COMMAND, "node app.js");
+  assertStringIncludes(r.stdout, "agent-env.setup.json is left over");
+  // From here on compose.yaml is where they come from.
+  assertStringIncludes(readText(`${dir}/compose.yaml`), '"primaryCommand":"node app.js"');
 });

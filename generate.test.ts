@@ -7,6 +7,7 @@ import { test } from "vite-plus/test";
 import { assert, assertEquals, assertThrows } from "./test-assert.ts";
 import {
   type Answers,
+  answersFromCompose,
   generate,
   InvalidAnswers,
   normaliseSshKeys,
@@ -40,7 +41,30 @@ test("the same answers give the same files", () => {
   });
   assertEquals(keys, ["GATEWAY_PASSWORD"]);
   assertEquals(a, b);
-  assertEquals(Object.keys(a).sort(), [".env", "agent-env.setup.json", "compose.yaml"]);
+  assertEquals(Object.keys(a).sort(), [".env", "compose.yaml"]);
+});
+
+test("compose.yaml carries the answers it was made from", () => {
+  const answers: Answers = {
+    ...BASIC,
+    preset: "vanilla",
+    primaryPort: 3000,
+    // A $ that Compose must not interpolate, and a # a naive reader would cut at.
+    primaryCommand: "npm run dev -- --port $PORT # and $$ too",
+    sshKeys: "ssh-ed25519 AAAA one@host\nssh-ed25519 BBBB two@host",
+  };
+  const compose = generate(answers, { randomSecret: fixed })["compose.yaml"];
+  assertEquals(answersFromCompose(compose), answers);
+  // Every $ on the line is doubled, so Compose reads each one literally.
+  const line = compose.split("\n").find((l) => l.startsWith("x-agent-env:"))!;
+  assert(!/(^|[^$])\$([^$]|$)/.test(line.replace(/\$\$/g, "")), line);
+  assert(line.includes("$$PORT"), line);
+});
+
+test("a compose.yaml without answers reads as none", () => {
+  assertEquals(answersFromCompose("services: {}\n"), null);
+  assertEquals(answersFromCompose("x-agent-env: {not json}\n"), null);
+  assertEquals(answersFromCompose('x-agent-env: ["a list"]\n'), null);
 });
 
 test("an existing .env keeps its secrets", () => {
