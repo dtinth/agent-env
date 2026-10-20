@@ -58,7 +58,11 @@ function App() {
           <button class="link" onClick={() => setImporting(true)}>
             import your current <code>.env</code>
           </button>{" "}
-          to keep the ones in use.
+          to keep the ones in use, or{" "}
+          <button class="link" onClick={c.keepNewSecrets}>
+            use the new ones
+          </button>
+          .
         </p>
       )}
 
