@@ -12,6 +12,7 @@ import {
   answersFromCompose,
   ANSWERS_KEY,
   type AuthMode,
+  DEFAULT_NAME,
   DESKTOP_SIZES,
   generate,
   LEGACY_ANSWERS_FILE,
@@ -27,6 +28,7 @@ import {
 } from "../../generate.ts";
 
 export const DEFAULT_FIELDS = {
+  name: DEFAULT_NAME as string,
   mode: "local",
   behindProxy: false,
   publicUrl: "",
@@ -87,6 +89,7 @@ export function toAnswers(f: Fields): Answers {
   const behindProxy = mode === "local" ? f.behindProxy : undefined;
   const a: Answers = {
     version: VERSION,
+    name: f.name.trim() || DEFAULT_NAME,
     mode,
     behindProxy,
     publicUrl: "",
@@ -178,8 +181,9 @@ export const SECTIONS: Section[] = [
   {
     id: "where",
     title: "Where",
-    fields: ["mode", "publicUrl", "domain", "httpsPort", "acmeEmail", "tsHostname"],
-    summary: (a) => `${MODE_LABEL[a.mode]} · ${a.publicUrl.replace(/^https?:\/\//, "")}`,
+    fields: ["name", "mode", "publicUrl", "domain", "httpsPort", "acmeEmail", "tsHostname"],
+    summary: (a) =>
+      `${a.name ?? DEFAULT_NAME} · ${MODE_LABEL[a.mode]} · ${a.publicUrl.replace(/^https?:\/\//, "")}`,
   },
   {
     id: "who",
@@ -252,6 +256,7 @@ export const SECTIONS: Section[] = [
 
 /** How a problem names its field when it is shown away from the field itself. */
 export const FIELD_LABELS: Record<string, string> = {
+  name: "Environment name",
   publicUrl: "Public URL",
   domain: "Domain name",
   httpsPort: "HTTPS port",
@@ -318,6 +323,7 @@ export function fieldsFromAnswers(a: Partial<Answers>): Partial<Fields> {
   const put = <K extends FieldName>(k: K, v: Fields[K] | undefined) => {
     if (v !== undefined && v !== null) f[k] = v;
   };
+  put("name", a.name);
   put("mode", a.mode);
   put("behindProxy", a.behindProxy);
   if (a.behindProxy) put("publicUrl", a.publicUrl);

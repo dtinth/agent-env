@@ -2,7 +2,7 @@
 
 import type { ComponentChildren } from "preact";
 import { useState } from "preact/hooks";
-import { ANSWERS_KEY, DESKTOP_SCALES, DESKTOP_SIZES } from "../../generate.ts";
+import { ANSWERS_KEY, DEFAULT_NAME, DESKTOP_SCALES, DESKTOP_SIZES } from "../../generate.ts";
 import {
   type Configurator,
   type FieldName,
@@ -150,6 +150,14 @@ function Where({ c }: { c: Configurator }) {
   const { fields: f } = c;
   return (
     <>
+      <Text
+        c={c}
+        name="name"
+        label="Name"
+        hint="(the Compose project and hostname)"
+        placeholder={DEFAULT_NAME}
+        class="c-name"
+      />
       <Choices
         c={c}
         name="mode"

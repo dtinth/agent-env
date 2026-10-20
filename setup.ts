@@ -39,6 +39,7 @@ import {
   answersFromCompose,
   type AuthMode,
   CHECKS,
+  DEFAULT_NAME,
   generate,
   hostPathFor,
   LEGACY_ANSWERS_FILE,
@@ -235,6 +236,12 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
     note(C.dim(`Re-running — previous answers are the defaults, and secrets in .env are kept.`));
   }
 
+  // The name tells deployments on one host apart: Compose keys its containers
+  // and volumes on it, and outside Tailscale it is the shell prompt's hostname.
+  const name = await ask("name", "Name of this environment", prev.name ?? DEFAULT_NAME, {
+    validate: CHECKS.name,
+  });
+
   // 1. Where it runs. This is the top-level branch: it decides the ports, the
   //    sidecars, the PUBLIC_URL and the sensible auth mode. Everything else
   //    follows from it.
@@ -313,7 +320,7 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
     tsHostname = await ask(
       "tsHostname",
       "Full MagicDNS name of this machine (e.g. work.tailXXXX.ts.net)",
-      prev.tsHostname ?? "agent-env.example.ts.net",
+      prev.tsHostname ?? `${name}.example.ts.net`,
       { validate: CHECKS.tsHostname },
     );
     publicUrl = publicUrlFor({ mode, tsHostname, publicUrl });
@@ -723,6 +730,7 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
 
   return {
     version: VERSION,
+    name,
     mode,
     behindProxy,
     publicUrl,

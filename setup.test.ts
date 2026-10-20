@@ -352,6 +352,41 @@ test("mode decides the network shape", () => {
   assert(!/^\s+ports:/m.test(agentBlock), "ports declared alongside network_mode");
 });
 
+test("the name is the project and the hostname, and tells deployments apart", () => {
+  // Unnamed, it is agent-env, as every deployment was before it could be named.
+  const plain = tmp();
+  run(LOCAL, plain);
+  const p = readText(`${plain}/compose.yaml`);
+  assertMatch(p, /^name: agent-env$/m);
+  assertMatch(p, /^ {4}hostname: agent-env$/m);
+
+  // A second deployment on the host is its own project, so it gets its own
+  // containers and volumes instead of taking over the first's.
+  const named = tmp();
+  run({ ...LOCAL, name: "work-2" }, named);
+  const n = readText(`${named}/compose.yaml`);
+  assertMatch(n, /^name: work-2$/m);
+  assertMatch(n, /^ {4}hostname: work-2$/m);
+  // And a re-run remembers it.
+  run(LOCAL, named);
+  assertMatch(readText(`${named}/compose.yaml`), /^name: work-2$/m);
+
+  // Under Tailscale the sidecar owns the hostname; Docker refuses one on a
+  // service that shares its network namespace.
+  const ts = tmp();
+  run({ ...TS, name: "work-2" }, ts);
+  const t = readText(`${ts}/compose.yaml`);
+  assertMatch(t, /^name: work-2$/m);
+  const agentBlock = t.slice(t.indexOf("agent-env:"), t.indexOf("tailscale:"));
+  assert(!/^\s+hostname:/m.test(agentBlock), "hostname declared alongside network_mode");
+
+  // Both a project name and a hostname have to accept it.
+  for (const name of ["Work", "work_2", "-work", "work.example"]) {
+    const dir = tmp();
+    assertEquals(run({ ...LOCAL, name }, dir).code, 2, `accepted name ${name}`);
+  }
+});
+
 test("PUBLIC_URL matches what each mode actually serves", () => {
   const cases: [Record<string, unknown>, string][] = [
     [LOCAL, "http://localhost:8080"],

@@ -19,6 +19,9 @@
 
 export const VERSION = 1;
 
+/** The environment's name when none is given: the Compose project, and its hostname. */
+export const DEFAULT_NAME = "agent-env";
+
 export const PRESETS = ["opencode", "vanilla"] as const;
 export type Preset = (typeof PRESETS)[number];
 export const DESKTOP_BACKENDS = ["novnc", "selkies"] as const;
@@ -59,6 +62,12 @@ export interface Workspace {
 
 export interface Answers {
   version: number;
+  /**
+   * The Compose project name, and the container's hostname outside Tailscale;
+   * absent means agent-env. Two deployments with the same name are one project
+   * to Compose, so the second would take over the first.
+   */
+  name?: string;
   mode: Mode;
   behindProxy?: boolean;
   publicUrl: string;
@@ -197,6 +206,7 @@ type Check = (v: string) => string | null;
 
 /** Per-answer format checks, shared by the wizard's prompts and `validate`. */
 export const CHECKS: {
+  name: Check;
   publicUrl: Check;
   domain: Check;
   port: Check;
@@ -206,6 +216,12 @@ export const CHECKS: {
   githubTeam: (v: string, org: string | undefined) => string | null;
   workspacePath: Check;
 } = {
+  // A Compose project name may have underscores and a hostname may not, so the
+  // name is held to what both accept.
+  name: (v: string): string | null =>
+    /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(v)
+      ? null
+      : "lowercase letters, digits and hyphens, like agent-env or work-2",
   publicUrl(v: string): string | null {
     let u: URL;
     try {
@@ -411,6 +427,7 @@ export function validate(a: Answers): Problem[] {
     return out;
   }
 
+  if (a.name !== undefined) field("name", CHECKS.name(a.name));
   if (a.mode === "local" && a.behindProxy) {
     required("publicUrl", a.publicUrl);
     if (a.publicUrl) field("publicUrl", CHECKS.publicUrl(a.publicUrl));
@@ -762,13 +779,19 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
   L.push("#");
   L.push(`# Mode: ${a.mode}.  Reachable at ${a.publicUrl}`);
   L.push("");
-  L.push("name: agent-env");
+  const name = a.name ?? DEFAULT_NAME;
+  L.push("# The project name. Containers and volumes are named after it, so each");
+  L.push("# deployment on one host needs its own.");
+  L.push(`name: ${name}`);
   L.push("");
   L.push("services:");
   L.push("  agent-env:");
   L.push("    image: ghcr.io/dtinth/agent-env:latest");
   L.push("    pull_policy: always");
   L.push("    restart: unless-stopped");
+  // Under Tailscale the container shares the sidecar's network namespace, and
+  // with it the sidecar's hostname; Docker refuses one of its own there.
+  if (a.mode !== "tailscale") L.push(`    hostname: ${name}`);
   L.push("    # Docker keeps every line of output forever unless told otherwise.");
   L.push("    logging:");
   L.push("      driver: json-file");

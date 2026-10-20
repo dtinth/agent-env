@@ -237,6 +237,11 @@ wrong. It also does the things that are tedious by hand and easy to forget:
 - Reads `PUID`/`PGID` off a host directory you mount, so files stay yours.
 - Publishes `:80` alongside `:8443` in domain mode, because ACME only ever
   validates on 80 or 443 and never on the port you serve from.
+- Names the deployment (`agent-env` unless you say otherwise). The name is the
+  Compose project, so two deployments on one host need different names, or the
+  second takes over the first's containers and volumes. It is also the
+  container's hostname, and so the shell prompt's, except under Tailscale, where
+  the sidecar's hostname applies. The host ports must differ too.
 
 The output is just those two files: the Caddy and Tailscale sidecar configs are
 inlined in `compose.yaml` as `configs:` content (Docker Compose 2.23.1 or newer).
