@@ -26,16 +26,9 @@ function App() {
   return (
     <div class="c-page">
       <header class="c-head">
-        <div class="c-title">
-          <h1>
-            <b>agent-env</b> configurator
-          </h1>
-          <p class="muted">
-            Answers in, <code>compose.yaml</code> and <code>.env</code> out, for Docker Compose,
-            Dockge or Dokploy. Nothing you type leaves this page. Prefer a terminal?{" "}
-            <code>node setup.ts</code> asks the same questions.
-          </p>
-        </div>
+        <h1>
+          <b>agent-env</b> configurator
+        </h1>
         <button class="c-import" onClick={() => setImporting(true)}>
           Import existing…
         </button>
