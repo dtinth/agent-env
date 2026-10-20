@@ -5,15 +5,10 @@
 }
 .c-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 1.5rem;
   margin-bottom: 1.2rem;
-}
-.c-title p {
-  margin: 0.3rem 0 0;
-  max-width: 60rem;
-  font-size: 0.9rem;
 }
 .c-import {
   flex: none;
@@ -222,10 +217,6 @@ button.link:hover {
 @media (max-width: 1000px) {
   .c-page {
     padding: 1rem;
-  }
-  .c-head {
-    flex-direction: column;
-    gap: 0.8rem;
   }
   .c-files {
     height: 70vh;
