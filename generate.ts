@@ -101,6 +101,15 @@ export interface Answers {
   /** Text and UI size in percent (100 = 96 DPI); absent means 100. */
   desktopScale?: number;
   rootlessDocker: boolean;
+  /** Memory limit in GiB for the agent-env container; absent means none. */
+  memoryGiB?: number;
+  /**
+   * Swap allowed on top of memoryGiB, in GiB. Absent leaves it to Docker, which
+   * allows as much again as the memory limit when the host has swap; 0 is none.
+   */
+  swapGiB?: number;
+  /** CPUs the container may use, like 2.5; absent means all of them. */
+  cpus?: number;
   sshKeys: string;
   sshPort?: number;
   workspace: Workspace;
@@ -205,6 +214,12 @@ export interface Problem {
 const PORT = (v: string): string | null =>
   /^\d+$/.test(v) && +v > 0 && +v < 65536 ? null : "a port number";
 
+/** A plain decimal within bounds; Compose and the kernel take nothing fancier. */
+const amount =
+  (min: number, max: number, what: string) =>
+  (v: string): string | null =>
+    /^\d+(\.\d{1,2})?$/.test(v) && +v >= min && +v <= max ? null : what;
+
 /** Takes an answer as typed; returns why it is wrong, or null. */
 type Check = (v: string) => string | null;
 
@@ -219,7 +234,15 @@ export const CHECKS: {
   googleClientId: Check;
   githubTeam: (v: string, org: string | undefined) => string | null;
   workspacePath: Check;
+  memoryGiB: Check;
+  swapGiB: Check;
+  cpus: Check;
 } = {
+  // Below 1 GiB the desktop and Chromium do not fit beside /dev/shm, which is
+  // charged to the same limit once used.
+  memoryGiB: amount(1, 4096, "GiB of memory, at least 1, like 8 or 1.5"),
+  swapGiB: amount(0, 4096, "GiB of swap, like 4, or 0 for none"),
+  cpus: amount(0.01, 1024, "a number of CPUs, like 2 or 0.5"),
   // A Compose project name may have underscores and a hostname may not, so the
   // name is held to what both accept.
   name: (v: string): string | null =>
@@ -445,6 +468,14 @@ export function validate(a: Answers): Problem[] {
   }
 
   if (a.name !== undefined) field("name", CHECKS.name(a.name));
+  if (a.memoryGiB !== undefined) field("memoryGiB", CHECKS.memoryGiB(String(a.memoryGiB)));
+  if (a.swapGiB !== undefined) {
+    field("swapGiB", CHECKS.swapGiB(String(a.swapGiB)));
+    // Docker counts swap as memory + swap, so without a memory limit there is
+    // nothing for it to be on top of.
+    if (a.memoryGiB === undefined) field("swapGiB", "needs a memory limit to go with it");
+  }
+  if (a.cpus !== undefined) field("cpus", CHECKS.cpus(String(a.cpus)));
   if ((a.mode === "local" && a.behindProxy) || a.mode === "none") {
     required("publicUrl", a.publicUrl);
     if (a.publicUrl) field("publicUrl", CHECKS.publicUrl(a.publicUrl));
@@ -885,6 +916,27 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
   L.push("    # Chromium needs more than the default 64 MB of /dev/shm.");
   L.push('    shm_size: "2gb"');
   L.push("");
+
+  if (a.memoryGiB !== undefined || a.cpus !== undefined) {
+    // MiB, so a fractional GiB is still a whole number Docker accepts.
+    const mib = (gib: number) => `"${Math.round(gib * 1024)}m"`;
+    L.push("    # Limits for everything in the container, rootless Docker's own");
+    L.push("    # containers included. Past the memory, the kernel kills the largest");
+    L.push("    # process, and its supervisor starts it again.");
+    if (a.memoryGiB !== undefined) {
+      L.push(`    mem_limit: ${mib(a.memoryGiB)}`);
+      if (a.swapGiB !== undefined) {
+        L.push(
+          a.swapGiB === 0
+            ? "    # Memory and swap together; equal to the memory, so no swap."
+            : `    # Memory and swap together: ${a.swapGiB} GiB of swap on top.`,
+        );
+        L.push(`    memswap_limit: ${mib(a.memoryGiB + a.swapGiB)}`);
+      }
+    }
+    if (a.cpus !== undefined) L.push(`    cpus: ${a.cpus}`);
+    L.push("");
+  }
 
   if (a.rootlessDocker) {
     L.push("    # DOCKER_ROOTLESS_ENABLE=true needs all five of these. The entrypoint");

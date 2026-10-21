@@ -243,6 +243,16 @@ wrong. It also does the things that are tedious by hand and easy to forget:
   second takes over the first's containers and volumes. It is also the
   container's hostname, and so the shell prompt's, except under Tailscale, where
   the sidecar's hostname applies. The host ports must differ too.
+- Optionally limits memory, swap and CPU (`mem_limit`, `memswap_limit`,
+  `cpus` on the agent-env service), for a shared host. They cover everything
+  in the container, rootless Docker's containers included; past the memory the
+  kernel kills the largest process and its supervisor restarts it. Swap is asked
+  as an amount *on top of* the memory, since Docker counts `memswap_limit` as the
+  two together: blank leaves Docker's default (as much again as the memory, if
+  the host has swap), and 0 means none. A host whose Docker cannot apply limits
+  (no cgroup controllers delegated, as under some rootless setups) ignores them
+  with a warning. Disk is not limited: Compose has no way to cap a volume, so
+  that has to come from the filesystem the volumes or host directories live on.
 
 The output is just those two files: the Caddy and Tailscale sidecar configs are
 inlined in `compose.yaml` as `configs:` content (Docker Compose 2.23.1 or newer).

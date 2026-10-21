@@ -54,6 +54,9 @@ export const DEFAULT_FIELDS = {
   desktopSizeCustom: "",
   desktopScale: "100",
   rootlessDocker: false,
+  memoryGiB: "",
+  swapGiB: "",
+  cpus: "",
   sshKeys: "",
   sshPort: "2222",
   workspaceKind: "volume",
@@ -112,6 +115,9 @@ export function toAnswers(f: Fields): Answers {
     primaryPort: preset === "vanilla" ? num(f.primaryPort) : undefined,
     primaryCommand: preset === "vanilla" ? f.primaryCommand.trim() || undefined : undefined,
     rootlessDocker: f.rootlessDocker,
+    memoryGiB: num(f.memoryGiB),
+    swapGiB: num(f.swapGiB),
+    cpus: num(f.cpus),
     sshKeys: f.sshKeys.trim(),
     sshPort: mode === "tailscale" || mode === "none" ? undefined : num(f.sshPort),
     workspace:
@@ -226,12 +232,17 @@ export const SECTIONS: Section[] = [
       "desktopBackend",
       "desktopSize",
       "desktopScale",
+      "memoryGiB",
+      "swapGiB",
+      "cpus",
     ],
     summary: (a) =>
       [
         a.preset === "opencode" ? "OpenCode" : "Vanilla",
         `${a.desktopBackend === "selkies" ? "Selkies" : "noVNC"} ${a.desktopSize?.replace("x", "×")}`,
         a.rootlessDocker ? "Docker" : "",
+        a.memoryGiB !== undefined ? `${a.memoryGiB} GiB` : "",
+        a.cpus !== undefined ? plural(a.cpus, "CPU") : "",
       ]
         .filter(Boolean)
         .join(" · "),
@@ -275,6 +286,9 @@ export const FIELD_LABELS: Record<string, string> = {
   desktopBackend: "Desktop",
   desktopSize: "Screen size",
   desktopScale: "Text size",
+  memoryGiB: "Memory limit",
+  swapGiB: "Swap",
+  cpus: "CPU limit",
   sshPort: "SSH port",
   workspacePath: "Workspace directory",
   puid: "Owner UID",
@@ -356,6 +370,9 @@ export function fieldsFromAnswers(a: Partial<Answers>): Partial<Fields> {
   }
   put("desktopScale", str(a.desktopScale));
   put("rootlessDocker", a.rootlessDocker);
+  put("memoryGiB", str(a.memoryGiB));
+  put("swapGiB", str(a.swapGiB));
+  put("cpus", str(a.cpus));
   put("sshKeys", a.sshKeys);
   put("sshPort", str(a.sshPort));
   put("timezone", a.timezone);
