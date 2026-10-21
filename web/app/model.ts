@@ -12,6 +12,7 @@ import {
   answersFromCompose,
   ANSWERS_KEY,
   type AuthMode,
+  clientSecretKey,
   DEFAULT_NAME,
   DESKTOP_SIZES,
   generate,
@@ -39,6 +40,8 @@ export const DEFAULT_FIELDS = {
   tsHostname: "",
   authMode: "basic",
   googleClientId: "",
+  // Not an answer: it goes to .env only, and is never saved with the answers.
+  googleClientSecret: "",
   githubClientId: "",
   githubUsers: "",
   githubOrg: "",
@@ -420,14 +423,17 @@ export function readImport(text: string): { answers: Partial<Answers> | null } |
   };
 }
 
-export function nextSteps(a: Answers): string[] {
+export function nextSteps(a: Answers, env: string): string[] {
   const steps: string[] = [];
-  if (a.authMode === "google" || a.authMode === "github") {
+  const key = clientSecretKey(a.authMode);
+  // Only while .env still has the placeholder: a pasted or kept secret is done.
+  if (key && env.includes(`${key}=CHANGEME`)) {
     const which = a.authMode === "google" ? "Google" : "GitHub";
-    const key = a.authMode === "google" ? "GOOGLE_CLIENT_SECRET" : "GITHUB_CLIENT_SECRET";
     steps.push(`Put your ${which} client secret in .env (${key}).`);
-    steps.push(`Register the redirect URI ${a.publicUrl}/oauth2/callback.`);
   }
+  // The form walks through Google's; GitHub's is still to do.
+  if (a.authMode === "github")
+    steps.push(`Register the redirect URI ${a.publicUrl}/oauth2/callback.`);
   if (a.mode === "caddy" && !isIPv4(a.domain ?? ""))
     steps.push(`Point an A record for ${a.domain} at the host.`);
   if (a.mode === "none")
@@ -546,8 +552,12 @@ export function useConfigurator() {
     () =>
       problems.length
         ? null
-        : generate(answers, { existingEnv: fields.existingEnv, randomSecret: stableSecret }),
-    [answers, problems, fields.existingEnv, minted],
+        : generate(answers, {
+            existingEnv: fields.existingEnv,
+            randomSecret: stableSecret,
+            clientSecret: answers.authMode === "google" ? fields.googleClientSecret : undefined,
+          }),
+    [answers, problems, fields.existingEnv, fields.googleClientSecret, minted],
   );
   useEffect(() => {
     if (!files || new URLSearchParams(location.search).has("demo")) return;
