@@ -84,7 +84,13 @@ export const DEMO_FIELDS: Partial<Fields> = {
   timezone: "Asia/Bangkok",
 };
 
-const num = (v: string): number | undefined => (v.trim() === "" ? undefined : Number(v));
+// Only a plain decimal is a number here. Number() also takes "1e2" and "0x10",
+// which would reach the checks already converted and pass them; NaN fails them
+// instead, the way the wizard refuses the same text.
+const num = (v: string): number | undefined => {
+  const t = v.trim();
+  return t === "" ? undefined : /^\d+(\.\d+)?$/.test(t) ? Number(t) : NaN;
+};
 
 export function toAnswers(f: Fields): Answers {
   const mode = f.mode as Mode;

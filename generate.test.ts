@@ -14,6 +14,7 @@ import {
   validate,
   VERSION,
 } from "./generate.ts";
+import { DEFAULT_FIELDS, type Fields, toAnswers } from "./web/app/model.ts";
 
 const BASIC: Answers = {
   version: VERSION,
@@ -243,4 +244,17 @@ test("a screen size or scale the display cannot use is refused", () => {
   assertEquals(fields({ desktopScale: 90 }), ["desktopScale"]);
   assertEquals(fields({ desktopScale: 150.5 }), ["desktopScale"]);
   assertEquals(fields({ desktopSize: "2200x1300", desktopScale: 125 }), []);
+});
+
+// The page's fields are text. Number() would read "0x10" as 16 and "1e2" as
+// 100 before the checks saw them, so the page has to refuse what the wizard
+// refuses.
+test("the page takes only plain decimals for a number", () => {
+  const fields = (f: Partial<Fields>) =>
+    validate(toAnswers({ ...DEFAULT_FIELDS, ...f })).map((p) => p.field);
+  assertEquals(fields({ memoryGiB: "0x10" }), ["memoryGiB"]);
+  assertEquals(fields({ cpus: "1e2" }), ["cpus"]);
+  assertEquals(fields({ sshPort: "0x50" }), ["sshPort"]);
+  assertEquals(fields({ memoryGiB: " 1.5 ", swapGiB: "0", cpus: "0.5" }), []);
+  assertEquals(toAnswers({ ...DEFAULT_FIELDS, memoryGiB: "", cpus: "" }).memoryGiB, undefined);
 });
