@@ -79,7 +79,7 @@ function App() {
               <div class="card">
                 <h3 class="c-ok">Next steps</h3>
                 <ol class="steps">
-                  {nextSteps(c.answers).map((s) => (
+                  {nextSteps(c.answers, c.files?.[".env"] ?? "").map((s) => (
                     <li>{s}</li>
                   ))}
                 </ol>

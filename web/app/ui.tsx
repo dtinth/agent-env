@@ -2,7 +2,13 @@
 
 import type { ComponentChildren } from "preact";
 import { useState } from "preact/hooks";
-import { ANSWERS_KEY, DEFAULT_NAME, DESKTOP_SCALES, DESKTOP_SIZES } from "../../generate.ts";
+import {
+  ANSWERS_KEY,
+  DEFAULT_NAME,
+  DESKTOP_SCALES,
+  DESKTOP_SIZES,
+  GOOGLE_CLIENT_CREATE_URL,
+} from "../../generate.ts";
 import {
   type Configurator,
   type FieldName,
@@ -83,6 +89,8 @@ export function Text(props: {
   class?: string;
   multiline?: boolean;
   mono?: boolean;
+  /** Masked, and kept out of password managers' autofill. */
+  secret?: boolean;
 }) {
   const { c, name } = props;
   const error = c.errorFor(props.error ?? name);
@@ -99,7 +107,13 @@ export function Text(props: {
       <span class="label">
         {props.label} {props.hint && <small>{props.hint}</small>}
       </span>
-      {props.multiline ? <textarea rows={3} {...common} /> : <input type="text" {...common} />}
+      {props.multiline ? (
+        <textarea rows={3} {...common} />
+      ) : props.secret ? (
+        <input type="password" autocomplete="off" {...common} />
+      ) : (
+        <input type="text" {...common} />
+      )}
       {error && <em class="error">{error}</em>}
     </label>
   );
@@ -242,6 +256,70 @@ function Where({ c }: { c: Configurator }) {
   );
 }
 
+/** Google's console, in the order it asks for things. */
+function GoogleSteps({ c }: { c: Configurator }) {
+  const redirect = `${c.answers.publicUrl}/oauth2/callback`;
+  const kept = /^GOOGLE_CLIENT_SECRET=(?!CHANGEME)\S/m.test(c.fields.existingEnv);
+  return (
+    <ol class="steps oauth-steps">
+      <li>
+        Open{" "}
+        <a href={GOOGLE_CLIENT_CREATE_URL} target="_blank" rel="noreferrer">
+          Create OAuth client
+        </a>{" "}
+        in the Google Cloud console.
+      </li>
+      <li>
+        Pick <b>Web application</b>, and add this under <b>Authorized redirect URIs</b>:
+        <span class="copyline">
+          <code>{redirect}</code>
+          <CopyButton text={redirect} />
+        </span>
+      </li>
+      <li>
+        Create it, and paste what it shows:
+        <div class="row">
+          <Text
+            c={c}
+            name="googleClientId"
+            label="Client ID"
+            placeholder="1234-abc.apps.googleusercontent.com"
+            class="grow"
+            mono
+          />
+          <Text
+            c={c}
+            name="googleClientSecret"
+            label="Client secret"
+            hint="(.env only)"
+            placeholder={kept ? "kept from your .env" : "GOCSPX-…"}
+            class="grow"
+            mono
+            secret
+          />
+        </div>
+      </li>
+    </ol>
+  );
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      class="small"
+      onClick={async () => {
+        await navigator.clipboard.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1200);
+      }}
+    >
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
 function Who({ c }: { c: Configurator }) {
   const { fields: f, answers: a } = c;
   const oauth = f.authMode === "google" || f.authMode === "github";
@@ -280,15 +358,7 @@ function Who({ c }: { c: Configurator }) {
             c.errorFor("authMode")}
         </p>
       )}
-      {f.authMode === "google" && (
-        <Text
-          c={c}
-          name="googleClientId"
-          label="Google OAuth client ID"
-          placeholder="1234-abc.apps.googleusercontent.com"
-          mono
-        />
-      )}
+      {f.authMode === "google" && <GoogleSteps c={c} />}
       {f.authMode === "github" && (
         <>
           <Text
@@ -335,10 +405,12 @@ function Who({ c }: { c: Configurator }) {
               class="grow"
             />
           </div>
-          <p class="hint">
-            Register this redirect URI with the OAuth client:{" "}
-            <code>{a.publicUrl}/oauth2/callback</code>
-          </p>
+          {f.authMode === "github" && (
+            <p class="hint">
+              Register this redirect URI with the OAuth client:{" "}
+              <code>{a.publicUrl}/oauth2/callback</code>
+            </p>
+          )}
         </>
       )}
       {f.authMode === "basic" && <Text c={c} name="gatewayUser" label="Username" class="narrow" />}

@@ -42,6 +42,8 @@ import {
   DEFAULT_NAME,
   generate,
   hostPathFor,
+  clientSecretKey,
+  GOOGLE_CLIENT_CREATE_URL,
   isIPv4,
   LEGACY_ANSWERS_FILE,
   type Mode,
@@ -74,6 +76,11 @@ let interactive = true;
 let preset: Record<string, unknown> = {};
 /** Where the generated files land; relative answers resolve against it. */
 let outDir = ".";
+/**
+ * The OAuth client secret, if one was pasted. Kept apart from the answers,
+ * which compose.yaml carries; it is for .env only.
+ */
+let clientSecret: string | undefined;
 
 const args = process.argv.slice(2);
 
@@ -403,13 +410,29 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
   let gatewayUser: string | undefined;
 
   if (authMode === "google") {
-    googleClientId = await ask(
-      "googleClientId",
-      "Google OAuth client ID",
-      prev.googleClientId ?? "",
-      { validate: CHECKS.googleClientId },
-    );
-    note(C.dim(`  Register this redirect URI with that client: ${publicUrl}/oauth2/callback`));
+    // In the order Google's console asks for things.
+    note();
+    note(`  1. Open ${GOOGLE_CLIENT_CREATE_URL}`);
+    note(`  2. Pick ${C.b("Web application")}, and add this under Authorized redirect URIs:`);
+    note(`       ${publicUrl}/oauth2/callback`);
+    note("  3. Create it, and paste what it shows:");
+    googleClientId = await ask("googleClientId", "Client ID", prev.googleClientId ?? "", {
+      validate: CHECKS.googleClientId,
+    });
+    // Asked only at the terminal: an answers file is kept as the record of a
+    // deployment, and a secret does not belong in one.
+    if (interactive) {
+      const kept = /^GOOGLE_CLIENT_SECRET=(?!CHANGEME)\S/m.test(
+        readIfExists(`${outDir}/.env`) ?? "",
+      );
+      clientSecret =
+        (await ask(
+          "__googleClientSecret",
+          `Client secret (${kept ? "blank keeps the one in .env" : "blank to put it in .env later"})`,
+          "",
+          { optional: true },
+        )) || undefined;
+    }
     allowedEmails = await ask(
       "allowedEmails",
       "Allowed emails (comma-separated)",
@@ -873,6 +896,7 @@ async function main() {
   for (const problem of validate(answers)) fail(problem);
   const files = generate(answers, {
     existingEnv: readIfExists(p(".env")) ?? "",
+    clientSecret,
   });
 
   note();
@@ -937,28 +961,28 @@ async function main() {
 
   note();
   note(C.b("Next:"));
-  const oauth = answers.authMode === "google" || answers.authMode === "github";
-  if (oauth) {
+  // Numbered as they come: which steps there are depends on the answers.
+  let n = 0;
+  const step = (s: string) => note(`  ${++n}. ${s}`);
+  const key = clientSecretKey(answers.authMode);
+  // Only while .env still has the placeholder: a pasted or kept secret is done.
+  if (key && files[".env"].includes(`${key}=CHANGEME`)) {
     const which = answers.authMode === "google" ? "Google" : "GitHub";
-    const key = answers.authMode === "google" ? "GOOGLE_CLIENT_SECRET" : "GITHUB_CLIENT_SECRET";
-    note(`  1. Put your ${which} client secret in .env (${key}).`);
-    note(`  2. Register this redirect URI: ${answers.publicUrl}/oauth2/callback`);
+    step(`Put your ${which} client secret in .env (${key}).`);
+  }
+  // Google's was one of the questions; GitHub's is still to do.
+  if (answers.authMode === "github") {
+    step(`Register this redirect URI: ${answers.publicUrl}/oauth2/callback`);
   }
   // An address needs no record; it is already where it points.
   if (answers.mode === "caddy" && !isIPv4(answers.domain ?? "")) {
-    note(
-      `  ${
-        oauth ? "3" : "1"
-      }. Point an A record for ${answers.domain} at this host, before first start.`,
-    );
+    step(`Point an A record for ${answers.domain} at this host, before first start.`);
   }
   if (answers.mode === "tailscale") {
-    note(`  ${oauth ? "3" : "1"}. Put a tagged, reusable auth key in .env (TS_AUTHKEY).`);
+    step("Put a tagged, reusable auth key in .env (TS_AUTHKEY).");
   }
   if (answers.mode === "none") {
-    note(
-      `  ${oauth ? "3" : "1"}. Have the platform route ${answers.publicUrl} to port 8080 of the agent-env service.`,
-    );
+    step(`Have the platform route ${answers.publicUrl} to port 8080 of the agent-env service.`);
   }
   note(`  ${"docker compose up -d"}`);
   note(`  ${"docker compose exec agent-env agent-env urls"}`);

@@ -258,3 +258,25 @@ test("the page takes only plain decimals for a number", () => {
   assertEquals(fields({ memoryGiB: " 1.5 ", swapGiB: "0", cpus: "0.5" }), []);
   assertEquals(toAnswers({ ...DEFAULT_FIELDS, memoryGiB: "", cpus: "" }).memoryGiB, undefined);
 });
+
+// A pasted client secret is for .env alone: compose.yaml carries the answers,
+// and anyone who can read the compose file must not get the secret with it.
+test("a pasted client secret goes to .env and nowhere else", () => {
+  const google: Answers = {
+    ...BASIC,
+    authMode: "google",
+    googleClientId: "1234-abc.apps.googleusercontent.com",
+    allowedEmails: "me@example.com",
+  };
+  const pasted = generate(google, { clientSecret: " GOCSPX-a$b " });
+  assert(pasted[".env"].includes("GOOGLE_CLIENT_SECRET='GOCSPX-a$b'"));
+  assert(!pasted["compose.yaml"].includes("GOCSPX"));
+  // It replaces the one in .env; blank keeps it.
+  const existingEnv = "GOOGLE_CLIENT_SECRET=GOCSPX-old\n";
+  assert(
+    generate(google, { existingEnv, clientSecret: "GOCSPX-new" })[".env"].includes("=GOCSPX-new"),
+  );
+  assert(generate(google, { existingEnv, clientSecret: " " })[".env"].includes("=GOCSPX-old"));
+  // A sign-in with no client secret has nowhere to put one.
+  assert(!generate(BASIC, { clientSecret: "GOCSPX-x" })[".env"].includes("GOCSPX"));
+});

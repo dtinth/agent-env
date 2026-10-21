@@ -22,6 +22,18 @@ export const VERSION = 1;
 /** The environment's name when none is given: the Compose project, and its hostname. */
 export const DEFAULT_NAME = "agent-env";
 
+/** Where a Google OAuth client is made; the configurators send people straight there. */
+export const GOOGLE_CLIENT_CREATE_URL = "https://console.cloud.google.com/auth/clients/create";
+
+/** The .env key holding the OAuth client secret for this sign-in, if it has one. */
+export function clientSecretKey(authMode: AuthMode): string | undefined {
+  return authMode === "google"
+    ? "GOOGLE_CLIENT_SECRET"
+    : authMode === "github"
+      ? "GITHUB_CLIENT_SECRET"
+      : undefined;
+}
+
 export const PRESETS = ["opencode", "vanilla"] as const;
 export type Preset = (typeof PRESETS)[number];
 export const DESKTOP_BACKENDS = ["novnc", "selkies"] as const;
@@ -1147,6 +1159,11 @@ export interface GenerateOptions {
    * memoise by `key` so the secrets it shows hold still.
    */
   randomSecret?: (bytes: number, key: string) => string;
+  /**
+   * The OAuth client secret, as pasted. It goes to .env and never into the
+   * answers, which compose.yaml carries. Blank keeps the one `existingEnv` has.
+   */
+  clientSecret?: string;
 }
 
 /**
@@ -1157,11 +1174,11 @@ export interface GenerateOptions {
 export function generate(answers: Answers, options: GenerateOptions = {}): Record<string, string> {
   const problems = validate(answers);
   if (problems.length) throw new InvalidAnswers(problems);
-  const env = renderEnv(
-    answers,
-    parseEnvFile(options.existingEnv ?? ""),
-    options.randomSecret ?? randomSecret,
-  );
+  const keep = parseEnvFile(options.existingEnv ?? "");
+  const key = clientSecretKey(answers.authMode);
+  const pasted = options.clientSecret?.trim();
+  if (key && pasted) keep[key] = { value: pasted, raw: envValue(pasted) };
+  const env = renderEnv(answers, keep, options.randomSecret ?? randomSecret);
   return {
     ".env": env.text,
     "compose.yaml": renderCompose(answers, env),

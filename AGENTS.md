@@ -231,6 +231,12 @@ wrong. It also does the things that are tedious by hand and easy to forget:
 
 - Generates and **persists** `OAUTH2_PROXY_COOKIE_SECRET`, so sessions survive a
   restart instead of silently rotating.
+- Walks through Google's console in its own order: a link to
+  [create the client](https://console.cloud.google.com/auth/clients/create),
+  "Web application" and the redirect URI to copy, then the client ID and secret
+  to paste. The secret goes to `.env` only (`generate`'s `clientSecret` option),
+  never into the answers `compose.yaml` carries; the wizard asks for it only at
+  a terminal, and blank keeps the one `.env` has.
 - **Refuses** to write a public-domain deployment with `AUTH_MODE=none`, or an
   OAuth one with no allow list. Everything in this container is root-capable.
 - Emits all four rootless-Docker host flags together, or none — three out of

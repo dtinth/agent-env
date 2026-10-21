@@ -237,3 +237,24 @@ button.link:hover {
     grid-template-columns: 1fr !important;
   }
 }
+
+/* Google's console steps, with the fields to paste into under the last. */
+.oauth-steps {
+  margin: 1.2rem 0;
+}
+.oauth-steps li + li {
+  margin-top: 0.6rem;
+}
+.oauth-steps .copyline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.3rem;
+}
+.oauth-steps .copyline code {
+  overflow-wrap: anywhere;
+}
+.oauth-steps .row {
+  margin-top: 0.4rem;
+}
