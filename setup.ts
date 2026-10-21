@@ -619,18 +619,21 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
   }
 
   // Limits are for a shared host. Blank means none, which is what a machine of
-  // its own wants.
+  // its own wants. On a re-run, Enter keeps the limit already there, as with
+  // every other question, so "-" takes over what blank meant.
   const optionalNumber = async (
     key: string,
     question: string,
     prevValue: number | undefined,
     validate: (v: string) => string | null,
   ): Promise<number | undefined> => {
-    const v = await ask(key, question, prevValue === undefined ? "" : String(prevValue), {
-      optional: true,
-      validate,
-    });
-    return v ? Number(v) : undefined;
+    const v = await ask(
+      key,
+      prevValue === undefined ? question : question.replace("blank", "-"),
+      prevValue === undefined ? "" : String(prevValue),
+      { optional: true, validate: (v) => (v === "-" ? null : validate(v)) },
+    );
+    return v && v !== "-" ? Number(v) : undefined;
   };
   const memoryGiB = await optionalNumber(
     "memoryGiB",
