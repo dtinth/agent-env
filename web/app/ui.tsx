@@ -459,6 +459,20 @@ function Runs({ c }: { c: Configurator }) {
         Let the agent run its own containers (rootless Docker)
         <small> — adds host flags that widen the sandbox</small>
       </Check>
+      <h3>
+        Limits <small>(optional; blank means none)</small>
+      </h3>
+      <div class="row">
+        <Text c={c} name="memoryGiB" label="Memory" hint="(GiB)" placeholder="8" class="narrow" />
+        <Text
+          c={c}
+          name="swapGiB"
+          label="Swap on top"
+          hint="(GiB; 0 for none)"
+          placeholder={f.memoryGiB.trim() ? `${f.memoryGiB.trim()} (Docker's default)` : "—"}
+        />
+        <Text c={c} name="cpus" label="CPUs" placeholder="2" class="narrow" />
+      </div>
     </>
   );
 }

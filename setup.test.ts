@@ -624,6 +624,35 @@ test("caddy mode inlines the Caddyfile in compose.yaml", () => {
   assertStringIncludes(compose, "\treverse_proxy agent-env:8080");
 });
 
+test("memory, swap and CPU limits are optional, and say what they mean", () => {
+  // None by default: a machine of its own wants none.
+  const plain = tmp();
+  run(LOCAL, plain);
+  assert(!/mem_limit|memswap_limit|cpus:/.test(readText(`${plain}/compose.yaml`)));
+
+  // Written in MiB, so a fractional GiB is still a whole number for Docker.
+  // Swap is memory plus swap, which is how Docker counts it.
+  const limited = tmp();
+  assertEquals(run({ ...LOCAL, memoryGiB: 1.5, swapGiB: 2, cpus: 2.5 }, limited).code, 0);
+  const c = readText(`${limited}/compose.yaml`);
+  assertStringIncludes(c, '    mem_limit: "1536m"\n');
+  assertStringIncludes(c, '    memswap_limit: "3584m"\n');
+  assertStringIncludes(c, "    cpus: 2.5\n");
+
+  // 0 is no swap: the total equals the memory.
+  const noSwap = tmp();
+  run({ ...LOCAL, memoryGiB: 8, swapGiB: 0 }, noSwap);
+  assertStringIncludes(readText(`${noSwap}/compose.yaml`), '    memswap_limit: "8192m"\n');
+
+  // Swap with no memory limit has nothing to sit on top of; the rest are
+  // amounts, and nothing else.
+  for (const bad of [{ swapGiB: 2 }, { memoryGiB: 0.5 }, { memoryGiB: "8g" }, { cpus: 0 }]) {
+    const dir = tmp();
+    assert(run({ ...LOCAL, ...bad }, dir).code !== 0, `accepted ${JSON.stringify(bad)}`);
+    assert(!existsSync(`${dir}/compose.yaml`));
+  }
+});
+
 test("on a platform nothing is published, only exposed", () => {
   // Dokploy and the like route to the container through their own proxy, so a
   // published port would only bypass it or collide with another stack.

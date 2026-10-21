@@ -618,6 +618,44 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
     }
   }
 
+  // Limits are for a shared host. Blank means none, which is what a machine of
+  // its own wants.
+  const optionalNumber = async (
+    key: string,
+    question: string,
+    prevValue: number | undefined,
+    validate: (v: string) => string | null,
+  ): Promise<number | undefined> => {
+    const v = await ask(key, question, prevValue === undefined ? "" : String(prevValue), {
+      optional: true,
+      validate,
+    });
+    return v ? Number(v) : undefined;
+  };
+  const memoryGiB = await optionalNumber(
+    "memoryGiB",
+    "Memory limit in GiB (blank for none)",
+    prev.memoryGiB,
+    CHECKS.memoryGiB,
+  );
+  // Not asked without a memory limit, but read from an answers file anyway, so
+  // validation can say it needs one rather than it vanishing.
+  const swapGiB =
+    memoryGiB === undefined && !("swapGiB" in preset)
+      ? undefined
+      : await optionalNumber(
+          "swapGiB",
+          "Swap on top of that in GiB (0 for none; blank lets Docker allow as much again)",
+          prev.swapGiB,
+          CHECKS.swapGiB,
+        );
+  const cpus = await optionalNumber(
+    "cpus",
+    "CPU limit, like 2 or 0.5 (blank for none)",
+    prev.cpus,
+    CHECKS.cpus,
+  );
+
   const sshKeys = await ask(
     "sshKeys",
     "SSH public key(s) for the dev user (separate several with ;)",
@@ -775,6 +813,9 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
     primaryPort,
     primaryCommand,
     rootlessDocker,
+    memoryGiB,
+    swapGiB,
+    cpus,
     sshKeys,
     sshPort,
     workspace,
