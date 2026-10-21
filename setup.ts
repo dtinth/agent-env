@@ -45,6 +45,7 @@ import {
   clientSecretKey,
   GOOGLE_CLIENT_CREATE_URL,
   isIPv4,
+  needsClientSecret,
   LEGACY_ANSWERS_FILE,
   type Mode,
   DEFAULT_DESKTOP_SIZE,
@@ -422,9 +423,7 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
     // Asked only at the terminal: an answers file is kept as the record of a
     // deployment, and a secret does not belong in one.
     if (interactive) {
-      const kept = /^GOOGLE_CLIENT_SECRET=(?!CHANGEME)\S/m.test(
-        readIfExists(`${outDir}/.env`) ?? "",
-      );
+      const kept = !needsClientSecret("google", readIfExists(`${outDir}/.env`) ?? "");
       clientSecret =
         (await ask(
           "__googleClientSecret",
@@ -966,7 +965,7 @@ async function main() {
   const step = (s: string) => note(`  ${++n}. ${s}`);
   const key = clientSecretKey(answers.authMode);
   // Only while .env still has the placeholder: a pasted or kept secret is done.
-  if (key && files[".env"].includes(`${key}=CHANGEME`)) {
+  if (key && needsClientSecret(answers.authMode, files[".env"])) {
     const which = answers.authMode === "google" ? "Google" : "GitHub";
     step(`Put your ${which} client secret in .env (${key}).`);
   }

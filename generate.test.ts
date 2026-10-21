@@ -10,11 +10,12 @@ import {
   answersFromCompose,
   generate,
   InvalidAnswers,
+  needsClientSecret,
   normaliseSshKeys,
   validate,
   VERSION,
 } from "./generate.ts";
-import { DEFAULT_FIELDS, type Fields, toAnswers } from "./web/app/model.ts";
+import { DEFAULT_FIELDS, type Fields, nextSteps, toAnswers } from "./web/app/model.ts";
 
 const BASIC: Answers = {
   version: VERSION,
@@ -279,4 +280,20 @@ test("a pasted client secret goes to .env and nowhere else", () => {
   assert(generate(google, { existingEnv, clientSecret: " " })[".env"].includes("=GOCSPX-old"));
   // A sign-in with no client secret has nowhere to put one.
   assert(!generate(BASIC, { clientSecret: "GOCSPX-x" })[".env"].includes("GOCSPX"));
+});
+
+// The placeholder counts however it is quoted, so the reminder to replace it
+// does not vanish because an editor added quotes.
+test("a quoted placeholder still needs the secret", () => {
+  assert(needsClientSecret("google", ""));
+  assert(needsClientSecret("google", "GOOGLE_CLIENT_SECRET=CHANGEME-google-client-secret\n"));
+  assert(needsClientSecret("google", 'GOOGLE_CLIENT_SECRET="CHANGEME-google-client-secret"\n'));
+  assert(needsClientSecret("github", "GITHUB_CLIENT_SECRET='CHANGEME'\n"));
+  assert(!needsClientSecret("google", 'GOOGLE_CLIENT_SECRET="GOCSPX-real"\n'));
+  assert(!needsClientSecret("basic", ""));
+  const steps = nextSteps(
+    { ...BASIC, authMode: "google", googleClientId: "1.apps.googleusercontent.com" },
+    'GOOGLE_CLIENT_SECRET="CHANGEME-google-client-secret"\n',
+  );
+  assert(steps[0].includes("GOOGLE_CLIENT_SECRET"));
 });

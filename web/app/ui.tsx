@@ -8,6 +8,7 @@ import {
   DESKTOP_SCALES,
   DESKTOP_SIZES,
   GOOGLE_CLIENT_CREATE_URL,
+  needsClientSecret,
 } from "../../generate.ts";
 import {
   type Configurator,
@@ -259,7 +260,7 @@ function Where({ c }: { c: Configurator }) {
 /** Google's console, in the order it asks for things. */
 function GoogleSteps({ c }: { c: Configurator }) {
   const redirect = `${c.answers.publicUrl}/oauth2/callback`;
-  const kept = /^GOOGLE_CLIENT_SECRET=(?!CHANGEME)\S/m.test(c.fields.existingEnv);
+  const kept = !needsClientSecret("google", c.fields.existingEnv);
   return (
     <ol class="steps oauth-steps">
       <li>
