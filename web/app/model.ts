@@ -13,6 +13,7 @@ import {
   ANSWERS_KEY,
   type AuthMode,
   clientSecretKey,
+  needsClientSecret,
   DEFAULT_NAME,
   DESKTOP_SIZES,
   generate,
@@ -427,7 +428,7 @@ export function nextSteps(a: Answers, env: string): string[] {
   const steps: string[] = [];
   const key = clientSecretKey(a.authMode);
   // Only while .env still has the placeholder: a pasted or kept secret is done.
-  if (key && env.includes(`${key}=CHANGEME`)) {
+  if (key && needsClientSecret(a.authMode, env)) {
     const which = a.authMode === "google" ? "Google" : "GitHub";
     steps.push(`Put your ${which} client secret in .env (${key}).`);
   }
@@ -514,8 +515,10 @@ export function useConfigurator() {
    * secrets of the .env given. A .env on its own leaves the answers alone.
    */
   const importDeployment = (answers: Partial<Answers> | null, env: string) => {
+    // Either way the .env's secrets are the ones meant, so a client secret
+    // typed earlier gives way to the one it has.
     if (!answers) {
-      setFields((f) => ({ ...f, existingEnv: env }));
+      setFields((f) => ({ ...f, existingEnv: env, googleClientSecret: "" }));
       return;
     }
     touched.add("authMode");

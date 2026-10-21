@@ -22,6 +22,17 @@ export const VERSION = 1;
 /** The environment's name when none is given: the Compose project, and its hostname. */
 export const DEFAULT_NAME = "agent-env";
 
+/**
+ * Whether a .env still lacks the OAuth client secret this sign-in needs: no
+ * line for it, or the placeholder, quoted or not.
+ */
+export function needsClientSecret(authMode: AuthMode, env: string): boolean {
+  const key = clientSecretKey(authMode);
+  if (!key) return false;
+  const v = parseEnvFile(env)[key]?.value.trim() ?? "";
+  return v === "" || v.startsWith("CHANGEME");
+}
+
 /** Where a Google OAuth client is made; the configurators send people straight there. */
 export const GOOGLE_CLIENT_CREATE_URL = "https://console.cloud.google.com/auth/clients/create";
 
