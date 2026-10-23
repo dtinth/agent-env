@@ -281,12 +281,16 @@ if [[ -d /opt/agent-env/skel ]]; then
   shopt -u dotglob nullglob
 fi
 
+# ~/.local/bin among them: Debian's ~/.profile puts it on PATH only if it exists
+# at login, so a tool installed there (Claude Code, say) would otherwise need a
+# fresh login shell before it could be found.
 mkdir -p "${WORKSPACE_DIR}" \
          "${USER_HOME}/.ssh" \
          "${USER_HOME}/.config/opencode" \
          "${USER_HOME}/.local/share/opencode" \
          "${USER_HOME}/.local/share/agent-browser" \
          "${USER_HOME}/.local/state" \
+         "${USER_HOME}/.local/bin" \
          "${USER_HOME}/.cache"
 chmod 700 "${USER_HOME}/.ssh"
 

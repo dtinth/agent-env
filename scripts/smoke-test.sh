@@ -614,6 +614,14 @@ PY
     *)           bad "MISE_CONFIG_DIR is '${mcd:-unset}', so 'mise use -g' would not persist" ;;
   esac
 
+  # Debian's ~/.profile puts ~/.local/bin on PATH only if it already exists, so
+  # it has to be there from the first start, or a tool installed into it needs a
+  # fresh login before it can be found.
+  lpath=$(docker exec -u dev "${CONTAINER}" bash -lc 'echo ":$PATH:"' 2>/dev/null | tr -d '\r')
+  [[ "${lpath}" == *":/home/dev/.local/bin:"* ]] \
+    && ok "~/.local/bin is on a login shell's PATH from the first start" \
+    || bad "~/.local/bin is not on a login shell's PATH, so a tool installed there needs a re-login"
+
   # ...while the image keeps owning its own toolchain, so updates land.
   assert "the image still declares its own toolchain in /etc/mise" \
     docker exec "${CONTAINER}" grep -q node /etc/mise/config.toml

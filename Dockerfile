@@ -253,6 +253,7 @@ RUN set -eux; \
              /home/${USER_NAME}/.local/share/opencode \
              /home/${USER_NAME}/.local/share/agent-browser \
              /home/${USER_NAME}/.agent-browser \
+             /home/${USER_NAME}/.local/bin \
              /home/${USER_NAME}/.ssh \
              /home/${USER_NAME}/Desktop; \
     chmod 700 /home/${USER_NAME}/.ssh; \
