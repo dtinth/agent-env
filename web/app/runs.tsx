@@ -238,63 +238,49 @@ function ComponentDetail({ c, id }: { c: Configurator; id: Component }) {
         <>
           <h3>What it means for you</h3>
           <ul class="r-points">
+            <li class="ok">The agent can start containers. The container cannot reach the host.</li>
             <li class="ok">
-              Nothing happens until the agent runs a container, and nothing new can reach the host.
-            </li>
-            <li class="ok">
-              The engine is rootless: even a break-out is trapped as this container's own
-              unprivileged user.
+              The engine is rootless. If code escapes a container, it stays this container's normal
+              user. It does not control the host.
             </li>
             <li class="warn">
-              One risk: an unpatched Linux kernel bug gets a little easier to exploit from inside.
+              There is one risk. If the Linux kernel has a fault, code in the container can attack
+              it more easily.
             </li>
           </ul>
-          <p class="r-verdict">Leave it off unless the agent needs to run containers.</p>
-          <h3>The five flags, in plain words</h3>
+          <p class="r-verdict">Keep Docker off if the agent does not need containers.</p>
+          <h3>Flags added to compose.yaml</h3>
+          <ul class="r-flaglist">
+            <li>
+              <code>cap_add: SYS_ADMIN</code>
+            </li>
+            <li>
+              <code>security_opt: seccomp=unconfined</code>
+            </li>
+            <li>
+              <code>security_opt: apparmor=unconfined</code>
+            </li>
+            <li>
+              <code>security_opt: systempaths=unconfined</code>
+            </li>
+            <li>
+              <code>devices: /dev/net/tun</code>
+            </li>
+          </ul>
+          <h3>What the flags allow</h3>
           <p class="hint">
-            The configurator writes these into <code>compose.yaml</code> for you. Each opens one
-            narrow thing the rootless engine needs, and leaves shut what <code>--privileged</code>{" "}
-            would throw open.
+            A <code>--privileged</code> container can do every item below. These flags allow only
+            the first group.
           </p>
-          <dl class="r-flags">
-            <div class="flag">
-              <dt>
-                <code>cap_add: SYS_ADMIN</code>
-              </dt>
-              <dd class="grants">
-                <b>Opens</b> the mount and namespace control the engine uses to build containers.
-              </dd>
-              <dd class="denies">
-                <b>Still shut:</b> raw device I/O, loading kernel modules, and every other root
-                capability — <code>--privileged</code> would grant them all.
-              </dd>
-            </div>
-            <div class="flag">
-              <dt>
-                unconfined <code>seccomp</code> · <code>AppArmor</code> · <code>systempaths</code>
-              </dt>
-              <dd class="grants">
-                <b>Opens</b> the extra syscalls, self-mounts and sysctls the engine's own containers
-                need to start.
-              </dd>
-              <dd class="denies">
-                <b>Still shut:</b> the host's filesystem and devices — it only relaxes this inside
-                its own namespaces.
-              </dd>
-            </div>
-            <div class="flag">
-              <dt>
-                <code>/dev/net/tun</code>
-              </dt>
-              <dd class="grants">
-                <b>Opens</b> one network device, so the engine can run its own private network.
-              </dd>
-              <dd class="denies">
-                <b>Still shut:</b> the rest of <code>/dev</code> — <code>--privileged</code> hands
-                over every host device.
-              </dd>
-            </div>
-          </dl>
+          <ul class="r-caps">
+            <li class="yes">The container can start and manage its own containers.</li>
+            <li class="yes">It can make the mounts and namespaces that those containers need.</li>
+            <li class="yes">It can give those containers a private network.</li>
+            <li class="no">It cannot use host devices, such as disks, USB or a GPU.</li>
+            <li class="no">It cannot load or change kernel modules.</li>
+            <li class="no">It cannot do raw input or output to hardware.</li>
+            <li class="no">It cannot change the host's files or settings.</li>
+          </ul>
         </>
       )}
     </>
