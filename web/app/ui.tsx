@@ -548,12 +548,14 @@ function Runs({ c }: { c: Configurator }) {
         Let the agent run its own containers (rootless Docker)
         <small> — adds host flags that widen the sandbox</small>
       </Check>
-      {f.mode === "tailscale" && (
-        <Check c={c} name="smb">
-          Share the workspace over SMB
-          <small> — for the Files app or Finder; the password is on the /~env/ page</small>
-        </Check>
-      )}
+      <Check c={c} name="smb">
+        Share the workspace over SMB
+        <small>
+          {" "}
+          — for the Files app or Finder; the password is on the /~env/ page
+          {f.mode !== "tailscale" && "; port 445 is not published, so forward it yourself"}
+        </small>
+      </Check>
       {c.errorFor("components") && <p class="callout danger">{c.errorFor("components")}</p>}
       <h3>
         Limits <small>(optional; blank means none)</small>

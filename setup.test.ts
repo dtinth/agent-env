@@ -239,13 +239,13 @@ test("both desktops at once are refused", () => {
   assert(!existsSync(`${dir}/compose.yaml`));
 });
 
-test("the SMB share needs the tailnet, and is never published", () => {
+test("the SMB share works in every mode, and is never published", () => {
   for (const answers of [LOCAL, CADDY, PLATFORM]) {
     const dir = tmp();
     const r = run({ ...answers, components: ["files", "smb"] }, dir);
-    assertEquals(r.code, 1, `${answers.mode} accepted smb`);
-    assertStringIncludes(r.stdout, "tailnet");
-    assert(!existsSync(`${dir}/compose.yaml`));
+    assertEquals(r.code, 0, `${answers.mode} refused smb: ${r.stdout}`);
+    assertEquals(envOf(dir).AGENT_ENV_COMPONENTS, "files,smb");
+    assert(!readText(`${dir}/compose.yaml`).includes("445"), `${answers.mode} published SMB`);
   }
   const dir = tmp();
   assertEquals(run({ ...TS, components: ["files", "smb"] }, dir).code, 0);

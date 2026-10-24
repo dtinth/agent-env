@@ -110,8 +110,7 @@ export function componentsOf(f: Fields): Component[] {
   if (f.fileManager) list.push("files");
   if (f.opencode) list.push("opencode");
   if (f.docker) list.push("docker");
-  // Offered only on a tailnet, and left behind like the other mode's answers.
-  if (f.smb && f.mode === "tailscale") list.push("smb");
+  if (f.smb) list.push("smb");
   return sortComponents(list);
 }
 
@@ -469,6 +468,12 @@ export function nextSteps(a: Answers, env: string): string[] {
     steps.push(`Have the platform route ${a.publicUrl} to port 8080 of the agent-env service.`);
   if (a.mode === "tailscale")
     steps.push("Put a tagged, reusable Tailscale auth key in .env (TS_AUTHKEY).");
+  // Never published: SMB cannot sit behind the sign-in. On a tailnet the
+  // sidecar shares the container's network; anywhere else it is up to you.
+  if (a.components.includes("smb") && a.mode !== "tailscale")
+    steps.push(
+      "SMB (port 445) is not published. Forward it to the container yourself, on a network you trust.",
+    );
   steps.push("Save both files in one directory and run docker compose up -d.");
   steps.push(`Then open ${a.publicUrl}.`);
   return steps;
