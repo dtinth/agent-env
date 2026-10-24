@@ -89,11 +89,10 @@ export const CATALOG: CatalogEntry[] = [
     title: "Docker",
     summary: "A rootless Docker engine of your own, so the agent can run containers.",
     where: "—",
-    badges: ["host flags"],
+    badges: [],
     group: "infra",
     field: "docker",
-    needs:
-      "Five host flags that widen the sandbox: SYS_ADMIN, unconfined seccomp, AppArmor and systempaths, and /dev/net/tun. The compose file gets them.",
+    needs: "Five host flags in compose.yaml; see below.",
   },
   {
     id: "smb",

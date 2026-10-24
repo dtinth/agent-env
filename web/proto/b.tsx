@@ -8,13 +8,7 @@ import "./protos.css";
 import type { Component } from "../../generate.ts";
 import { type Configurator, componentsOf } from "../app/model.ts";
 import { App } from "../app/shell.tsx";
-import {
-  Choices,
-  DESKTOP_OPTIONS,
-  DesktopGeometry,
-  LimitFields,
-  PrimaryFields,
-} from "../app/ui.tsx";
+import { Choices, DESKTOP_OPTIONS, DesktopGeometry, LimitFields } from "../app/ui.tsx";
 import {
   type Badge,
   Badges,
@@ -25,7 +19,6 @@ import {
   provisionFiles,
   repoName,
   RepoRows,
-  rootLabel,
   ScriptEditor,
   setOn,
   Switch,
@@ -33,7 +26,7 @@ import {
   YamlPreview,
 } from "./extras.tsx";
 
-type Sel = `c:${Component}` | "desktop" | "root" | `repo:${number}` | "script" | "limits";
+type Sel = `c:${Component}` | "desktop" | `repo:${number}` | "script" | "limits";
 
 function Item(props: {
   sel: Sel;
@@ -108,7 +101,6 @@ function Head(props: {
 
 function BuiltinDetail({ c, id }: { c: Configurator; id: Component }) {
   const e = entry(id);
-  const f = c.fields;
   return (
     <>
       <Head
@@ -127,28 +119,23 @@ function BuiltinDetail({ c, id }: { c: Configurator; id: Component }) {
         ]}
       />
       {id === "opencode" && (
-        <div class="pb-relation">
-          <h3>And your own app</h3>
+        <p class="hint">
+          Only one thing answers at <code>/</code>. With OpenCode off, a component of yours can have
+          it; with nothing there, <code>/</code> shows the <code>/~env/</code> index.
+        </p>
+      )}
+      {id === "docker" && (
+        <div class="callout">
           <p>
-            Only one thing answers at <code>/</code>.{" "}
-            {f.opencode ? (
-              <>
-                With OpenCode on, <code>PRIMARY_PORT</code> and <code>PRIMARY_COMMAND</code> are not
-                used.
-              </>
-            ) : (
-              <>
-                OpenCode is off, so <code>/</code> goes to <b>{rootLabel(c).title}</b>.
-              </>
-            )}
+            <b>Turning Docker on adds five flags to compose.yaml.</b> A rootless engine needs them:{" "}
+            <code>cap_add: SYS_ADMIN</code>, unconfined seccomp, AppArmor and systempaths, and{" "}
+            <code>/dev/net/tun</code>. The configurator writes them for you.
+          </p>
+          <p>
+            They widen what code in the container can do, though still well short of{" "}
+            <code>--privileged</code>.
           </p>
         </div>
-      )}
-      {id === "docker" && f.docker && (
-        <p class="callout">
-          This is a real widening of what code in the container can do, still well short of{" "}
-          <code>--privileged</code>.
-        </p>
       )}
     </>
   );
@@ -187,49 +174,6 @@ function DesktopDetail({ c }: { c: Configurator }) {
           <Choices c={c} name="desktop" cols={2} options={DESKTOP_OPTIONS.slice(0, 2)} />
           <h3>Display</h3>
           <DesktopGeometry c={c} />
-        </>
-      )}
-    </>
-  );
-}
-
-function RootDetail({ c }: { c: Configurator }) {
-  const f = c.fields;
-  return (
-    <>
-      <Head
-        kicker="At /"
-        title="Your own app"
-        on={!f.opencode}
-        onToggle={(on) => c.set("opencode", !on)}
-      />
-      <p class="pb-lede">
-        Not a component: <code>/</code> proxies to a port, and the container can run a command there
-        and keep it running.
-      </p>
-      {f.opencode ? (
-        <div class="pb-blocked">
-          <p>
-            <b>OpenCode has /.</b> Your own app takes over when OpenCode is off; the two cannot
-            share the address.
-          </p>
-          <button type="button" class="small" onClick={() => c.set("opencode", false)}>
-            Turn OpenCode off and use my app
-          </button>
-        </div>
-      ) : (
-        <>
-          <Facts
-            rows={[
-              ["Shows up at", <code>/</code>],
-              ["In compose", <code>PRIMARY_PORT, PRIMARY_COMMAND</code>],
-            ]}
-          />
-          <h3>Settings</h3>
-          <PrimaryFields c={c} />
-          <p class="hint">
-            With nothing listening, <code>/</code> shows the <code>/~env/</code> index instead.
-          </p>
         </>
       )}
     </>
@@ -282,7 +226,6 @@ function RunsB({ c, x }: { c: Configurator; x: Extras }) {
   const list = componentsOf(f);
   let detail: ComponentChildren;
   if (sel === "desktop") detail = <DesktopDetail c={c} />;
-  else if (sel === "root") detail = <RootDetail c={c} />;
   else if (sel === "script")
     detail = (
       <>
@@ -337,15 +280,7 @@ function RunsB({ c, x }: { c: Configurator; x: Extras }) {
           {builtin("terminal", "/~env/terminal")}
           {builtin("files", "/~env/files")}
           {builtin("opencode", "at /")}
-          <Item
-            sel="root"
-            current={sel}
-            onSelect={setSel}
-            title="Your own app"
-            sub={f.opencode ? "OpenCode has /" : `at / → :${f.primaryPort.trim() || "3000"}`}
-            dim={f.opencode}
-          />
-          {builtin("docker", "needs host flags")}
+          {builtin("docker", "containers for the agent")}
           {builtin("smb", "smb://…/workspace")}
         </ul>
         <div class="pb-label">Yours</div>
