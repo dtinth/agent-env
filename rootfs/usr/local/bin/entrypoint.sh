@@ -13,7 +13,8 @@ USER_HOME="/home/${USER_NAME}"
 # shared, read-only installs. See the mise section below.
 export MISE_DATA_DIR="${USER_HOME}/.local/share/mise"
 export MISE_SHARED_INSTALL_DIRS=/opt/mise/installs
-export PATH="${MISE_DATA_DIR}/shims:/opt/mise/shims:${PATH}"
+# ~/.agent-env/bin holds the components' commands, so it comes first everywhere.
+export PATH="${USER_HOME}/.agent-env/bin:${MISE_DATA_DIR}/shims:/opt/mise/shims:${PATH}"
 # Unprivileged account for caddy and oauth2-proxy.
 GATEWAY_USER_NAME="${GATEWAY_USER_NAME:-gateway}"
 GATEWAY_GROUP="${GATEWAY_GROUP:-gateway}"
@@ -112,59 +113,76 @@ AUTH_MODE="${AUTH_MODE:-google}"
 PUBLIC_URL="${PUBLIC_URL:-http://localhost:${GATEWAY_PORT}}"
 PUBLIC_URL="${PUBLIC_URL%/}"
 
-# The preset decides what this environment is for: which agent tools mise
-# installs, which primary service (if any) is supervised at /, and which commands
-# `agent-env` gains. A preset is a directory under /opt/agent-env/presets:
-#
-#   preset.env     title and summary, for the /~env/ index
-#   tools.toml     mise tools, installed into the home volume and kept current
-#   run            the primary service, exec'd with PRIMARY_PORT in its environment
-#   auth           keeps the gateway's credential for that service current
-#   login.sh       sourced by login shells;  environment: lines for /etc/environment
-#   commands/      extra `agent-env` subcommands
-#
-# vanilla is the default: it installs no agent and supervises nothing, so / goes to
-# whatever the workspace runs on PRIMARY_PORT. opencode installs OpenCode and serves
-# its web UI at /.
-PRESETS_DIR=/opt/agent-env/presets
-AGENT_ENV_PRESET="${AGENT_ENV_PRESET:-vanilla}"
-AGENT_ENV_PRESET="${AGENT_ENV_PRESET,,}"
-PRESET_DIR="${PRESETS_DIR}/${AGENT_ENV_PRESET}"
-[[ "${AGENT_ENV_PRESET}" =~ ^[a-z0-9_-]+$ && -f "${PRESET_DIR}/preset.env" ]] \
-  || die "AGENT_ENV_PRESET=${AGENT_ENV_PRESET} is not a preset (available: $(cd "${PRESETS_DIR}" && ls -d */ | tr -d / | paste -sd, -))"
-PRESET_TITLE=""; PRESET_SUMMARY=""; PRESET_RESERVED_PORT=""
-# shellcheck disable=SC1091
-. "${PRESET_DIR}/preset.env"
+# Components decide what this environment runs: the desktop, the terminal,
+# OpenCode, anything else. Each is a folder with an agent-env-component.toml; the
+# built-in ones are in /opt/agent-env/components and chosen here, and the user's
+# own, in ~/.agent-env/components, are on while present. agent-env-components
+# turns the enabled set into routes, the index, environment and links; see
+# docs/components.md.
+COMPONENTS_TOOL=/opt/agent-env/bin/agent-env-components
+DEFAULT_COMPONENTS="desktop,terminal,files"
 
-# Any command, supervised at / on PRIMARY_PORT. Only the vanilla preset takes
-# one: every other preset already has a primary service of its own, and its
-# credential belongs to that service alone.
-PRIMARY_COMMAND="${PRIMARY_COMMAND:-}"
-if [[ -n "${PRIMARY_COMMAND}" && "${AGENT_ENV_PRESET}" != vanilla ]]; then
-  die "PRIMARY_COMMAND needs AGENT_ENV_PRESET=vanilla: the ${AGENT_ENV_PRESET} preset runs its own primary service"
+# These were replaced by AGENT_ENV_COMPONENTS. Silently ignoring one would turn
+# off something the operator asked for (OpenCode, say), so refuse to start and
+# say what to write instead.
+removed=()
+suggest="${DEFAULT_COMPONENTS}"
+for v in AGENT_ENV_PRESET DESKTOP_ENABLE DESKTOP_BACKEND TTYD_ENABLE DUFS_ENABLE DOCKER_ROOTLESS_ENABLE; do
+  [[ -n "${!v+x}" ]] || continue
+  removed+=("${v}=${!v}")
+  case "${v}" in
+    AGENT_ENV_PRESET) [[ "${!v,,}" == opencode ]] && suggest="opencode,${suggest}" ;;
+    DESKTOP_ENABLE) is_true "${!v}" || suggest="$(sed -E 's/(^|,)desktop(-selkies)?(,|$)/\1/; s/,,/,/; s/^,|,$//g' <<<"${suggest}")" ;;
+    DESKTOP_BACKEND) [[ "${!v,,}" == selkies ]] && suggest="${suggest/desktop/desktop-selkies}" ;;
+    TTYD_ENABLE) is_true "${!v}" || suggest="$(sed -E 's/(^|,)terminal(,|$)/\1/; s/,,/,/; s/^,|,$//g' <<<"${suggest}")" ;;
+    DUFS_ENABLE) is_true "${!v}" || suggest="$(sed -E 's/(^|,)files(,|$)/\1/; s/,,/,/; s/^,|,$//g' <<<"${suggest}")" ;;
+    DOCKER_ROOTLESS_ENABLE) is_true "${!v}" && suggest="${suggest:+${suggest},}docker" ;;
+  esac
+done
+if (( ${#removed[@]} )); then
+  if [[ -n "${AGENT_ENV_COMPONENTS+x}" ]]; then
+    die "remove ${removed[*]} from the configuration: AGENT_ENV_COMPONENTS replaces them"
+  fi
+  die "${removed[*]}: these settings were replaced by AGENT_ENV_COMPONENTS.
+       Remove them and set:  AGENT_ENV_COMPONENTS=${suggest}"
 fi
-PRIMARY_SUPERVISED=false
-if [[ -n "${PRIMARY_COMMAND}" || -x "${PRESET_DIR}/run" ]]; then PRIMARY_SUPERVISED=true; fi
-# The primary service is a daemon of the dev user's own supervisor. Without that
+
+# Unset means the defaults; set but empty means none at all. Normalised to a
+# plain comma list, each name once, in the order given.
+AGENT_ENV_COMPONENTS="${AGENT_ENV_COMPONENTS-${DEFAULT_COMPONENTS}}"
+AGENT_ENV_COMPONENTS="$(tr -d '[:space:]' <<<"${AGENT_ENV_COMPONENTS,,}" \
+  | tr ',' '\n' | awk 'NF && !seen[$0]++' | paste -sd, -)"
+has_component() { [[ ",${AGENT_ENV_COMPONENTS}," == *",$1,"* ]]; }
+drop_component() {
+  AGENT_ENV_COMPONENTS="$(tr ',' '\n' <<<"${AGENT_ENV_COMPONENTS}" | grep -vx "$1" | paste -sd, - || true)"
+}
+DESKTOP_ENABLE=false
+if has_component desktop || has_component desktop-selkies; then DESKTOP_ENABLE=true; fi
+
+# Any command, supervised at / on PRIMARY_PORT, when no component serves /.
+PRIMARY_COMMAND="${PRIMARY_COMMAND:-}"
+if [[ -n "${PRIMARY_COMMAND}" ]] && has_component opencode; then
+  die "PRIMARY_COMMAND cannot be used with the opencode component, which serves / itself"
+fi
+# The primary command is a daemon of the dev user's own supervisor. Without that
 # supervisor nothing would start it, and a healthcheck probing for it would
 # leave the container unhealthy for good, so say what will actually happen.
-if [[ "${PRIMARY_SUPERVISED}" == true ]] && ! is_true "${USER_SUPERVISOR_ENABLE:-true}"; then
-  warn "USER_SUPERVISOR_ENABLE is off, so nothing starts the ${PRIMARY_COMMAND:+PRIMARY_COMMAND}${PRIMARY_COMMAND:-${AGENT_ENV_PRESET} server}; run it yourself on PRIMARY_PORT"
-  PRIMARY_SUPERVISED=false
+if [[ -n "${PRIMARY_COMMAND}" ]] && ! is_true "${USER_SUPERVISOR_ENABLE:-true}"; then
+  warn "USER_SUPERVISOR_ENABLE is off, so nothing starts PRIMARY_COMMAND; run it yourself on PRIMARY_PORT"
+  PRIMARY_COMMAND=""
+fi
+if [[ -n "${AGENT_ENV_COMPONENTS}" ]] && ! is_true "${USER_SUPERVISOR_ENABLE:-true}"; then
+  warn "USER_SUPERVISOR_ENABLE is off, so no component's daemons will start"
 fi
 
 # Where everything starts: the agent, the terminals, the file manager, the
 # user's own daemons.
 WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
 
-# The port the primary service listens on, and so where / points. A preset's
-# server, or PRIMARY_COMMAND, is told to listen here; with neither, whatever the
-# workspace runs there takes its place. 3000 is what Next, Rails, Vite preview and
-# most `npm start` templates pick.
+# Where / points when no component serves it: PRIMARY_COMMAND is told to listen
+# here, and otherwise whatever the workspace runs there takes its place. 3000 is
+# what Next, Rails, Vite preview and most `npm start` templates pick.
 PRIMARY_PORT="${PRIMARY_PORT:-3000}"
-if [[ -n "${PRESET_RESERVED_PORT}" && "${PRIMARY_PORT}" == "${PRESET_RESERVED_PORT}" ]]; then
-  die "PRIMARY_PORT=${PRIMARY_PORT} collides with the ${AGENT_ENV_PRESET} preset's own server; pick another port"
-fi
 
 SSH_ENABLE="${SSH_ENABLE:-true}"
 SSH_PORT="${SSH_PORT:-22}"
@@ -175,22 +193,16 @@ SSH_PORT="${SSH_PORT:-22}"
 # docs wrong. The `~` keeps it clear of any path a real application routes.
 ENV_PREFIX='~env'
 
-DESKTOP_ENABLE="${DESKTOP_ENABLE:-true}"
 DESKTOP_RESOLUTION="${DESKTOP_RESOLUTION:-1920x1080x24}"
 DESKTOP_DISPLAY="${DESKTOP_DISPLAY:-:1}"
-VNC_PORT="${VNC_PORT:-5900}"
-NOVNC_PORT="${NOVNC_PORT:-6080}"
-# How the desktop reaches the browser: noVNC (x11vnc + websockify) or Selkies.
-DESKTOP_BACKEND="${DESKTOP_BACKEND:-novnc}"
-SELKIES_PORT="${SELKIES_PORT:-6081}"
 
-TTYD_ENABLE="${TTYD_ENABLE:-true}"
-TTYD_PORT="${TTYD_PORT:-7681}"
 TTYD_WRITABLE="${TTYD_WRITABLE:-true}"
-# ttyd and dufs are told their own prefix so their UIs work under one; noVNC is
-# not, because the gateway strips the prefix before proxying to it.
+# Where the built-in components live, as their agent-env-component.toml says.
+# ttyd, dufs and Selkies are told their own prefix so their UIs work under one;
+# noVNC is not, because the gateway strips the prefix before proxying to it.
 TTYD_PATH="${ENV_PREFIX}/terminal"
 DESKTOP_PATH="${ENV_PREFIX}/desktop"
+DUFS_PATH="${ENV_PREFIX}/files"
 HEALTH_PATH="${ENV_PREFIX}/healthz"
 
 USER_SUPERVISOR_ENABLE="${USER_SUPERVISOR_ENABLE:-true}"
@@ -207,17 +219,13 @@ USER_WEB_ENABLE="${USER_WEB_ENABLE:-true}"
 USER_WEB_PORT="${USER_WEB_PORT:-4747}"
 USER_WEB_PATH="${USER_WEB_PATH:-pitchfork}"
 
-# dufs: a file manager for the workspace, run by the user's own supervisor.
-DUFS_ENABLE="${DUFS_ENABLE:-true}"
-DUFS_PORT="${DUFS_PORT:-5000}"
-DUFS_PATH="${DUFS_PATH:-${ENV_PREFIX}/files}"
+# The files component serves this.
 DUFS_ROOT="${DUFS_ROOT:-${WORKSPACE_DIR}}"
 
-# A rootless Docker engine for the dev user, so an agent can bring up a
-# database or any other container without the host's docker socket. Off by
-# default: it only works if the host relaxed this container's sandbox, and
-# doing that weakens the isolation the rest of this image is built on.
-DOCKER_ROOTLESS_ENABLE="${DOCKER_ROOTLESS_ENABLE:-false}"
+# The docker component: a rootless Docker engine for the dev user, so an agent
+# can bring up a database or any other container without the host's docker
+# socket. Not a default: it only works if the host relaxed this container's
+# sandbox, and doing that weakens the isolation the rest of this image is built on.
 DOCKER_ROOTLESS_DATA_ROOT="${DOCKER_ROOTLESS_DATA_ROOT:-${USER_HOME}/.local/share/docker}"
 DOCKER_ROOTLESS_HOST="unix://${XDG_RUNTIME_DIR:-/run/user/${USER_UID:-1000}}/docker.sock"
 
@@ -410,10 +418,10 @@ docker_rootless_preflight() {
   [[ -w /proc/sys/net/ipv4/ip_forward ]] || missing+=("--security-opt systempaths=unconfined")
 
   if (( ${#missing[@]} )); then
-    warn "DOCKER_ROOTLESS_ENABLE is set, but this container was not started with:"
+    warn "The docker component is listed, but this container was not started with:"
     local flag
     for flag in "${missing[@]}"; do warn "    ${flag}"; done
-    warn "Rootless Docker is disabled. Add those to your docker run / compose"
+    warn "The docker component is off. Add those to your docker run / compose"
     warn "service and recreate the container. See 'Docker inside the container'"
     warn "in AGENTS.md for what each one is for."
     return 1
@@ -421,42 +429,41 @@ docker_rootless_preflight() {
   return 0
 }
 
-if is_true "${DOCKER_ROOTLESS_ENABLE}"; then
+DOCKER_ROOTLESS_ENABLE=false
+if has_component docker; then
   if docker_rootless_preflight; then
+    DOCKER_ROOTLESS_ENABLE=true
     log "rootless Docker enabled for ${USER_NAME} (data root ${DOCKER_ROOTLESS_DATA_ROOT})"
   else
-    DOCKER_ROOTLESS_ENABLE=false
+    drop_component docker
   fi
 fi
 
-# The readiness probe addresses the socket explicitly instead of relying on
-# DOCKER_HOST reaching it. The CLI does *not* fall back to
-# $XDG_RUNTIME_DIR/docker.sock, so a probe that depends on the environment is
-# one that can silently never pass — and pitchfork answers a probe that never
-# passes by restarting the daemon, which stops every container it was running.
-pf_docker=""
-if is_true "${DOCKER_ROOTLESS_ENABLE}"; then
-  pf_docker="
-[daemons.dockerd]
-run = \"/opt/agent-env/bin/run-dockerd-rootless\"
-dir = \"${USER_HOME}\"
-ready_cmd = { run = \"docker -H ${DOCKER_ROOTLESS_HOST} version >/dev/null 2>&1\", timeout = \"120s\" }
-retry = true
-boot_start = true
-"
+# The smb component's password: SMB_PASSWORD if given, otherwise generated once
+# and kept in the home volume, so a device that saved it keeps working. Written
+# here, before anything renders, because the /~env/ index shows it.
+if has_component smb; then
+  smb_state="${USER_HOME}/.local/state/agent-env"
+  install -d -m 700 -o "${PUID}" -g "${PGID}" "${smb_state}"
+  if [[ -n "${SMB_PASSWORD:-}" ]]; then
+    printf '%s' "${SMB_PASSWORD}" > "${smb_state}/smb-password"
+  elif [[ ! -s "${smb_state}/smb-password" ]]; then
+    smb_pw="$(rand_secret)"
+    printf '%s' "${smb_pw:0:20}" > "${smb_state}/smb-password"
+    log "generated an SMB password for ${USER_NAME} (shown on /${ENV_PREFIX}/)"
+  fi
+  chown "${PUID}:${PGID}" "${smb_state}/smb-password"
+  chmod 600 "${smb_state}/smb-password"
 fi
 
-pf_dufs=""
-if is_true "${DUFS_ENABLE}"; then
-  pf_dufs="
-[daemons.dufs]
-run = \"/opt/agent-env/bin/run-dufs\"
-dir = \"${DUFS_ROOT}\"
-ready_port = ${DUFS_PORT}
-retry = true
+# Every component's daemons are started by this one, from each component's own
+# pitchfork.toml, once the user's supervisor is up. It exits when they have.
+pf_components="
+[daemons.components]
+run = \"${COMPONENTS_TOOL} start-all\"
+dir = \"${USER_HOME}\"
 boot_start = true
 "
-fi
 
 # Daemon logs are kept on disk, and a chatty daemon fills it. Pitchfork prunes
 # both supervisors' logs hourly: whichever of the two limits is hit first wins.
@@ -474,7 +481,7 @@ pf_begin="# >>> agent-env managed — rewritten on every start, edits here are l
 pf_end="# <<< agent-env managed <<<"
 pf_block="${RUN_DIR}/primary-daemon.toml"
 pf_primary=""
-if is_true "${PRIMARY_SUPERVISED}"; then
+if [[ -n "${PRIMARY_COMMAND}" ]]; then
   pf_primary="
 [daemons.primary]
 run = \"/opt/agent-env/bin/run-primary\"
@@ -489,7 +496,7 @@ cat > "${pf_block}" <<BLOCK
 ${pf_begin}
 # Keep your own daemons above this block: in TOML, anything following a table
 # header belongs to that table.
-${pf_primary}${pf_dufs}${pf_docker}${pf_end}
+${pf_primary}${pf_components}${pf_end}
 BLOCK
 
 python3 - "${user_pf_config}" "${pf_block}" "${pf_begin}" "${pf_end}" <<'MERGE'
@@ -537,25 +544,36 @@ fi
   echo "DUFS_PATH=${DUFS_PATH}"
   echo "HEALTH_PATH=${HEALTH_PATH}"
   echo "USER_WEB_PATH=${USER_WEB_PATH}"
-  echo "USER_WEB_ENABLE=$(canon "${USER_WEB_ENABLE}")"
-  echo "AGENT_ENV_PRESET=${AGENT_ENV_PRESET}"
-  echo "PRIMARY_SUPERVISED=$(canon "${PRIMARY_SUPERVISED}")"
-    echo "PRIMARY_PORT=${PRIMARY_PORT}"
+  # The dashboard only exists while the supervisor serving it does.
+  if is_true "${USER_SUPERVISOR_ENABLE}" && is_true "${USER_WEB_ENABLE}"; then
+    echo "USER_WEB_ENABLE=true"
+  else
+    echo "USER_WEB_ENABLE=false"
+  fi
+  echo "USER_SUPERVISOR_ENABLE=$(canon "${USER_SUPERVISOR_ENABLE}")"
+  # The built-in components actually enabled: what was asked for, less any the
+  # checks above turned off.
+  echo "AGENT_ENV_COMPONENTS=${AGENT_ENV_COMPONENTS}"
+  echo "PRIMARY_COMMAND_SET=$([[ -n "${PRIMARY_COMMAND}" ]] && echo true || echo false)"
+  echo "PRIMARY_PORT=${PRIMARY_PORT}"
   echo "WORKSPACE_DIR=${WORKSPACE_DIR}"
   echo "SSH_PORT=${SSH_PORT}"
   echo "DESKTOP_DISPLAY=${DESKTOP_DISPLAY}"
   echo "DESKTOP_ENABLE=$(canon "${DESKTOP_ENABLE}")"
-  echo "DESKTOP_BACKEND=${DESKTOP_BACKEND}"
-  echo "TTYD_ENABLE=$(canon "${TTYD_ENABLE}")"
   echo "SSH_ENABLE=$(canon "${SSH_ENABLE}")"
   echo "USER_NAME=${USER_NAME}"
+  echo "GATEWAY_GROUP=${GATEWAY_GROUP}"
   echo "DOCKER_ROOTLESS_ENABLE=$(canon "${DOCKER_ROOTLESS_ENABLE}")"
 } > "${RUN_DIR}/env"
 
 cat > /etc/profile.d/99-agent-env.sh <<EOF
-export AGENT_ENV_PRESET='${AGENT_ENV_PRESET}'
 export PRIMARY_PORT='${PRIMARY_PORT}'
-[ -r '${PRESET_DIR}/login.sh' ] && . '${PRESET_DIR}/login.sh'
+# Components' commands. Debian's /etc/profile resets PATH for login shells, so
+# put it back here, ahead of everything, as /etc/environment has it.
+case ":\${PATH}:" in
+  *":${USER_HOME}/.agent-env/bin:"*) ;;
+  *) export PATH="${USER_HOME}/.agent-env/bin:\${PATH}" ;;
+esac
 export DISPLAY='${DESKTOP_DISPLAY}'
 export XAUTHORITY='${XAUTHORITY_FILE}'
 export XDG_RUNTIME_DIR='${XDG_RUNTIME_DIR}'
@@ -573,9 +591,10 @@ chmod 644 /etc/profile.d/99-agent-env.sh
 # LANG/LC_ALL are the locale the image actually has. The Dockerfile sets them
 # for everything the entrypoint starts; an SSH session is given its environment
 # by PAM instead, and without them it lands in the C locale. Keep this file free
-# of comments — pam_env reads it as bare KEY=VALUE lines.
-cat > /etc/environment <<EOF
-PATH=${MISE_DATA_DIR}/shims:/opt/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+# of comments — pam_env reads it as bare KEY=VALUE lines. This is the base:
+# agent-env-components appends each component's [env] to it as /etc/environment.
+cat > "${RUN_DIR}/environment.base" <<EOF
+PATH=${USER_HOME}/.agent-env/bin:${MISE_DATA_DIR}/shims:/opt/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 LANG=C.UTF-8
 LC_ALL=C.UTF-8
 MISE_DATA_DIR=${MISE_DATA_DIR}
@@ -587,12 +606,10 @@ DISPLAY=${DESKTOP_DISPLAY}
 XAUTHORITY=${XAUTHORITY_FILE}
 XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}
 EOF
-[[ -r "${PRESET_DIR}/environment" ]] \
-  && sed "s/\${PRIMARY_PORT}/${PRIMARY_PORT}/g" "${PRESET_DIR}/environment" >> /etc/environment
 if is_true "${DOCKER_ROOTLESS_ENABLE}"; then
-  echo "DOCKER_HOST=${DOCKER_ROOTLESS_HOST}" >> /etc/environment
+  echo "DOCKER_HOST=${DOCKER_ROOTLESS_HOST}" >> "${RUN_DIR}/environment.base"
 fi
-chmod 644 /etc/environment
+chmod 644 "${RUN_DIR}/environment.base"
 
 # Root shells manage the system supervisor; everyone else gets their own, so
 # `pitchfork` as dev means "my daemons" and never touches the system ones.
@@ -634,15 +651,9 @@ setup_xauth() {
   log "display ${DESKTOP_DISPLAY} is cookie-protected (${XAUTHORITY_FILE})"
 }
 
-case "${DESKTOP_BACKEND}" in
-  novnc) ;;
-  selkies)
-    if [[ ! -x /opt/selkies/bin/selkies ]]; then
-      die "DESKTOP_BACKEND=selkies, but this image has no Selkies install at /opt/selkies"
-    fi
-    ;;
-  *) die "DESKTOP_BACKEND must be 'novnc' or 'selkies', not '${DESKTOP_BACKEND}'" ;;
-esac
+if has_component desktop-selkies && [[ ! -x /opt/selkies/bin/selkies ]]; then
+  die "the desktop-selkies component needs Selkies, and this image has no install at /opt/selkies"
+fi
 
 if is_true "${DESKTOP_ENABLE}"; then
   setup_xauth
@@ -980,92 +991,9 @@ esac
 # ---------------------------------------------------------------------------
 # Caddyfile
 # ---------------------------------------------------------------------------
-# The environment's own index, served at /${ENV_PREFIX}/. Rendered from the same
-# flags the gateway is, so it can only ever list what is actually routed.
-render_env_index() {
-  local d=/opt/agent-env/web
-  mkdir -p "${d}"
-
-  svc() {
-    printf '      <li><a class="svc" href="%s"><b>%s</b><span>%s</span></a></li>\n' "$1" "$2" "$3"
-  }
-
-  {
-    cat <<'HTMLHEAD'
-<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>agent-env</title>
-<style>
-  :root { color-scheme: light dark;
-    --fg:#111; --muted:#666; --bg:#fafafa; --card:#fff; --line:#e4e4e4; }
-  @media (prefers-color-scheme: dark) {
-    :root { --fg:#e8e8e8; --muted:#9a9a9a; --bg:#0d0d0d; --card:#171717; --line:#2b2b2b; }
-  }
-  body { margin:0; background:var(--bg); color:var(--fg);
-    font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
-  main { max-width:34rem; margin:0 auto; padding:3rem 1.25rem; }
-  h1 { font-size:1.05rem; margin:0 0 .3rem; }
-  p.sub { margin:0 0 1.75rem; color:var(--muted); font-size:.875rem; }
-  ul { list-style:none; margin:0; padding:0; display:grid; gap:.5rem; }
-  a.svc { display:block; padding:.8rem 1rem; background:var(--card); color:inherit;
-    border:1px solid var(--line); border-radius:.5rem; text-decoration:none; }
-  a.svc:hover { border-color:var(--muted); }
-  a.svc b { display:block; font-weight:600; font-size:.95rem; }
-  a.svc span { color:var(--muted); font-size:.82rem; }
-  footer { margin-top:2rem; color:var(--muted); font-size:.8rem; }
-  code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.925em; }
-</style>
-HTMLHEAD
-
-    # This page is also what / falls back to when nothing is listening on
-    # PRIMARY_PORT, so it has to make sense read from either address.
-    if is_true "${PRIMARY_SUPERVISED}"; then
-      local primary_title="${PRESET_TITLE:-Primary service}"
-      local primary_summary="${PRESET_SUMMARY:-Your PRIMARY_COMMAND, at /}"
-      cat <<EOF
-<main>
-  <h1>agent-env</h1>
-  <p class="sub">Everything this environment serves for itself is under
-    <code>/${ENV_PREFIX}/</code>. <code>/</code> is ${primary_title}.</p>
-  <ul>
-      <li><a class="svc" href="/"><b>${primary_title}</b><span>${primary_summary}</span></a></li>
-EOF
-    else
-      cat <<EOF
-<main>
-  <h1>agent-env</h1>
-  <p class="sub">Everything this environment serves for itself is under
-    <code>/${ENV_PREFIX}/</code>. <code>/</code> proxies to port
-    <code>${PRIMARY_PORT}</code> — start something there and it shows up at
-    <code>/</code>. With nothing listening, you land here.</p>
-  <ul>
-EOF
-    fi
-
-    if is_true "${TTYD_ENABLE}"; then
-      svc "/${TTYD_PATH}/" "Terminal" "A login shell, over a websocket"
-    fi
-    is_true "${DESKTOP_ENABLE}" \
-      && svc "/${DESKTOP_PATH}/" "Desktop" "XFCE on a virtual display, over ${DESKTOP_BACKEND}"
-    is_true "${DUFS_ENABLE}" \
-      && svc "/${DUFS_PATH}/" "Files" "Browse, upload and download the workspace"
-    if is_true "${USER_SUPERVISOR_ENABLE}" && is_true "${USER_WEB_ENABLE}"; then
-      svc "/${USER_WEB_PATH}" "Daemons" "Start, stop and tail your own background processes"
-    fi
-
-    cat <<HTMLFOOT
-  </ul>
-  <footer>Health: <code>/${HEALTH_PATH}</code></footer>
-</main>
-HTMLFOOT
-  } > "${d}/index.html"
-
-  chmod 644 "${d}/index.html"
-  log "environment index written to ${d}/index.html"
-}
-
-render_env_index
+# The environment's own index at /${ENV_PREFIX}/, and the routes to each
+# component, are written by agent-env-components from the same enabled set, so
+# the index can only ever list what is actually routed. They are imported below.
 
 render_caddyfile() {
   local f=/etc/caddy/Caddyfile
@@ -1162,59 +1090,11 @@ EOF
 				rewrite * /index.html
 				file_server
 			}
+
+			# Each component's own route, from its agent-env-component.toml.
+			# Rewritten whenever a component is installed, and reloaded live.
+			import ${RUN_DIR}/caddy/routes.caddy
 EOF
-
-    if is_true "${DESKTOP_ENABLE}" && [[ "${DESKTOP_BACKEND}" == selkies ]]; then
-      cat <<EOF
-
-			# Selkies is started with --subfolder, so every route it serves
-			# (page, websockets, API) already carries the prefix: pass the path
-			# through unstripped, as ttyd gets it. Its own basic auth is off;
-			# it listens on loopback only and this gateway is the way in.
-			redir /${DESKTOP_PATH} /${DESKTOP_PATH}/
-			handle /${DESKTOP_PATH}/* {
-				reverse_proxy 127.0.0.1:${SELKIES_PORT}
-			}
-EOF
-    elif is_true "${DESKTOP_ENABLE}"; then
-      cat <<EOF
-
-			# noVNC resolves its websocket relative to the page it was loaded
-			# from, so the default lands on /${DESKTOP_PATH}/websockify. It is
-			# not told the prefix; handle_path strips it before proxying.
-			redir /${DESKTOP_PATH} /${DESKTOP_PATH}/
-			handle /${DESKTOP_PATH}/ {
-				redir * /${DESKTOP_PATH}/vnc.html?autoconnect=true&resize=remote
-			}
-			handle_path /${DESKTOP_PATH}/* {
-				reverse_proxy 127.0.0.1:${NOVNC_PORT}
-			}
-EOF
-    fi
-
-    if is_true "${TTYD_ENABLE}"; then
-      cat <<EOF
-
-			# ttyd is told its own --base-path, so pass the path through rather
-			# than stripping it.
-			redir /${TTYD_PATH} /${TTYD_PATH}/
-			handle /${TTYD_PATH}/* {
-				reverse_proxy 127.0.0.1:${TTYD_PORT}
-			}
-EOF
-    fi
-
-    if is_true "${DUFS_ENABLE}"; then
-      cat <<EOF
-
-			# dufs is told its prefix with --path-prefix, so pass the path
-			# through rather than stripping it.
-			redir /${DUFS_PATH} /${DUFS_PATH}/
-			handle /${DUFS_PATH}/* {
-				reverse_proxy 127.0.0.1:${DUFS_PORT}
-			}
-EOF
-    fi
 
     if is_true "${USER_SUPERVISOR_ENABLE}" && is_true "${USER_WEB_ENABLE}"; then
       cat <<EOF
@@ -1259,71 +1139,38 @@ EOF
 				respond "no such service — see /${ENV_PREFIX}/ for what this environment serves" 404
 			}
 EOF
-    if is_true "${PRIMARY_SUPERVISED}"; then
-      # Everything else: the primary service, plain. Whatever login a preset's
-      # server needs is added by the preset itself, in front of that server, so
-      # nothing here knows about it and nothing here could pass it on.
-      cat <<EOF
+    # Everything else is /: a component that serves it, PRIMARY_COMMAND, or
+    # whatever the workspace runs on PRIMARY_PORT. When nothing is supervised
+    # there, errors.caddy shows the index in place of a bare 502.
+    cat <<EOF
 
-			handle {
-				reverse_proxy 127.0.0.1:${PRIMARY_PORT}
-			}
+			import ${RUN_DIR}/caddy/root.caddy
 		}
 	}
+
+	import ${RUN_DIR}/caddy/errors.caddy
 }
 EOF
-    else
-      # Reserved paths are excluded from the fallback so a genuinely dead
-      # service surfaces as 502. /${USER_WEB_PATH} is only reserved when the
-      # dashboard is actually rendered; otherwise it is the primary service's.
-      local err_exclude="/${ENV_PREFIX}/*"
-      if is_true "${USER_SUPERVISOR_ENABLE}" && is_true "${USER_WEB_ENABLE}"; then
-        err_exclude="${err_exclude} /${USER_WEB_PATH}*"
-      fi
-      cat <<EOF
-
-			# / belongs to the workspace. Nothing is injected here: a preset's
-			# credential exists to reach that preset's own server, and sending it
-			# anywhere else would leak it into someone else's application.
-			handle {
-				reverse_proxy 127.0.0.1:${PRIMARY_PORT}
-			}
-		}
-	}
-
-	# Nothing listening on ${PRIMARY_PORT} yet? Show the index instead of a bare
-	# 502, so an empty workstation explains itself. Caddy comes here only for
-	# errors it generates — a refused connection — so an app that is up and
-	# answering 502 itself still shows its own error, which is what you want
-	# while debugging it.
-	#
-	# Scoped away from the reserved prefix deliberately: a dufs or ttyd that is
-	# genuinely down has to surface as 502, not be papered over with an index.
-	handle_errors 502 {
-		@primary not path ${err_exclude}
-		handle @primary {
-			root * /opt/agent-env/web
-			rewrite * /index.html
-			file_server
-		}
-		handle {
-			respond "{err.status_code} {err.status_text}" {err.status_code}
-		}
-	}
-}
-EOF
-    fi
   } > "${f}"
 
   chmod 640 "${f}"
   chown root:"${GATEWAY_GROUP}" "${f}"
   caddy fmt --overwrite "${f}" >/dev/null 2>&1 || true
-  caddy validate --config "${f}" >/dev/null 2>&1 \
-    || { caddy validate --config "${f}"; die "generated Caddyfile is invalid (see above)"; }
-  log "gateway configuration written to ${f}"
 }
 
 render_caddyfile
+
+# The components: everything above that depends on which are enabled. Writes the
+# imports, the index, /etc/environment, the profile snippet and the links into
+# the home volume. A built-in that is missing or broken is fatal; one of the
+# user's own that is broken is skipped with a warning.
+"${COMPONENTS_TOOL}" reconcile --boot || die "the components could not be set up (see above)"
+caddy validate --config /etc/caddy/Caddyfile >/dev/null 2>&1 \
+  || { caddy validate --config /etc/caddy/Caddyfile; die "generated Caddyfile is invalid (see above)"; }
+log "gateway configuration written to /etc/caddy/Caddyfile"
+# Whether / is supervised, now that it is known what serves it.
+PRIMARY_SUPERVISED="$(jq -r 'if .root.kind == "none" then "false" else "true" end' "${RUN_DIR}/components.json")"
+echo "PRIMARY_SUPERVISED=${PRIMARY_SUPERVISED}" >> "${RUN_DIR}/env"
 
 # ---------------------------------------------------------------------------
 # mise: the agent tools, and any extra global tools
@@ -1339,22 +1186,12 @@ mise_user() {
     MISE_CONFIG_DIR="${USER_HOME}/.config/mise" "$@"
 }
 
-# The tools every preset gets (mise.d), then the active preset's own. Copied over
-# on every start and the old copies removed first, so switching preset switches the
-# tools; these files are the image's, not yours. To pin a version, declare the tool
-# in ~/.config/mise/config.toml, which takes precedence over anything in conf.d.
-mise_conf_d="${USER_HOME}/.config/mise/conf.d"
-# Both levels, not just conf.d: `install -d` creates the missing parents as root,
-# and a root-owned ~/.config/mise is why `mise use -g` could not write config.toml.
-install -d -o "${PUID}" -g "${PGID}" "${mise_conf_d%/*}" "${mise_conf_d}"
-rm -f "${mise_conf_d}"/00-agent-env-*.toml
-for f in /opt/agent-env/mise.d/*.toml; do
-  [[ -f "${f}" ]] || continue
-  install -m 644 -o "${PUID}" -g "${PGID}" "${f}" "${mise_conf_d}/00-agent-env-${f##*/}"
-done
-if [[ -f "${PRESET_DIR}/tools.toml" ]]; then
-  install -m 644 -o "${PUID}" -g "${PGID}" "${PRESET_DIR}/tools.toml" "${mise_conf_d}/00-agent-env-preset.toml"
-fi
+# What to install was linked into ~/.config/mise/conf.d by the reconcile above:
+# the tools every environment gets (mise.d, as agent-env--<name>.toml), and each
+# enabled component's mise.toml (as agent-env-<name>.toml). Those links are the
+# image's, not yours, and are rewritten every start, so disabling a component
+# stops its tools being kept current. To pin a version, declare the tool in
+# ~/.config/mise/config.toml, which takes precedence over anything in conf.d.
 
 # Install what the volume declares, then move each tool to the newest version it
 # allows. Tools the image itself declares (/etc/mise/config.toml) are left to the
@@ -1460,18 +1297,20 @@ TZ = "${TZ}"
 WORKSPACE_DIR = "${WORKSPACE_DIR}"
 DESKTOP_DISPLAY = "${DESKTOP_DISPLAY}"
 DESKTOP_RESOLUTION = "${DESKTOP_RESOLUTION}"
-VNC_PORT = "${VNC_PORT}"
-NOVNC_PORT = "${NOVNC_PORT}"
-SELKIES_PORT = "${SELKIES_PORT}"
 SELKIES_SUBFOLDER = "/${DESKTOP_PATH}"
-TTYD_PORT = "${TTYD_PORT}"
 TTYD_WRITABLE = "${TTYD_WRITABLE}"
 TTYD_PATH = "${TTYD_PATH}"
 DUFS_PATH = "${DUFS_PATH}"
+DUFS_ROOT = "${DUFS_ROOT}"
 EOF
 
     # Must stay directly under [env]: in TOML everything after a table header
     # belongs to that table, and emit_daemon opens [daemons.*] below.
+    #
+    # Each component's [env], so its daemons see it: they are the user's
+    # supervisor's children, and it inherits this table.
+    "${COMPONENTS_TOOL}" env-toml
+
     if is_true "${DOCKER_ROOTLESS_ENABLE}"; then
       printf 'DOCKER_HOST = "%s"\n' "${DOCKER_ROOTLESS_HOST}"
       printf 'DOCKER_ROOTLESS_DATA_ROOT = "%s"\n' "${DOCKER_ROOTLESS_DATA_ROOT}"
@@ -1486,56 +1325,12 @@ EOF
         "ready_port = ${SSH_PORT}"
     fi
 
+    # The desktop itself is the user's (the desktop component's daemons), but
+    # the system bus it talks to has to be root's.
     if is_true "${DESKTOP_ENABLE}"; then
       emit_daemon dbus "/opt/agent-env/bin/run-dbus" \
         'retry = true' \
         'ready_cmd = "test -S /run/dbus/system_bus_socket"'
-
-      emit_daemon xvfb "/opt/agent-env/bin/run-xvfb" \
-        "user = \"${USER_NAME}\"" \
-        'retry = true' \
-        "ready_cmd = { run = \"xdpyinfo -display ${DESKTOP_DISPLAY} >/dev/null 2>&1\", timeout = \"60s\" }"
-
-      emit_daemon desktop "/opt/agent-env/bin/run-desktop" \
-        "user = \"${USER_NAME}\"" \
-        "dir = \"${USER_HOME}\"" \
-        'depends = ["xvfb", "dbus"]' \
-        'retry = true'
-
-      if [[ "${DESKTOP_BACKEND}" == selkies ]]; then
-        # Selkies captures the same display and adds audio through a
-        # PulseAudio null sink, so it takes the place of x11vnc + websockify.
-        emit_daemon pulseaudio "/opt/agent-env/bin/run-pulseaudio" \
-          "user = \"${USER_NAME}\"" \
-          'retry = true' \
-          "ready_cmd = \"test -S ${XDG_RUNTIME_DIR}/pulse/native\""
-
-        emit_daemon selkies "/opt/agent-env/bin/run-selkies" \
-          "user = \"${USER_NAME}\"" \
-          'depends = ["xvfb", "desktop", "pulseaudio"]' \
-          'retry = true' \
-          "ready_port = ${SELKIES_PORT}"
-      else
-        emit_daemon x11vnc "/opt/agent-env/bin/run-x11vnc" \
-          "user = \"${USER_NAME}\"" \
-          'depends = ["xvfb"]' \
-          'retry = true' \
-          "ready_port = ${VNC_PORT}"
-
-        emit_daemon novnc "/opt/agent-env/bin/run-novnc" \
-          "user = \"${USER_NAME}\"" \
-          'depends = ["x11vnc"]' \
-          'retry = true' \
-          "ready_port = ${NOVNC_PORT}"
-      fi
-    fi
-
-    if is_true "${TTYD_ENABLE}"; then
-      emit_daemon ttyd "/opt/agent-env/bin/run-ttyd" \
-        "user = \"${USER_NAME}\"" \
-        "dir = \"${WORKSPACE_DIR}\"" \
-        'retry = true' \
-        "ready_port = ${TTYD_PORT}"
     fi
 
     # Caddy is a proxy: it does not need its upstreams to exist at startup, and
@@ -1558,9 +1353,11 @@ EOF
       "ready_http = { url = \"http://127.0.0.1:${GATEWAY_PORT}/${HEALTH_PATH}\", timeout = \"60s\" }"
 
     if is_true "${USER_SUPERVISOR_ENABLE}"; then
+      # It runs the provision scripts before it starts, and those may clone
+      # repositories, so give it time.
       local user_sup_ready="ready_cmd = { run = \"true\", timeout = \"5s\" }"
       if is_true "${USER_WEB_ENABLE}"; then
-        user_sup_ready="ready_port = { port = ${USER_WEB_PORT}, timeout = \"60s\" }"
+        user_sup_ready="ready_port = { port = ${USER_WEB_PORT}, timeout = \"900s\" }"
       fi
       emit_daemon user-supervisor "/opt/agent-env/bin/run-user-supervisor" \
         "user = \"${USER_NAME}\"" \
@@ -1571,10 +1368,9 @@ EOF
     fi
 
     # pitchfork captures each daemon's output into its own log store rather than
-    # the container's stdout. This forwards the lot to PID 1's stdout so
-    # `docker logs` and the container log driver still see everything.
-    emit_daemon zz-log-forward \
-      "exec pitchfork logs --follow --raw >/proc/1/fd/1 2>/proc/1/fd/2" \
+    # the container's stdout. This forwards both supervisors' to PID 1's stdout
+    # so `docker logs` and the container log driver still see everything.
+    emit_daemon zz-log-forward "/opt/agent-env/bin/log-forward" \
       'retry = true'
   } > "${f}"
 
@@ -1593,25 +1389,10 @@ render_pitchfork
 # Summary
 # ---------------------------------------------------------------------------
 log "----------------------------------------------------------------"
-log " preset      : ${AGENT_ENV_PRESET}"
-if is_true "${PRIMARY_SUPERVISED}"; then
-  log " primary     : ${PRESET_TITLE:-PRIMARY_COMMAND} on 127.0.0.1:${PRIMARY_PORT}, at /"
-else
-  log " primary     : / proxies to 127.0.0.1:${PRIMARY_PORT} (nothing supervised)"
-fi
+log " components  : $(jq -r '[.components[].name] | join(", ") | if . == "" then "none" else . end' "${RUN_DIR}/components.json")"
 log " gateway     : ${PUBLIC_URL}  (listening on ${GATEWAY_BIND:-0.0.0.0}:${GATEWAY_PORT})"
 log " auth mode   : ${AUTH_MODE}"
-log " index       : ${PUBLIC_URL}/${ENV_PREFIX}/"
-if is_true "${TTYD_ENABLE}"; then
-  log " terminal    : ${PUBLIC_URL}/${TTYD_PATH}/  (login shell)"
-fi
-is_true "${DESKTOP_ENABLE}"     && log " desktop     : ${PUBLIC_URL}/${DESKTOP_PATH}/"
-if is_true "${USER_SUPERVISOR_ENABLE}" && is_true "${USER_WEB_ENABLE}"; then
-  log " daemons     : ${PUBLIC_URL}/${USER_WEB_PATH}"
-fi
-is_true "${DUFS_ENABLE}" && log " files       : ${PUBLIC_URL}/${DUFS_PATH}/"
-is_true "${DOCKER_ROOTLESS_ENABLE}" && log " docker      : rootless, as ${USER_NAME} (docker compose available)"
-is_true "${SSH_ENABLE}"         && log " ssh         : ${USER_NAME}@<host> -p ${SSH_PORT}"
+"${COMPONENTS_TOOL}" urls 2>/dev/null | sed 's/^/ /' | while IFS= read -r line; do log "${line}"; done
 log " workspace   : ${WORKSPACE_DIR}"
 log "----------------------------------------------------------------"
 
@@ -1623,7 +1404,8 @@ log "----------------------------------------------------------------"
 unset GOOGLE_CLIENT_SECRET GOOGLE_CLIENT_SECRET_FILE \
       GITHUB_CLIENT_SECRET GITHUB_CLIENT_SECRET_FILE \
       GATEWAY_PASSWORD GATEWAY_PASSWORD_FILE \
-      OAUTH2_PROXY_COOKIE_SECRET OAUTH2_PROXY_CLIENT_SECRET
+      OAUTH2_PROXY_COOKIE_SECRET OAUTH2_PROXY_CLIENT_SECRET \
+      SMB_PASSWORD SMB_PASSWORD_FILE
 
 # exec keeps PID 1, which is what pitchfork's container mode needs.
 exec "$@"

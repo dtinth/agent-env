@@ -1,23 +1,28 @@
 #!/usr/bin/env bash
-# The opencode preset's primary service: OpenCode v2 behind a small Caddy that
-# adds its login.
+# The opencode component's server: OpenCode v2 behind a small Caddy that adds
+# its login.
 #
-#   OpenCode      127.0.0.1:4096          --service makes it mint its own password
-#                                         and record it in ~/.local/state/opencode
-#   Caddy         127.0.0.1:PRIMARY_PORT  injects that password, proxies to :4096
+#   OpenCode      127.0.0.1:4096    --service makes it mint its own password
+#                                   and record it in ~/.local/state/opencode
+#   Caddy         127.0.0.1:4097    injects that password, proxies to :4096
 #
 # To everything outside this script — the gateway, the healthcheck, anything you
-# run yourself — the preset is just a service on PRIMARY_PORT that needs no
-# login. The credential never leaves this pair, so nothing else can be handed it.
+# run yourself — this is just a service on 4097 that needs no login. The
+# credential never leaves this pair, so nothing else can be handed it.
 #
-# run-primary has already changed into the workspace and exported PRIMARY_PORT.
 # The Caddy comes up only once OpenCode is listening and has registered, so
-# "listening on PRIMARY_PORT" means both halves are ready. The password belongs to
-# one server process (OpenCode exits if its record is altered), so if either half
+# "listening on 4097" means both halves are ready. The password belongs to one
+# server process (OpenCode exits if its record is altered), so if either half
 # dies so does this script, and pitchfork starts the pair again with a fresh one.
 set -euo pipefail
 
 INTERNAL=4096
+PORT=4097
+
+# OpenCode works in the workspace, wherever the daemon was started.
+env_file=/run/agent-env/env
+workdir="$(sed -n 's/^WORKSPACE_DIR=//p' "${env_file}" 2>/dev/null | head -1)"
+cd "${workdir:-/workspace}"
 state="${HOME}/.local/state/opencode/service.json"
 conf="${XDG_RUNTIME_DIR:-/tmp}/opencode-proxy.caddy"
 
@@ -63,7 +68,7 @@ cat > "${conf}" <<CADDY
 	default_bind 127.0.0.1
 }
 
-:${PRIMARY_PORT} {
+:${PORT} {
 	reverse_proxy 127.0.0.1:${INTERNAL} {
 		header_up Authorization "Basic ${b64}"
 	}

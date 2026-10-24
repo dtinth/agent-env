@@ -1,0 +1,11 @@
+name = "desktop"
+title = "Desktop"
+summary = "XFCE on a virtual display, over noVNC"
+
+# noVNC resolves its websocket relative to the page it was loaded from, so it
+# needs no idea of the prefix: the gateway strips it, and the bare path opens
+# the client already connecting.
+[http]
+port = 6080
+path = "~env/desktop"
+start = "vnc.html?autoconnect=true&resize=remote"

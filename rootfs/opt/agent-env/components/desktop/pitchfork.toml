@@ -1,0 +1,26 @@
+namespace = "agent-env-desktop"
+
+# The virtual display. It also backs headed Chromium for agent-browser.
+[daemons.xvfb]
+run = "/opt/agent-env/bin/run-xvfb"
+retry = true
+ready_cmd = { run = "xdpyinfo >/dev/null 2>&1", timeout = "60s" }
+
+# The XFCE session on it.
+[daemons.session]
+run = 'cd "$HOME" && exec /opt/agent-env/bin/run-desktop'
+depends = ["xvfb"]
+retry = true
+
+# -shared -forever, so several viewers can watch one desktop.
+[daemons.x11vnc]
+run = "/opt/agent-env/bin/run-x11vnc"
+depends = ["xvfb"]
+retry = true
+ready_port = 5900
+
+[daemons.novnc]
+run = "/opt/agent-env/bin/run-novnc"
+depends = ["x11vnc"]
+retry = true
+ready_port = 6080

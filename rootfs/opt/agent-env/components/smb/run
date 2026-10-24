@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Samba as the dev user: the workspace as the share "workspace", on port 445.
+#
+# Everything Samba keeps — its password database included — lives under
+# ~/.local/state/agent-env/smb, in the home volume. The config is rendered on
+# every start, and the password set from the file the entrypoint keeps (from
+# SMB_PASSWORD, or generated once), so changing either takes effect on restart.
+set -euo pipefail
+
+state="${HOME}/.local/state/agent-env/smb"
+password_file="${HOME}/.local/state/agent-env/smb-password"
+workspace="$(sed -n 's/^WORKSPACE_DIR=//p' /run/agent-env/env 2>/dev/null | head -1)"
+workspace="${workspace:-/workspace}"
+
+mkdir -p "${state}"/{private,state,cache,lock,pid,ncalrpc}
+chmod 700 "${state}" "${state}/private"
+
+if [[ ! -s "${password_file}" ]]; then
+  echo "no password in ${password_file}; the entrypoint writes it at start" >&2
+  exit 1
+fi
+
+conf="${state}/smb.conf"
+cat > "${conf}" <<EOF
+[global]
+  smb ports = 445
+  private dir = ${state}/private
+  state directory = ${state}/state
+  cache directory = ${state}/cache
+  lock directory = ${state}/lock
+  pid directory = ${state}/pid
+  ncalrpc dir = ${state}/ncalrpc
+  passdb backend = tdbsam:${state}/private/passdb.tdb
+  disable netbios = yes
+  server min protocol = SMB2_10
+  load printers = no
+  printcap name = /dev/null
+  disable spoolss = yes
+  map to guest = never
+  # Better behaved with macOS and iOS clients.
+  vfs objects = fruit streams_xattr
+  fruit:metadata = stream
+
+[workspace]
+  path = ${workspace}
+  read only = no
+  valid users = $(id -un)
+EOF
+
+# pdbedit rather than smbpasswd, which refuses to add users unless run as root.
+# `pdbedit -r -t` leaves the password as it was, so the account is removed and
+# added again: that is what makes a changed SMB_PASSWORD take effect.
+password="$(< "${password_file}")"
+user="$(id -un)"
+pdbedit -s "${conf}" -x -u "${user}" >/dev/null 2>&1 || true
+printf '%s\n%s\n' "${password}" "${password}" | pdbedit -s "${conf}" -a -u "${user}" -t >/dev/null
+
+exec /usr/sbin/smbd -s "${conf}" --foreground --no-process-group --debug-stdout -d 1

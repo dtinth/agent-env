@@ -1,0 +1,10 @@
+name = "smb"
+title = "SMB file share"
+summary = "The workspace over SMB, for the iPad Files app or Finder"
+
+# The password is generated on first start and kept in the home volume, or set
+# with SMB_PASSWORD; the entrypoint writes it here before anything renders.
+[[links]]
+label = "Connect from Files or Finder, as dev"
+url = "smb://{host}/workspace"
+secret_file = "~/.local/state/agent-env/smb-password"

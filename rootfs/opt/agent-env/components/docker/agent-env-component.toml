@@ -1,0 +1,7 @@
+name = "docker"
+title = "Docker"
+summary = "A rootless Docker engine of your own"
+
+# DOCKER_HOST is set by the entrypoint rather than in [env] here: it names the
+# user's runtime directory, whose uid PUID can change. The entrypoint also
+# checks the host flags this needs and leaves it off, saying which are missing.

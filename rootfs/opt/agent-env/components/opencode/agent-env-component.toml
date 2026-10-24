@@ -1,0 +1,17 @@
+name = "opencode"
+title = "OpenCode"
+summary = "The v2 web UI and API, at /"
+
+# The server on 4096 has a login of its own; ./run puts a small proxy on 4097
+# that adds it, so to the gateway this is just a service that needs none.
+[http]
+port = 4097
+path = "/"
+
+[env]
+# Points the OpenCode CLI at the real server (not the proxy), so `opencode` and
+# `opencode run` attach to it from SSH or the browser terminal alike. env.sh
+# adds its password.
+OPENCODE_SERVER = "http://127.0.0.1:4096"
+# mise keeps OpenCode current at every start; it must not update itself between.
+OPENCODE_DISABLE_AUTOUPDATE = "1"

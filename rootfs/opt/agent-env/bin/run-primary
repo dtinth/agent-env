@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The primary service: whatever answers at / on PRIMARY_PORT. It is the active
-# preset's server, or the command the operator gave as PRIMARY_COMMAND.
+# The command the operator gave as PRIMARY_COMMAND, supervised at / on
+# PRIMARY_PORT. (A component that serves / runs as that component's daemon
+# instead, and then there is no PRIMARY_COMMAND.)
 #
 # Runs in the dev user's own supervisor, which does not inherit the container's
 # environment, so everything comes from what the entrypoint published.
@@ -15,7 +16,4 @@ cd "${workdir:-/workspace}"
 
 # Kept out of the env file, which `agent-env` sources as shell: a command line
 # is the one value that cannot be trusted to survive that.
-if [[ -s /run/agent-env/primary-command ]]; then
-  exec bash -lc "$(cat /run/agent-env/primary-command)"
-fi
-exec "/opt/agent-env/presets/$(value AGENT_ENV_PRESET)/run"
+exec bash -lc "$(cat /run/agent-env/primary-command)"

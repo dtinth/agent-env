@@ -1,0 +1,10 @@
+name = "desktop-selkies"
+title = "Desktop"
+summary = "XFCE on a virtual display, over Selkies (prototype)"
+
+# Selkies is started with --subfolder, so every route it serves (page,
+# websockets, API) already carries the prefix: the path is passed through.
+[http]
+port = 6081
+path = "~env/desktop"
+strip = false

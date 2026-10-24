@@ -1,0 +1,10 @@
+namespace = "agent-env-docker"
+
+# The readiness probe names the socket explicitly instead of relying on
+# DOCKER_HOST: the CLI does not fall back to $XDG_RUNTIME_DIR/docker.sock, and a
+# probe that never passes makes pitchfork restart the daemon, stopping every
+# container it was running.
+[daemons.dockerd]
+run = 'cd "$HOME" && exec /opt/agent-env/bin/run-dockerd-rootless'
+retry = true
+ready_cmd = { run = 'docker -H "unix://$XDG_RUNTIME_DIR/docker.sock" version >/dev/null 2>&1', timeout = "120s" }

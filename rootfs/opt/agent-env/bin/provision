@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# The operator's startup scripts, in /etc/agent-env/provision.d, run as the dev
+# user before their supervisor starts (and so before any component's daemons).
+#
+# Each runs in a login shell, so the user's tools are on PATH, in name order, on
+# every start. A failure is reported and the next script runs: a flaky network
+# must never keep the environment from starting. The output goes to the
+# user-supervisor's log and to a file `agent-env logs provision` prints.
+set -uo pipefail
+
+dir=/etc/agent-env/provision.d
+log="${HOME}/.local/state/agent-env/provision.log"
+mkdir -p "$(dirname "${log}")"
+: > "${log}"
+
+shopt -s nullglob
+scripts=("${dir}"/*)
+(( ${#scripts[@]} )) || exit 0
+
+workdir="$(sed -n 's/^WORKSPACE_DIR=//p' /run/agent-env/env 2>/dev/null | head -1)"
+cd "${workdir:-/workspace}" 2>/dev/null || cd "${HOME}"
+
+for script in "${scripts[@]}"; do
+  [[ -f "${script}" ]] || continue
+  name="${script##*/}"
+  echo "[provision] ${name}: starting" | tee -a "${log}"
+  # Through bash rather than exec'ing it, so a config mounted without its
+  # executable bit still runs. A bound, generous one: a clone can be slow, a
+  # hung one must not stall the environment for good.
+  timeout "${PROVISION_TIMEOUT:-900}" bash -l "${script}" 2>&1 | sed -u "s/^/[provision] ${name}: /" | tee -a "${log}"
+  rc=${PIPESTATUS[0]}
+  if (( rc == 0 )); then
+    echo "[provision] ${name}: done" | tee -a "${log}"
+  else
+    echo "[provision] ${name}: FAILED with exit code ${rc}; carrying on" | tee -a "${log}"
+  fi
+done
+exit 0

@@ -67,7 +67,7 @@ jobs:
               github) answers='{"mode":"caddy","domain":"gh.example.com","httpsPort":8443,"authMode":"github","githubClientId":"Iv1.0123456789abcdef","githubOrg":"acme","githubTeam":"platform"}' ;;
               tailscale) answers='{"mode":"tailscale","tsHostname":"work.tail1234.ts.net","authMode":"none"}' ;;
             esac
-            common='"preset":"opencode","rootlessDocker":true,"sshKeys":"ssh-ed25519 AAAA t@h","sshPort":2222,"workspaceKind":"volume","timezone":"UTC"'
+            common='"components":"desktop,terminal,files,opencode,docker","sshKeys":"ssh-ed25519 AAAA t@h","sshPort":2222,"workspaceKind":"volume","timezone":"UTC"'
             echo "${answers%\}}, ${common}}" > "${dir}/a.json"
             # Plain node, as a person runs it: the wizard needs nothing installed.
             node setup.ts --answers "${dir}/a.json" --out "${dir}"
@@ -165,9 +165,10 @@ jobs:
             echo "image=agent-env:ci" >> "$GITHUB_OUTPUT"
           fi
 
-      # The default preset is vanilla, so the OpenCode integration — the server
-      # under its own supervisor, the credential injected at / — needs asking for.
-      - name: Smoke test, opencode preset
+      # OpenCode is not a default component, so the integration — the server
+      # under the user's supervisor, its credential added by its own proxy —
+      # needs asking for.
+      - name: Smoke test, opencode component
         env:
           IMAGE: ${{ steps.ref.outputs.image }}
         run: |
@@ -179,7 +180,7 @@ jobs:
             -e AUTH_MODE=basic \
             -e "GATEWAY_PASSWORD=${password}" \
             -e PUBLIC_URL=http://localhost:8080 \
-            -e AGENT_ENV_PRESET=opencode \
+            -e AGENT_ENV_COMPONENTS=opencode,desktop,terminal,files \
             "${IMAGE}"
 
           # The image's own HEALTHCHECK is the readiness signal.
@@ -195,11 +196,12 @@ jobs:
           CONTAINER=agent-env ./scripts/smoke-test.sh \
             http://localhost:8080 "dev:${password}"
 
-      # The vanilla preset is the default, and it is the one the run above cannot
-      # reach: a different handler at /, no credential injection, no agent
-      # installed, and a healthcheck that has to stop probing a port that is
-      # deliberately not there.
-      - name: Smoke test, vanilla preset
+      # The default components, which the run above cannot reach: a different
+      # handler at /, no credential injection, no agent installed, and a
+      # healthcheck that has to stop probing a port that is deliberately not
+      # there. It also gets a startup script, which installs a component of its
+      # own from a folder it creates.
+      - name: Smoke test, default components
         env:
           IMAGE: ${{ steps.ref.outputs.image }}
         run: |
@@ -217,7 +219,7 @@ jobs:
             -p 8082:8080 \
             -e AUTH_MODE=basic \
             -e "GATEWAY_PASSWORD=${password}" \
-            -e AGENT_ENV_PRESET=vanilla \
+            -v "${PWD}/scripts/smoke-provision.sh:/etc/agent-env/provision.d/10-smoke:ro" \
             -e PUBLIC_URL=http://localhost:8082 \
             -e SMOKE_OVERSIZE_FILE=/etc/ssl/certs/ca-certificates.crt \
             "${IMAGE}"
@@ -239,8 +241,8 @@ jobs:
 
       # PRIMARY_COMMAND is the one way the image supervises something it did not
       # choose at /. It has to be the thing that answers there, get the port in
-      # $PORT, and never be handed a credential meant for a preset's own server.
-      - name: Smoke test, vanilla preset with a supplied command
+      # $PORT, and never be handed a credential meant for a component's own server.
+      - name: Smoke test, default components with a supplied command
         env:
           IMAGE: ${{ steps.ref.outputs.image }}
         run: |
@@ -252,7 +254,6 @@ jobs:
             -p 8083:8080 \
             -e AUTH_MODE=basic \
             -e "GATEWAY_PASSWORD=${password}" \
-            -e AGENT_ENV_PRESET=vanilla \
             -e 'PRIMARY_COMMAND=python3 -m http.server "$PORT" --bind 127.0.0.1' \
             -e 'SMOKE_PRIMARY_EXPECT=Directory listing' \
             -e PUBLIC_URL=http://localhost:8083 \

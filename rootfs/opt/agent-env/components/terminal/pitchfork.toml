@@ -1,0 +1,6 @@
+namespace = "agent-env-terminal"
+
+[daemons.ttyd]
+run = "/opt/agent-env/bin/run-ttyd"
+retry = true
+ready_port = 7681

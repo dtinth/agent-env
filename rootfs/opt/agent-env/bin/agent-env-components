@@ -1,0 +1,1059 @@
+#!/usr/bin/python3 -I
+"""Components: find them, check them, and wire them into the environment.
+
+One program for both paths, so they cannot drift: the entrypoint runs
+`reconcile --boot` as root before anything starts, and `agent-env component
+install` runs the same `reconcile` under sudo when a component is added later.
+
+A component is a folder with an agent-env-component.toml. Built-in ones are in
+/opt/agent-env/components and are chosen with AGENT_ENV_COMPONENTS; the user's
+own are links (or folders) in ~/.agent-env/components and are on while present.
+See docs/components.md for what a component may contain.
+
+What reconcile writes, all of it derived from the enabled set:
+
+  /run/agent-env/components.json         what is enabled, for every reader
+  /run/agent-env/caddy/{routes,root,errors}.caddy   imported by the Caddyfile
+  /opt/agent-env/web/index.html          the /~env/ index
+  /etc/environment, /etc/profile.d/98-agent-env-components.sh   [env], env.sh
+  ~/.config/mise/conf.d/agent-env-<name>.toml  links to each mise.toml
+  ~/.agent-env/bin/<command>             links to each bin/ entry
+
+Python's standard library only (tomllib is in 3.11+): this runs before mise has
+installed anything, and the image's python3 is Debian's.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import html
+import json
+import os
+import pwd
+import re
+import shutil
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+BUILTIN_DIR = Path("/opt/agent-env/components")
+CORE_MISE_DIR = Path("/opt/agent-env/mise.d")
+RUN_DIR = Path("/run/agent-env")
+RUN_ENV = RUN_DIR / "env"
+STATE_FILE = RUN_DIR / "components.json"
+CADDY_DIR = RUN_DIR / "caddy"
+CADDYFILE = Path("/etc/caddy/Caddyfile")
+CADDY_ADMIN = "unix//var/lib/caddy/admin.sock"
+INDEX_FILE = Path("/opt/agent-env/web/index.html")
+ENV_BASE = RUN_DIR / "environment.base"
+ETC_ENVIRONMENT = Path("/etc/environment")
+PROFILE_SNIPPET = Path("/etc/profile.d/98-agent-env-components.sh")
+TOML_NAME = "agent-env-component.toml"
+DEFAULT_COMPONENTS = "desktop,terminal,files"
+
+NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+SEGMENT_RE = re.compile(r"^[A-Za-z0-9._~-]+$")
+START_RE = re.compile(r"^[A-Za-z0-9._~/?=&%-]*$")
+ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+BIN_RE = re.compile(r"^[A-Za-z0-9._+-]+$")
+URL_RE = re.compile(r"^([a-z][a-z0-9+.-]*://|/)")
+# Variables a component may not set: the environment's own plumbing, which a
+# component overriding would break for every other one.
+RESERVED_ENV = {
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "PWD", "TERM", "LANG", "LC_ALL",
+    "XDG_RUNTIME_DIR", "DISPLAY", "XAUTHORITY", "PITCHFORK_STATE_DIR",
+    "PITCHFORK_CONFIG_DIR", "MISE_DATA_DIR", "MISE_CONFIG_DIR",
+    "MISE_SHARED_INSTALL_DIRS", "MISE_STATE_DIR", "MISE_CACHE_DIR",
+}
+
+
+class ComponentError(Exception):
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Runtime configuration
+# ---------------------------------------------------------------------------
+
+
+def read_env_file(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    try:
+        for line in path.read_text().splitlines():
+            if "=" in line and not line.startswith("#"):
+                k, v = line.split("=", 1)
+                out[k] = v
+    except FileNotFoundError:
+        pass
+    return out
+
+
+class Runtime:
+    """What the entrypoint decided, as published in /run/agent-env/env."""
+
+    def __init__(self) -> None:
+        e = read_env_file(RUN_ENV)
+        self.raw = e
+        self.user = e.get("USER_NAME") or os.environ.get("USER_NAME") or "dev"
+        pw = pwd.getpwnam(self.user)
+        self.uid, self.gid, self.home = pw.pw_uid, pw.pw_gid, Path(pw.pw_dir)
+        self.public_url = e.get("PUBLIC_URL", "http://localhost:8080").rstrip("/")
+        self.prefix = e.get("ENV_PREFIX", "~env")
+        self.health_path = e.get("HEALTH_PATH", f"{self.prefix}/healthz")
+        self.user_web = e.get("USER_WEB_ENABLE", "true") == "true"
+        self.user_web_path = e.get("USER_WEB_PATH", "pitchfork")
+        self.primary_port = int(e.get("PRIMARY_PORT", "3000") or 3000)
+        self.primary_command = e.get("PRIMARY_COMMAND_SET", "false") == "true"
+        self.gateway_group = e.get("GATEWAY_GROUP", "gateway")
+        self.ssh = e.get("SSH_ENABLE", "true") == "true"
+        self.ssh_port = e.get("SSH_PORT", "22")
+        listed = e.get("AGENT_ENV_COMPONENTS")
+        if listed is None:
+            listed = os.environ.get("AGENT_ENV_COMPONENTS", DEFAULT_COMPONENTS)
+        self.builtin_names = [n.strip() for n in listed.split(",") if n.strip()]
+
+    @property
+    def user_dir(self) -> Path:
+        return self.home / ".agent-env" / "components"
+
+    @property
+    def bin_dir(self) -> Path:
+        return self.home / ".agent-env" / "bin"
+
+    @property
+    def mise_conf_d(self) -> Path:
+        return self.home / ".config" / "mise" / "conf.d"
+
+    @property
+    def host(self) -> str:
+        h = re.sub(r"^[a-zA-Z]+://", "", self.public_url).split("/", 1)[0]
+        h = h.rsplit("@", 1)[-1]
+        if h.startswith("["):
+            return h.split("]", 1)[0] + "]"
+        return h.split(":", 1)[0]
+
+    def reserved_paths(self) -> list[str]:
+        r = [self.prefix, self.health_path, f"{self.prefix}/daemons", "oauth2"]
+        if self.user_web:
+            r.append(self.user_web_path)
+        return r
+
+
+# ---------------------------------------------------------------------------
+# Loading one component
+# ---------------------------------------------------------------------------
+
+
+def norm_path(p: str) -> str:
+    """'/~env/x/' -> '~env/x'; '/' -> ''."""
+    return p.strip().strip("/")
+
+
+def path_overlaps(a: str, b: str) -> bool:
+    if a == "" or b == "":
+        return a == b
+    sa, sb = a.split("/"), b.split("/")
+    n = min(len(sa), len(sb))
+    return sa[:n] == sb[:n]
+
+
+def load_toml(path: Path, what: str) -> dict:
+    try:
+        with path.open("rb") as f:
+            return tomllib.load(f)
+    except FileNotFoundError:
+        raise ComponentError(f"{what} is missing")
+    except tomllib.TOMLDecodeError as e:
+        raise ComponentError(f"{what} is not valid TOML: {e}")
+    except PermissionError:
+        raise ComponentError(f"{what} cannot be read")
+
+
+def file_hash(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def start_order(daemons: dict) -> list[str]:
+    """Daemon names, each after the ones it depends on within the same file.
+
+    They are started one at a time in this order: asked to start several at
+    once, pitchfork starts a shared dependency once per dependent, and the
+    second start fails on the port the first just bound.
+    """
+    order: list[str] = []
+    state: dict[str, str] = {}
+
+    def visit(name: str) -> None:
+        if state.get(name) == "done":
+            return
+        if state.get(name) == "visiting":
+            raise ComponentError(f"pitchfork.toml: daemons depend on each other in a loop at {name}")
+        state[name] = "visiting"
+        spec = daemons.get(name)
+        deps = spec.get("depends", []) if isinstance(spec, dict) else []
+        for dep in deps if isinstance(deps, list) else []:
+            if isinstance(dep, str) and "/" not in dep and dep in daemons:
+                visit(dep)
+        state[name] = "done"
+        order.append(name)
+
+    for name in sorted(daemons):
+        visit(name)
+    return order
+
+
+def load_component(folder: Path, rt: Runtime, source: str) -> dict:
+    """Parse and check one component on its own; conflicts are checked later."""
+    folder = Path(folder)
+    if not folder.is_dir():
+        raise ComponentError(f"{folder} is not a folder")
+    real = folder.resolve()
+    meta = load_toml(real / TOML_NAME, TOML_NAME)
+
+    name = meta.get("name")
+    if not isinstance(name, str) or not NAME_RE.match(name):
+        raise ComponentError(
+            f"{TOML_NAME}: name must be lowercase letters, digits and single dashes "
+            f"(got {name!r})")
+    for key in ("title", "summary"):
+        if key in meta and not isinstance(meta[key], str):
+            raise ComponentError(f"{TOML_NAME}: {key} must be a string")
+
+    comp: dict = {
+        "name": name,
+        "title": meta.get("title") or name,
+        "summary": meta.get("summary", ""),
+        "source": source,
+        "dir": str(real),
+        "http": None,
+        "links": [],
+        "env": {},
+        "bin": [],
+        "daemons": [],
+        "pitchfork": None,
+        "pitchfork_hash": None,
+        "mise": None,
+        "env_sh": None,
+    }
+
+    http = meta.get("http")
+    if http is not None:
+        if not isinstance(http, dict):
+            raise ComponentError(f"{TOML_NAME}: [http] must be a table")
+        port = http.get("port")
+        if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+            raise ComponentError(f"{TOML_NAME}: [http] port must be a number from 1 to 65535")
+        path = http.get("path", f"{rt.prefix}/{name}")
+        if not isinstance(path, str):
+            raise ComponentError(f"{TOML_NAME}: [http] path must be a string")
+        path = norm_path(path)
+        if path and not all(SEGMENT_RE.match(s) for s in path.split("/")):
+            raise ComponentError(
+                f"{TOML_NAME}: [http] path {http.get('path')!r} may use only letters, digits "
+                "and . _ ~ - between slashes")
+        strip = http.get("strip", True)
+        if not isinstance(strip, bool):
+            raise ComponentError(f"{TOML_NAME}: [http] strip must be true or false")
+        start = http.get("start", "")
+        if not isinstance(start, str) or not START_RE.match(start) or start.startswith("/"):
+            raise ComponentError(
+                f"{TOML_NAME}: [http] start must be a page relative to the path, like 'index.html'")
+        if path == "" and start:
+            raise ComponentError(f"{TOML_NAME}: [http] start does not apply to path \"/\"")
+        for r in rt.reserved_paths():
+            if path and path_overlaps(path, norm_path(r)) and not (
+                    r == rt.prefix and path.startswith(rt.prefix + "/")):
+                raise ComponentError(f"{TOML_NAME}: [http] path /{path} is reserved by the environment")
+        comp["http"] = {"port": port, "path": path, "strip": strip, "start": start}
+
+    links = meta.get("links", [])
+    if not isinstance(links, list):
+        raise ComponentError(f"{TOML_NAME}: links must be written as [[links]] entries")
+    for i, link in enumerate(links, 1):
+        if not isinstance(link, dict) or not isinstance(link.get("label"), str) \
+                or not isinstance(link.get("url"), str):
+            raise ComponentError(f"{TOML_NAME}: [[links]] entry {i} needs a label and a url")
+        if not URL_RE.match(link["url"]):
+            raise ComponentError(
+                f"{TOML_NAME}: [[links]] url {link['url']!r} must start with a scheme like smb:// or with /")
+        entry = {"label": link["label"], "url": link["url"]}
+        secret = link.get("secret_file")
+        if secret is not None:
+            if not isinstance(secret, str):
+                raise ComponentError(f"{TOML_NAME}: [[links]] secret_file must be a string")
+            entry["secret_file"] = secret
+        comp["links"].append(entry)
+
+    env = meta.get("env", {})
+    if not isinstance(env, dict):
+        raise ComponentError(f"{TOML_NAME}: [env] must be a table")
+    for k, v in env.items():
+        if not ENV_KEY_RE.match(k):
+            raise ComponentError(f"{TOML_NAME}: [env] {k!r} is not a valid variable name")
+        if k in RESERVED_ENV:
+            raise ComponentError(f"{TOML_NAME}: [env] {k} belongs to the environment and cannot be set")
+        if isinstance(v, bool):
+            v = "true" if v else "false"
+        if not isinstance(v, (str, int, float)):
+            raise ComponentError(f"{TOML_NAME}: [env] {k} must be a string or a number")
+        v = str(v)
+        if "\n" in v or "\0" in v:
+            raise ComponentError(f"{TOML_NAME}: [env] {k} must be a single line")
+        comp["env"][k] = v
+
+    pf = real / "pitchfork.toml"
+    if pf.exists():
+        pft = load_toml(pf, "pitchfork.toml")
+        want = f"agent-env-{name}"
+        if pft.get("namespace") != want:
+            raise ComponentError(
+                f'pitchfork.toml must contain namespace = "{want}" (got {pft.get("namespace")!r})')
+        daemons = pft.get("daemons", {})
+        if not isinstance(daemons, dict):
+            raise ComponentError("pitchfork.toml: [daemons] must be a table")
+        comp["daemons"] = start_order(daemons)
+        comp["pitchfork"] = str(pf)
+        comp["pitchfork_hash"] = file_hash(pf)
+
+    mise = real / "mise.toml"
+    if mise.exists():
+        load_toml(mise, "mise.toml")
+        comp["mise"] = str(mise)
+
+    env_sh = real / "env.sh"
+    if env_sh.exists():
+        comp["env_sh"] = str(env_sh)
+
+    bindir = real / "bin"
+    if bindir.is_dir():
+        for entry in sorted(bindir.iterdir()):
+            if entry.name.startswith("."):
+                continue
+            if not BIN_RE.match(entry.name):
+                raise ComponentError(f"bin/{entry.name}: not a usable command name")
+            if not entry.is_file():
+                raise ComponentError(f"bin/{entry.name}: not a file")
+            if not os.access(entry, os.X_OK):
+                raise ComponentError(f"bin/{entry.name}: not executable (chmod +x it)")
+            comp["bin"].append(entry.name)
+
+    return comp
+
+
+# ---------------------------------------------------------------------------
+# The enabled set
+# ---------------------------------------------------------------------------
+
+
+def builtin_available() -> list[str]:
+    try:
+        return sorted(p.name for p in BUILTIN_DIR.iterdir() if (p / TOML_NAME).exists())
+    except FileNotFoundError:
+        return []
+
+
+def conflicts(comp: dict, taken: list[dict], rt: Runtime) -> str | None:
+    """Why comp cannot join the components already accepted, or None."""
+    for other in taken:
+        if other["name"] == comp["name"]:
+            return f"the name {comp['name']} is already taken (by {other['dir']})"
+    if comp["http"]:
+        p = comp["http"]["path"]
+        if p == "" and rt.primary_command:
+            return "PRIMARY_COMMAND already serves /"
+        for other in taken:
+            if other["http"] and path_overlaps(p, other["http"]["path"]):
+                where = "/" + p
+                return f"{other['name']} already serves {where}"
+    for other in taken:
+        for cmd in comp["bin"]:
+            if cmd in other["bin"]:
+                return f"the command {cmd} is already provided by {other['name']}"
+        for k in comp["env"]:
+            if k in other["env"] and other["env"][k] != comp["env"][k]:
+                return f"[env] {k} is already set differently by {other['name']}"
+    return None
+
+
+def collect(rt: Runtime, warn) -> tuple[list[dict], list[dict]]:
+    """Built-ins in list order, then the user's own by name.
+
+    A built-in that fails is fatal: the operator asked for it by name. One of
+    the user's own that fails is skipped with a warning, so a broken component
+    in the home volume cannot keep the whole environment from starting.
+    """
+    accepted: list[dict] = []
+    skipped: list[dict] = []
+    available = builtin_available()
+    for name in rt.builtin_names:
+        if name not in available:
+            raise ComponentError(
+                f"AGENT_ENV_COMPONENTS: there is no built-in component called {name!r} "
+                f"(available: {', '.join(available)})")
+        comp = load_component(BUILTIN_DIR / name, rt, "builtin")
+        why = conflicts(comp, accepted, rt)
+        if why:
+            raise ComponentError(f"AGENT_ENV_COMPONENTS: {name}: {why}")
+        accepted.append(comp)
+
+    if rt.user_dir.is_dir():
+        for entry in sorted(rt.user_dir.iterdir(), key=lambda p: p.name):
+            if entry.name.startswith("."):
+                continue
+            try:
+                if entry.name in available:
+                    raise ComponentError(f"{entry.name} is the name of a built-in component")
+                comp = load_component(entry, rt, "user")
+                if comp["name"] != entry.name:
+                    raise ComponentError(
+                        f"it is installed as {entry.name} but calls itself {comp['name']}; "
+                        "install it again")
+                why = conflicts(comp, accepted, rt)
+                if why:
+                    raise ComponentError(why)
+                comp["link"] = str(entry)
+                accepted.append(comp)
+            except ComponentError as e:
+                warn(f"component {entry.name} skipped: {e}")
+                skipped.append({"name": entry.name, "dir": str(entry), "reason": str(e)})
+    return accepted, skipped
+
+
+def root_of(comps: list[dict], rt: Runtime) -> dict:
+    for c in comps:
+        if c["http"] and c["http"]["path"] == "":
+            return {"kind": "component", "name": c["name"], "title": c["title"],
+                    "summary": c["summary"], "port": c["http"]["port"]}
+    if rt.primary_command:
+        return {"kind": "command", "title": "PRIMARY_COMMAND",
+                "summary": "Your PRIMARY_COMMAND, at /", "port": rt.primary_port}
+    return {"kind": "none", "port": rt.primary_port}
+
+
+# ---------------------------------------------------------------------------
+# Rendering
+# ---------------------------------------------------------------------------
+
+
+def caddy_routes(comps: list[dict]) -> str:
+    out = ["# Generated by agent-env-components; rewritten whenever a component changes.\n"]
+    for c in comps:
+        h = c["http"]
+        if not h or h["path"] == "":
+            continue
+        p, port = h["path"], h["port"]
+        out.append(f"\n# {c['name']}\nredir /{p} /{p}/\n")
+        if h["start"]:
+            out.append(f"handle /{p}/ {{\n\tredir * /{p}/{h['start']}\n}}\n")
+        if h["strip"]:
+            out.append(f"handle_path /{p}/* {{\n\treverse_proxy 127.0.0.1:{port}\n}}\n")
+        else:
+            out.append(f"handle /{p}/* {{\n\treverse_proxy 127.0.0.1:{port}\n}}\n")
+    return "".join(out)
+
+
+def caddy_root(root: dict) -> str:
+    return (
+        "# Generated by agent-env-components: whatever answers at /.\n"
+        "# Nothing is injected here: a component's own login, if it has one, is\n"
+        "# added by that component in front of its server.\n"
+        f"handle {{\n\treverse_proxy 127.0.0.1:{root['port']}\n}}\n")
+
+
+def caddy_errors(root: dict, rt: Runtime) -> str:
+    if root["kind"] != "none":
+        return "# Generated by agent-env-components: / is supervised, so a 502 there is real.\n"
+    exclude = f"/{rt.prefix}/*"
+    if rt.user_web:
+        exclude += f" /{rt.user_web_path}*"
+    return f"""# Generated by agent-env-components.
+# Nothing listening on {root['port']} yet? Show the index instead of a bare 502, so
+# an empty workstation explains itself. Caddy comes here only for errors it
+# generates -- a refused connection -- so an app that is up and answering 502
+# itself still shows its own error. Scoped away from the reserved prefix: a
+# component that is genuinely down has to surface as 502.
+handle_errors 502 {{
+	@primary not path {exclude}
+	handle @primary {{
+		root * /opt/agent-env/web
+		rewrite * /index.html
+		file_server
+	}}
+	handle {{
+		respond "{{err.status_code}} {{err.status_text}}" {{err.status_code}}
+	}}
+}}
+"""
+
+
+def read_secret(spec: str, rt: Runtime) -> str | None:
+    p = Path(spec.replace("~", str(rt.home), 1) if spec.startswith("~") else spec)
+    try:
+        return p.read_text().strip() or None
+    except OSError:
+        return None
+
+
+def link_items(comps: list[dict], rt: Runtime) -> list[dict]:
+    items = []
+    for c in comps:
+        for link in c["links"]:
+            item = {"component": c["name"], "title": c["title"], "label": link["label"],
+                    "url": link["url"].replace("{host}", rt.host)}
+            if "secret_file" in link:
+                item["secret"] = read_secret(link["secret_file"], rt)
+            items.append(item)
+    return items
+
+
+def render_index(comps: list[dict], root: dict, rt: Runtime) -> str:
+    e = html.escape
+    pfx = e(rt.prefix)
+    head = """<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>agent-env</title>
+<style>
+  :root { color-scheme: light dark;
+    --fg:#111; --muted:#666; --bg:#fafafa; --card:#fff; --line:#e4e4e4; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg:#e8e8e8; --muted:#9a9a9a; --bg:#0d0d0d; --card:#171717; --line:#2b2b2b; }
+  }
+  body { margin:0; background:var(--bg); color:var(--fg);
+    font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+  main { max-width:34rem; margin:0 auto; padding:3rem 1.25rem; }
+  h1 { font-size:1.05rem; margin:0 0 .3rem; }
+  h2 { font-size:.8rem; margin:1.75rem 0 .5rem; color:var(--muted); font-weight:600;
+    text-transform:uppercase; letter-spacing:.04em; }
+  p.sub { margin:0 0 1.75rem; color:var(--muted); font-size:.875rem; }
+  ul { list-style:none; margin:0; padding:0; display:grid; gap:.5rem; }
+  a.svc, div.svc { display:block; padding:.8rem 1rem; background:var(--card); color:inherit;
+    border:1px solid var(--line); border-radius:.5rem; text-decoration:none; }
+  a.svc:hover { border-color:var(--muted); }
+  .svc b { display:block; font-weight:600; font-size:.95rem; }
+  .svc span { display:block; color:var(--muted); font-size:.82rem; overflow-wrap:anywhere; }
+  footer { margin-top:2rem; color:var(--muted); font-size:.8rem; }
+  code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.925em; }
+</style>
+<main>
+  <h1>agent-env</h1>
+"""
+    if root["kind"] == "none":
+        sub = (f"Everything this environment serves for itself is under <code>/{pfx}/</code>. "
+               f"<code>/</code> proxies to port <code>{root['port']}</code> &mdash; start "
+               "something there and it shows up at <code>/</code>. With nothing listening, "
+               "you land here.")
+    else:
+        sub = (f"Everything this environment serves for itself is under <code>/{pfx}/</code>. "
+               f"<code>/</code> is {e(root['title'])}.")
+    out = [head, f'  <p class="sub">{sub}</p>\n  <ul>\n']
+
+    def svc(href: str, title: str, summary: str) -> None:
+        out.append(f'      <li><a class="svc" href="{e(href)}"><b>{e(title)}</b>'
+                   f'<span>{e(summary)}</span></a></li>\n')
+
+    if root["kind"] != "none":
+        svc("/", root["title"], root["summary"])
+    for c in comps:
+        h = c["http"]
+        if h and h["path"]:
+            svc(f"/{h['path']}/", c["title"], c["summary"])
+    if rt.user_web:
+        svc(f"/{rt.user_web_path}", "Daemons", "Start, stop and tail your own background processes")
+    out.append("  </ul>\n")
+
+    links = link_items(comps, rt)
+    if links:
+        out.append("  <h2>Elsewhere</h2>\n  <ul>\n")
+        for item in links:
+            extra = ""
+            if item.get("secret"):
+                extra = f'<span>Password: <code>{e(item["secret"])}</code></span>'
+            out.append(
+                f'      <li><div class="svc"><b>{e(item["title"])}: {e(item["label"])}</b>'
+                f'<span><a href="{e(item["url"])}"><code>{e(item["url"])}</code></a></span>'
+                f'{extra}</div></li>\n')
+        out.append("  </ul>\n")
+    out.append(f"  <footer>Health: <code>/{e(rt.health_path)}</code></footer>\n</main>\n")
+    return "".join(out)
+
+
+def shell_quote(v: str) -> str:
+    return "'" + v.replace("'", "'\\''") + "'"
+
+
+def render_profile(comps: list[dict]) -> str:
+    lines = ["# Generated by agent-env-components: each component's [env] and env.sh.",
+             "# Rewritten whenever a component changes; edits here are lost."]
+    for c in comps:
+        for k, v in c["env"].items():
+            lines.append(f"export {k}={shell_quote(v)}")
+    for c in comps:
+        if c["env_sh"]:
+            q = shell_quote(c["env_sh"])
+            lines.append(f"[ -r {q} ] && . {q}")
+    return "\n".join(lines) + "\n"
+
+
+def render_environment(comps: list[dict]) -> str:
+    try:
+        base = ENV_BASE.read_text()
+    except FileNotFoundError:
+        base = ETC_ENVIRONMENT.read_text() if ETC_ENVIRONMENT.exists() else ""
+    if base and not base.endswith("\n"):
+        base += "\n"
+    extra = "".join(f"{k}={v}\n" for c in comps for k, v in c["env"].items())
+    return base + extra
+
+
+# ---------------------------------------------------------------------------
+# Writing
+# ---------------------------------------------------------------------------
+
+
+def write_atomic(path: Path, text: str, mode: int = 0o644, owner: tuple[int, int] | None = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(text)
+    os.chmod(tmp, mode)
+    if owner:
+        os.chown(tmp, *owner)
+    os.replace(tmp, path)
+
+
+def sync_links(directory: Path, wanted: dict[str, str], owner: tuple[int, int], keep) -> None:
+    """Make `directory` hold exactly the links in `wanted` among the entries
+    `keep(name)` says it owns; everything else in it is left alone."""
+    directory.mkdir(parents=True, exist_ok=True)
+    os.chown(directory, *owner)
+    for entry in directory.iterdir():
+        if keep(entry.name) and entry.name not in wanted:
+            if entry.is_symlink() or entry.is_file():
+                entry.unlink()
+    for name, target in wanted.items():
+        p = directory / name
+        if p.is_symlink() and os.readlink(p) == target:
+            continue
+        if p.is_symlink() or p.exists():
+            p.unlink()
+        os.symlink(target, p)
+        os.lchown(p, *owner)
+
+
+def chown_parents(path: Path, stop: Path, owner: tuple[int, int]) -> None:
+    """chown each directory from stop (exclusive) down to path (inclusive)."""
+    path = path.resolve() if path.exists() else path
+    parts = []
+    p = path
+    while p != stop and p != p.parent:
+        parts.append(p)
+        p = p.parent
+    for p in reversed(parts):
+        if p.exists():
+            os.chown(p, *owner)
+
+
+def reconcile(rt: Runtime, boot: bool, reload: bool, warn, log) -> dict:
+    if os.geteuid() != 0:
+        raise ComponentError("reconcile needs root")
+    comps, skipped = collect(rt, warn)
+    root = root_of(comps, rt)
+    owner = (rt.uid, rt.gid)
+
+    # mise: one link per component's mise.toml, plus the image's own tools for
+    # every environment. Everything named agent-env-* (and the older 00-agent-env-*
+    # copies) belongs to this program; the user's own files are left alone.
+    rt.mise_conf_d.mkdir(parents=True, exist_ok=True)
+    chown_parents(rt.mise_conf_d, rt.home, owner)
+    mise_links = {f"agent-env-{c['name']}.toml": c["mise"] for c in comps if c["mise"]}
+    if CORE_MISE_DIR.is_dir():
+        for f in sorted(CORE_MISE_DIR.glob("*.toml")):
+            mise_links[f"agent-env--{f.stem}.toml"] = str(f)
+    sync_links(rt.mise_conf_d, mise_links, owner,
+               lambda n: n.startswith("agent-env-") or n.startswith("00-agent-env-"))
+
+    # Commands: ~/.agent-env/bin is this program's alone.
+    bins = {cmd: str(Path(c["dir"]) / "bin" / cmd) for c in comps for cmd in c["bin"]}
+    rt.bin_dir.parent.mkdir(parents=True, exist_ok=True)
+    os.chown(rt.bin_dir.parent, *owner)
+    rt.user_dir.mkdir(parents=True, exist_ok=True)
+    os.chown(rt.user_dir, *owner)
+    sync_links(rt.bin_dir, bins, owner, lambda n: True)
+
+    state = {"components": comps, "skipped": skipped, "root": root,
+             "links": link_items(comps, rt)}
+
+    previous = {}
+    for name in ("routes", "root", "errors"):
+        p = CADDY_DIR / f"{name}.caddy"
+        previous[name] = p.read_text() if p.exists() else None
+    gw = (0, _gid(rt.gateway_group))
+    write_atomic(CADDY_DIR / "routes.caddy", caddy_routes(comps), 0o640, gw)
+    write_atomic(CADDY_DIR / "root.caddy", caddy_root(root), 0o640, gw)
+    write_atomic(CADDY_DIR / "errors.caddy", caddy_errors(root, rt), 0o640, gw)
+    os.chmod(CADDY_DIR, 0o750)
+    os.chown(CADDY_DIR, *gw)
+
+    if not boot and CADDYFILE.exists():
+        ok = subprocess.run(["caddy", "validate", "--config", str(CADDYFILE)],
+                            capture_output=True, text=True)
+        if ok.returncode != 0:
+            for name, text in previous.items():
+                if text is not None:
+                    write_atomic(CADDY_DIR / f"{name}.caddy", text, 0o640, gw)
+            raise ComponentError("the gateway rejected the new configuration:\n" + ok.stderr[-2000:])
+
+    write_atomic(INDEX_FILE, render_index(comps, root, rt))
+    write_atomic(PROFILE_SNIPPET, render_profile(comps))
+    write_atomic(ETC_ENVIRONMENT, render_environment(comps))
+    write_atomic(STATE_FILE, json.dumps(state, indent=2) + "\n")
+
+    if reload:
+        reload_gateway(warn)
+    log(f"components: {', '.join(c['name'] for c in comps) or 'none'}"
+        + (f"; skipped: {', '.join(s['name'] for s in skipped)}" if skipped else ""))
+    return state
+
+
+def _gid(group: str) -> int:
+    import grp
+    try:
+        return grp.getgrnam(group).gr_gid
+    except KeyError:
+        return 0
+
+
+def reload_gateway(warn) -> None:
+    sock = Path("/var/lib/caddy/admin.sock")
+    if not sock.exists():
+        # Not up yet (a provision script at boot); it reads the new files when it starts.
+        return
+    r = subprocess.run(
+        ["runuser", "-u", "gateway", "--", "env", "HOME=/var/lib/caddy",
+         "XDG_CONFIG_HOME=/var/lib/caddy", "XDG_DATA_HOME=/var/lib/caddy",
+         "caddy", "reload", "--config", str(CADDYFILE), "--address", CADDY_ADMIN],
+        capture_output=True, text=True)
+    if r.returncode != 0:
+        warn("could not reload the gateway: " + (r.stderr.strip().splitlines() or ["?"])[-1])
+
+
+# ---------------------------------------------------------------------------
+# The user's side: pitchfork and mise, run as the dev user
+# ---------------------------------------------------------------------------
+
+
+def user_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env.pop("PITCHFORK_CONFIG_DIR", None)
+    uid = os.getuid()
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
+    if not env.get("PITCHFORK_STATE_DIR") or env["PITCHFORK_STATE_DIR"] == "/var/lib/pitchfork":
+        env["PITCHFORK_STATE_DIR"] = f"{env['XDG_RUNTIME_DIR']}/pitchfork"
+    return env
+
+
+def supervisor_running() -> bool:
+    env = user_env()
+    if not Path(env["PITCHFORK_STATE_DIR"], "sock").exists():
+        return False
+    r = subprocess.run(["pitchfork", "supervisor", "status"], env=env,
+                       capture_output=True, text=True, timeout=30)
+    return r.returncode == 0
+
+
+def pitchfork(args: list[str], cwd: str | None = None, check: bool = False) -> subprocess.CompletedProcess:
+    r = subprocess.run(["pitchfork", *args], cwd=cwd, env=user_env(), capture_output=True, text=True)
+    if check and r.returncode != 0:
+        raise ComponentError(f"pitchfork {' '.join(args)} failed:\n{(r.stderr or r.stdout).strip()}")
+    return r
+
+
+def start_component(comp: dict, restart: bool = False) -> None:
+    if not comp["daemons"]:
+        return
+    if restart:
+        stop_component(comp)
+    # One at a time, dependencies first (see start_order): each start waits for
+    # its daemon to be ready, so by the time a daemon is started everything it
+    # depends on is already up and pitchfork has nothing to start twice.
+    for name in comp["daemons"]:
+        pitchfork(["start", "--quiet", name], cwd=comp["dir"], check=True)
+
+
+def stop_component(comp: dict) -> None:
+    if comp.get("daemons"):
+        pitchfork(["stop", *[f"agent-env-{comp['name']}/{d}" for d in comp["daemons"]]])
+
+
+def daemon_states() -> dict[str, str]:
+    r = pitchfork(["list"])
+    out = {}
+    for line in r.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            out[parts[0]] = parts[1]
+    return out
+
+
+def mise_install(comp: dict) -> None:
+    if comp["mise"]:
+        r = subprocess.run(["mise", "install", "--yes"], env=user_env(), capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"warning: mise could not install every tool: {r.stderr.strip()[-500:]}", file=sys.stderr)
+        subprocess.run(["mise", "reshim"], env=user_env(), capture_output=True)
+
+
+def load_state() -> dict:
+    try:
+        return json.loads(STATE_FILE.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {"components": [], "skipped": [], "root": {"kind": "none"}, "links": []}
+
+
+def sudo_reconcile() -> None:
+    cmd = [sys.executable, "-I", str(Path(__file__).resolve()), "reconcile", "--reload"]
+    if os.geteuid() != 0:
+        cmd = ["sudo", "-n", *cmd]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    sys.stderr.write(r.stderr)
+    if r.returncode != 0:
+        raise ComponentError("could not apply the change (see above)")
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+
+def as_user(rt: Runtime, argv: list[str]) -> None:
+    """The user's commands run as the user: re-exec as them when called by root."""
+    if os.geteuid() == 0:
+        os.execvp("runuser", ["runuser", "-u", rt.user, "--", sys.executable, "-I",
+                              str(Path(__file__).resolve()), *argv])
+    if os.getuid() != rt.uid:
+        raise ComponentError(f"run this as {rt.user}")
+
+
+def check_against_installed(comp: dict, rt: Runtime, replacing: str | None) -> list[str]:
+    problems = []
+    if comp["name"] in builtin_available():
+        problems.append(f"{comp['name']} is the name of a built-in component")
+    state = load_state()
+    others = [c for c in state["components"] if c["name"] != replacing]
+    why = conflicts(comp, others, rt)
+    if why:
+        problems.append(why)
+    return problems
+
+
+def cmd_check(rt: Runtime, folder: str) -> int:
+    try:
+        comp = load_component(Path(folder), rt, "user")
+    except ComponentError as e:
+        print(f"✗ {e}")
+        return 1
+    link = rt.user_dir / comp["name"]
+    same = link.is_symlink() and Path(link).resolve() == Path(comp["dir"])
+    problems = check_against_installed(comp, rt, comp["name"] if same else None)
+    if link.exists() and not same:
+        problems.append(f"{comp['name']} is already installed from {Path(link).resolve()} "
+                        "(install with --force to replace it)")
+    for p in problems:
+        print(f"✗ {p}")
+    if not problems:
+        print(f"✓ {comp['name']} looks good")
+    return 1 if problems else 0
+
+
+def cmd_install(rt: Runtime, folder: str, force: bool) -> int:
+    comp = load_component(Path(folder), rt, "user")
+    name = comp["name"]
+    link = rt.user_dir / name
+    current = Path(link).resolve() if (link.is_symlink() or link.exists()) else None
+    same = current == Path(comp["dir"])
+    if current and not same and not force:
+        raise ComponentError(
+            f"{name} is already installed from {current}; add --force to replace it")
+    problems = check_against_installed(comp, rt, name)
+    if problems:
+        raise ComponentError("; ".join(problems))
+
+    old = next((c for c in load_state()["components"] if c["name"] == name), None)
+    if old and not same:
+        stop_component(old)
+
+    rt.user_dir.mkdir(parents=True, exist_ok=True)
+    if not same:
+        if link.is_symlink() or link.is_file():
+            link.unlink()
+        elif link.is_dir():
+            raise ComponentError(f"{link} is a folder; remove it first")
+        os.symlink(comp["dir"], link)
+
+    sudo_reconcile()
+    state = load_state()
+    if not any(c["name"] == name for c in state["components"]):
+        why = next((s["reason"] for s in state["skipped"] if s["name"] == name), "unknown reason")
+        raise ComponentError(f"{name} was not enabled: {why}")
+    comp = next(c for c in state["components"] if c["name"] == name)
+
+    mise_install(comp)
+    if supervisor_running():
+        changed = bool(old and old.get("pitchfork_hash") != comp.get("pitchfork_hash"))
+        start_component(comp, restart=changed)
+        started = f", {len(comp['daemons'])} daemon(s) running" if comp["daemons"] else ""
+    else:
+        started = ", starting with the environment" if comp["daemons"] else ""
+    where = f" at {rt.public_url}/{comp['http']['path']}" if comp["http"] else ""
+    print(f"{name}: installed{started}{where}")
+    if old and old.get("env") != comp.get("env"):
+        print("note: [env] changed. New shells see it now; daemons see it after the "
+              "container restarts.")
+    return 0
+
+
+def cmd_uninstall(rt: Runtime, name: str) -> int:
+    link = rt.user_dir / name
+    if not (link.is_symlink() or link.exists()):
+        if name in rt.builtin_names:
+            raise ComponentError(f"{name} is built in; take it out of AGENT_ENV_COMPONENTS instead")
+        raise ComponentError(f"{name} is not installed")
+    old = next((c for c in load_state()["components"] if c["name"] == name), None)
+    if old and supervisor_running():
+        stop_component(old)
+    if link.is_symlink() or link.is_file():
+        link.unlink()
+    else:
+        raise ComponentError(f"{link} is a folder, not a link; remove it yourself")
+    sudo_reconcile()
+    print(f"{name}: uninstalled")
+    return 0
+
+
+def cmd_list(rt: Runtime) -> int:
+    state = load_state()
+    states = daemon_states() if supervisor_running() else {}
+    for c in state["components"]:
+        src = "built in" if c["source"] == "builtin" else c["dir"]
+        if c["daemons"]:
+            ds = [f"{d} {states.get(f'agent-env-{c['name']}/{d}', 'not running')}" for d in c["daemons"]]
+            status = ", ".join(ds)
+        else:
+            status = "no daemons"
+        where = ""
+        if c["http"]:
+            where = "  /" + c["http"]["path"]
+        print(f"{c['name']:<18} {src}{where}\n{'':<18} {status}")
+    for s in state["skipped"]:
+        print(f"{s['name']:<18} SKIPPED: {s['reason']}")
+    if not state["components"] and not state["skipped"]:
+        print("no components")
+    return 0
+
+
+def cmd_start_all(rt: Runtime) -> int:
+    """Run by the user's supervisor at boot: start every component's daemons."""
+    failed = 0
+    for c in load_state()["components"]:
+        if not c["daemons"]:
+            continue
+        try:
+            start_component(c)
+            print(f"{c['name']}: started {', '.join(c['daemons'])}")
+        except ComponentError as e:
+            failed += 1
+            print(f"{c['name']}: {e}", file=sys.stderr)
+    return 1 if failed else 0
+
+
+def cmd_urls(rt: Runtime) -> int:
+    state = load_state()
+    base, root = rt.public_url, state["root"]
+    if root["kind"] == "none":
+        print(f"{'Primary service':<16}: {base}/  (proxies to 127.0.0.1:{root.get('port', rt.primary_port)})")
+    else:
+        print(f"{'Primary service':<16}: {base}/  ({root['title']}, on 127.0.0.1:{root['port']})")
+    print(f"{'Environment':<16}: {base}/{rt.prefix}/")
+    for c in state["components"]:
+        if c["http"] and c["http"]["path"]:
+            print(f"{c['title'][:16]:<16}: {base}/{c['http']['path']}/")
+    for item in state.get("links", []):
+        print(f"{item['title'][:16]:<16}: {item['url']}  ({item['label']})")
+        if item.get("secret"):
+            print(f"{'':<16}  password: {item['secret']}")
+    if rt.user_web:
+        print(f"{'Daemons':<16}: {base}/{rt.user_web_path}")
+    print(f"{'Health':<16}: {base}/{rt.health_path}")
+    if rt.ssh:
+        print(f"{'SSH':<16}: ssh {rt.user}@<host> -p {rt.ssh_port}")
+        print(f"{'mosh':<16}: mosh -p 60000:60010 --ssh=\"ssh -p {rt.ssh_port}\" {rt.user}@<host>")
+    return 0
+
+
+def cmd_env_toml(rt: Runtime) -> int:
+    """[env] lines for the system supervisor's config, so daemons see them."""
+    for c in load_state()["components"]:
+        for k, v in c["env"].items():
+            print(f"{k} = {json.dumps(v)}")
+    return 0
+
+
+USAGE = """usage: agent-env component <command>
+
+  install [folder] [--force]   install the component in folder (default: .)
+  uninstall <name>             stop it and remove it
+  list                         what is installed, and whether it is running
+  check [folder]               report problems without installing
+"""
+
+
+def main(argv: list[str]) -> int:
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(USAGE, end="")
+        return 0
+    cmd, rest = argv[0], argv[1:]
+    rt = Runtime()
+
+    def warn(msg: str) -> None:
+        print(f"\033[1;33m[agent-env] WARN\033[0m {msg}", file=sys.stderr)
+
+    def log(msg: str) -> None:
+        print(f"\033[1;34m[agent-env]\033[0m {msg}", file=sys.stderr)
+
+    try:
+        if cmd == "reconcile":
+            reconcile(rt, boot="--boot" in rest, reload="--reload" in rest, warn=warn, log=log)
+            return 0
+        if cmd in ("install", "uninstall", "start-all"):
+            as_user(rt, argv)
+        if cmd == "install":
+            force = "--force" in rest
+            folders = [a for a in rest if a != "--force"]
+            return cmd_install(rt, folders[0] if folders else ".", force)
+        if cmd == "uninstall":
+            if len(rest) != 1:
+                raise ComponentError("usage: agent-env component uninstall <name>")
+            return cmd_uninstall(rt, rest[0])
+        if cmd == "check":
+            return cmd_check(rt, rest[0] if rest else ".")
+        if cmd == "list":
+            return cmd_list(rt)
+        if cmd == "start-all":
+            return cmd_start_all(rt)
+        if cmd == "urls":
+            return cmd_urls(rt)
+        if cmd == "env-toml":
+            return cmd_env_toml(rt)
+    except ComponentError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(USAGE, end="", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

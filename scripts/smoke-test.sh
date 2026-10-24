@@ -11,14 +11,9 @@ set -uo pipefail
 BASE="${1:-http://localhost:8080}"
 AUTH="${2:-dev:changeme}"
 CONTAINER="${CONTAINER:-agent-env}"
-# What serves the desktop: novnc (default) or selkies. Set it to match the
-# container's DESKTOP_BACKEND; the checks that are specific to one are chosen here.
-SMOKE_DESKTOP_BACKEND="${SMOKE_DESKTOP_BACKEND:-novnc}"
-if [[ "${SMOKE_DESKTOP_BACKEND}" == selkies ]]; then
-  DESKTOP_PAGE=""; DESKTOP_WS="api/websockets"
-else
-  DESKTOP_PAGE="vnc.html"; DESKTOP_WS="websockify"
-fi
+# What serves the desktop: novnc (the desktop component) or selkies (the
+# desktop-selkies one). Read from the container below; set this to override.
+SMOKE_DESKTOP_BACKEND="${SMOKE_DESKTOP_BACKEND:-}"
 
 pass=0; fail=0; skipped=0
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; pass=$((pass+1)); }
@@ -78,10 +73,13 @@ runtime_var() {
   docker exec "${CONTAINER}" sh -c "sed -n 's/^$1=//p' /run/agent-env/env" 2>/dev/null | tr -d '\r'
 }
 ENV_PREFIX=""; TTYD_PATH=""; DESKTOP_PATH=""; DUFS_PATH=""; HEALTH_PATH=""; USER_WEB_PATH=""
-AGENT_ENV_PRESET=""; PRIMARY_SUPERVISED=""; PRIMARY_PORT=""
+COMPONENTS=""; PRIMARY_SUPERVISED=""; PRIMARY_PORT=""; PRIMARY_COMMAND_SET=""
+COMPONENTS_KNOWN=false
 if have_container; then
-  AGENT_ENV_PRESET=$(runtime_var AGENT_ENV_PRESET)
+  COMPONENTS=$(runtime_var AGENT_ENV_COMPONENTS)
+  COMPONENTS_KNOWN=true
   PRIMARY_SUPERVISED=$(runtime_var PRIMARY_SUPERVISED)
+  PRIMARY_COMMAND_SET=$(runtime_var PRIMARY_COMMAND_SET)
   USER_WEB_ENABLE=$(runtime_var USER_WEB_ENABLE)
   PRIMARY_PORT=$(runtime_var PRIMARY_PORT)
   ENV_PREFIX=$(runtime_var ENV_PREFIX)
@@ -98,9 +96,25 @@ DUFS_PATH="${DUFS_PATH:-${ENV_PREFIX}/files}"
 HEALTH_PATH="${HEALTH_PATH:-${ENV_PREFIX}/healthz}"
 USER_WEB_PATH="${USER_WEB_PATH:-pitchfork}"
 USER_WEB_ENABLE="${USER_WEB_ENABLE:-true}"
-AGENT_ENV_PRESET="${AGENT_ENV_PRESET:-vanilla}"
 PRIMARY_SUPERVISED="${PRIMARY_SUPERVISED:-false}"
+PRIMARY_COMMAND_SET="${PRIMARY_COMMAND_SET:-false}"
 PRIMARY_PORT="${PRIMARY_PORT:-3000}"
+# Which built-in components the container runs. Without a container to ask,
+# assume the defaults, which is what a plain `docker run` gets.
+"${COMPONENTS_KNOWN}" || COMPONENTS="desktop,terminal,files"
+has() { [[ ",${COMPONENTS}," == *",$1,"* ]]; }
+OPENCODE=false; has opencode && OPENCODE=true
+DESKTOP=false; { has desktop || has desktop-selkies; } && DESKTOP=true
+# The opencode component's own proxy, in front of its server on 4096.
+OPENCODE_PORT=4097
+if [[ -z "${SMOKE_DESKTOP_BACKEND}" ]]; then
+  if has desktop-selkies; then SMOKE_DESKTOP_BACKEND=selkies; else SMOKE_DESKTOP_BACKEND=novnc; fi
+fi
+if [[ "${SMOKE_DESKTOP_BACKEND}" == selkies ]]; then
+  DESKTOP_PAGE=""; DESKTOP_WS="api/websockets"
+else
+  DESKTOP_PAGE="vnc.html"; DESKTOP_WS="websockify"
+fi
 
 head_ "Gateway routes"
 c=$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' "${BASE}/${HEALTH_PATH}")
@@ -118,7 +132,10 @@ else
   esac
 fi
 
-for path in / "/${ENV_PREFIX}/" "/${TTYD_PATH}/" "/${DESKTOP_PATH}/${DESKTOP_PAGE}"; do
+paths=(/ "/${ENV_PREFIX}/")
+has terminal && paths+=("/${TTYD_PATH}/")
+"${DESKTOP}" && paths+=("/${DESKTOP_PATH}/${DESKTOP_PAGE}")
+for path in "${paths[@]}"; do
   c=$(code "${BASE}${path}")
   case "$c" in
     200) ok "${path} serves (200)" ;;
@@ -150,7 +167,7 @@ root_body=$(curl -s --max-time 15 -u "${AUTH}" "${BASE}/" | md5sum | cut -d' ' -
 # This compares against an app that answers every path alike, as the preset
 # servers and the stand-in below do. A command the operator supplied decides its
 # own paths, and a file server answering 404 for a path it lacks is correct.
-if [ "${PRIMARY_SUPERVISED}" = true ] && [ "${AGENT_ENV_PRESET}" != opencode ]; then
+if [ "${PRIMARY_SUPERVISED}" = true ] && [ "${OPENCODE}" != true ]; then
   skip "that old paths reach the primary service (a supplied command decides its own paths)"
 else
   for path in /terminal /desktop /files /img/logo.png; do
@@ -211,14 +228,14 @@ if have_container; then
     && ok "the gateway adds no Authorization header on the way to /" \
     || bad "${inj} Authorization header_up line(s) in the gateway config would leak a credential into another app"
 
-  if [ "${AGENT_ENV_PRESET}" = opencode ]; then
-    # ...and the preset's own proxy on the primary port does the injecting, in
-    # front of a server that on its own refuses an anonymous request.
-    pc=$(docker exec "${CONTAINER}" curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:${PRIMARY_PORT}/api/session" 2>/dev/null)
+  if [ "${OPENCODE}" = true ]; then
+    # ...and the component's own proxy does the injecting, in front of a server
+    # that on its own refuses an anonymous request.
+    pc=$(docker exec "${CONTAINER}" curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:${OPENCODE_PORT}/api/session" 2>/dev/null)
     sc=$(docker exec "${CONTAINER}" curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:4096/api/session" 2>/dev/null)
     [[ "${pc}" == 200 && "${sc}" == 401 ]] \
-      && ok "the preset's proxy on ${PRIMARY_PORT} adds the login its server on 4096 insists on (${pc} vs ${sc})" \
-      || bad "primary port answered ${pc:-nothing}, server answered ${sc:-nothing}; expected 200 and 401"
+      && ok "the opencode component's proxy on ${OPENCODE_PORT} adds the login its server on 4096 insists on (${pc} vs ${sc})" \
+      || bad "the proxy answered ${pc:-nothing}, the server answered ${sc:-nothing}; expected 200 and 401"
   fi
 
   # The healthcheck has to follow the configuration: an unconditional probe of
@@ -232,7 +249,7 @@ fi
 # A primary the operator supplied with PRIMARY_COMMAND: it must be the thing that
 # answers at /, with the whole path space, and be handed the port it is meant to
 # listen on. CI passes SMOKE_PRIMARY_EXPECT, text its command is known to serve.
-if have_container && [ "${PRIMARY_SUPERVISED}" = true ] && [ "${AGENT_ENV_PRESET}" != opencode ]; then
+if have_container && [ "${PRIMARY_SUPERVISED}" = true ] && [ "${OPENCODE}" != true ]; then
   expect=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER}" 2>/dev/null \
     | sed -n 's/^SMOKE_PRIMARY_EXPECT=//p' | head -1 | tr -d '\r')
   if [ "${oauth_gate}" = true ]; then
@@ -521,34 +538,43 @@ PY
     ok "the primary service is not in the root supervisor"
   fi
 
+  # What serves /, when the container supervises it: the opencode component's
+  # server, or PRIMARY_COMMAND's `primary` daemon. Found by a process that is the
+  # same however it was started (the opencode Caddy is not traceable: its file
+  # capabilities make it non-dumpable).
   user_daemons=$(docker exec -u dev "${CONTAINER}" bash -lc 'pitchfork list' 2>/dev/null || true)
+  if [ "${OPENCODE}" = true ]; then
+    root_daemon="agent-env-opencode/server"; root_proc="[o]pencode(\.exe)? serve --service"
+  else
+    root_daemon="primary"; root_proc="^sh -c /opt/agent-env/bin/run-primary"
+  fi
   if [ "${PRIMARY_SUPERVISED}" = true ]; then
-    grep -qE "primary +running" <<<"${user_daemons}" \
-      && ok "the primary service runs in the dev user's own supervisor" \
-      || bad "the primary service is not running under dev: ${user_daemons:-none}"
+    grep -qE "${root_daemon} +running" <<<"${user_daemons}" \
+      && ok "what serves / (${root_daemon}) runs in the dev user's own supervisor" \
+      || bad "${root_daemon} is not running under dev: ${user_daemons:-none}"
 
-    # ...and its parent really is that supervisor, not PID 1. Found from the shell
-    # pitchfork starts for it, which is the same for any primary (the preset's
-    # Caddy is not traceable: its file capabilities make it non-dumpable).
+    # ...and its parent really is that supervisor, not PID 1.
     parent=$(docker exec -u dev "${CONTAINER}" bash -c '
-      pid=$(pgrep -f "^sh -c /opt/agent-env/bin/run-primary" | head -1)
+      pid=$(pgrep -f "$1" | head -1)
       while [ -n "$pid" ] && [ "$pid" != 1 ]; do
         args=$(ps -o args= -p "$pid")
         case "$args" in *"supervisor run"*) echo "$args"; exit 0 ;; esac
         pid=$(ps -o ppid= -p "$pid" | tr -d " ")
-      done' 2>/dev/null || true)
+      done' sh "${root_proc}" 2>/dev/null || true)
     case "${parent}" in
       *--container*) bad "the primary service hangs off the root supervisor (${parent})" ;;
       *supervisor\ run*) ok "the primary service's supervisor is the unprivileged one" ;;
       *) bad "could not trace the primary service to a supervisor: ${parent:-none}" ;;
     esac
-  else
-    if grep -qE "primary" <<<"${user_daemons}"; then
-      bad "a primary daemon is defined though nothing is to be supervised: ${user_daemons}"
+  fi
+  if [ "${PRIMARY_COMMAND_SET}" != true ]; then
+    if grep -qE "(^|/)primary " <<<"${user_daemons}"; then
+      bad "a primary daemon is defined though there is no PRIMARY_COMMAND: ${user_daemons}"
     else
-      ok "no primary daemon is defined while nothing is to be supervised"
+      ok "no primary daemon is defined without a PRIMARY_COMMAND"
     fi
   fi
+
 
   head_ "X display access"
 
@@ -591,11 +617,11 @@ PY
   # Read from the shell pitchfork starts for it, which every primary inherits its
   # environment from.
   leak=$(docker exec -u dev "${CONTAINER}" sh -c '
-    p=$(pgrep -f "^sh -c /opt/agent-env/bin/run-primary" | head -1)
+    p=$(pgrep -f "$1" | head -1)
     if [ -z "$p" ]; then echo no-process; exit 0; fi
     tr "\0" "\n" < /proc/$p/environ |
-      grep -cE "^(GOOGLE_CLIENT_SECRET|GITHUB_CLIENT_SECRET|GATEWAY_PASSWORD|OAUTH2_PROXY_COOKIE_SECRET)=" || true
-  ' 2>/dev/null || true)
+      grep -cE "^(GOOGLE_CLIENT_SECRET|GITHUB_CLIENT_SECRET|GATEWAY_PASSWORD|OAUTH2_PROXY_COOKIE_SECRET|SMB_PASSWORD)=" || true
+  ' sh "${root_proc}" 2>/dev/null || true)
   case "${leak}" in
     0)  ok "gateway credentials are absent from the primary service's environment" ;;
     no-process) bad "no primary daemon process to inspect, so nothing was checked" ;;
@@ -697,7 +723,7 @@ with open("/etc/mise/mise.lock", "rb") as fh:
 
   head_ "File manager"
 
-  grep -qE "dufs +running" <<<"${user_daemons}" \
+  grep -qE "agent-env-files/dufs +running" <<<"${user_daemons}" \
     && ok "dufs runs in the dev user's supervisor" \
     || bad "dufs is not running under dev: ${user_daemons:-none}"
 
@@ -835,7 +861,7 @@ with open("/etc/mise/mise.lock", "rb") as fh:
     || bad "docker compose is not available"
 
   if [ "${docker_rootless}" = true ]; then
-    grep -qE "dockerd +running" <<<"${user_daemons}" \
+    grep -qE "agent-env-docker/dockerd +running" <<<"${user_daemons}" \
       && ok "dockerd runs in the dev user's supervisor" \
       || bad "dockerd is not running under dev: ${user_daemons:-none}"
 
@@ -897,6 +923,144 @@ with open("/etc/mise/mise.lock", "rb") as fh:
     fi
   fi
 
+  head_ "Components"
+
+  # Every built-in that is on runs its daemons in the user's supervisor, under
+  # its own namespace, and none of them is a system daemon any more.
+  for name in $(tr ',' ' ' <<<"${COMPONENTS}"); do
+    ns="agent-env-${name}"
+    defined=$(docker exec "${CONTAINER}" sh -c \
+      "test -f /opt/agent-env/components/${name}/pitchfork.toml && echo yes" 2>/dev/null | tr -d '\r')
+    [[ "${defined}" == yes ]] || continue
+    down=$(grep -E "^${ns}/" <<<"${user_daemons}" | grep -vc running || true)
+    total=$(grep -cE "^${ns}/" <<<"${user_daemons}" || true)
+    if [[ "${total}" -gt 0 && "${down}" == 0 ]]; then
+      ok "${name}: all ${total} daemon(s) running as dev"
+    else
+      bad "${name}: ${down}/${total} daemon(s) not running: $(grep -E "^${ns}/" <<<"${user_daemons}" | tr '\n' ';')"
+    fi
+  done
+  if grep -qE "(xvfb|ttyd|novnc|x11vnc|selkies)( |$)" <<<"${sys_daemons}"; then
+    bad "a component's daemon is still in the root supervisor: ${sys_daemons}"
+  else
+    ok "no component daemon is in the root supervisor"
+  fi
+
+  listing=$(docker exec -u dev "${CONTAINER}" bash -lc 'agent-env component list' 2>&1 || true)
+  missing=""
+  for name in $(tr ',' ' ' <<<"${COMPONENTS}"); do
+    grep -qE "^${name} " <<<"${listing}" || missing+=" ${name}"
+  done
+  [[ -z "${missing}" ]] \
+    && ok "agent-env component list shows every enabled built-in" \
+    || bad "agent-env component list is missing:${missing}"
+
+  # The settings components replaced are refused, with what to write instead,
+  # rather than silently turning something off.
+  image=$(docker inspect -f '{{.Config.Image}}' "${CONTAINER}" 2>/dev/null)
+  refusal=$(timeout 60 docker run --rm -e TTYD_ENABLE=false "${image}" true 2>&1 || true)
+  grep -q 'AGENT_ENV_COMPONENTS=desktop,files' <<<"${refusal}" \
+    && ok "a removed setting (TTYD_ENABLE) is refused, naming its replacement" \
+    || bad "TTYD_ENABLE=false was not refused with a replacement: $(tail -n 2 <<<"${refusal}")"
+
+  # A component installed at runtime: a web page under the prefix, a command on
+  # PATH, an [env] value in new shells, and gone again after uninstall.
+  docker exec -u dev "${CONTAINER}" bash -c '
+    d=/tmp/smoke-comp; rm -rf "$d"; mkdir -p "$d/bin"
+    cat > "$d/agent-env-component.toml" <<TOML
+name = "smoke-comp"
+title = "Smoke component"
+summary = "Installed by the smoke test"
+[http]
+port = 18765
+[env]
+SMOKE_COMPONENT_ENV = "from-component"
+TOML
+    cat > "$d/pitchfork.toml" <<TOML
+namespace = "agent-env-smoke-comp"
+[daemons.web]
+run = "echo smoke-component-page > index.html && exec python3 -m http.server 18765 --bind 127.0.0.1"
+ready_port = 18765
+retry = true
+TOML
+    printf "#!/bin/sh\necho smoke-component-command\n" > "$d/bin/smoke-comp-hello"
+    chmod +x "$d/bin/smoke-comp-hello"' 2>/dev/null
+  assert "agent-env component check accepts a well-formed component" \
+    docker exec -u dev "${CONTAINER}" bash -lc 'agent-env component check /tmp/smoke-comp'
+  inst=$(docker exec -u dev "${CONTAINER}" bash -lc 'agent-env component install /tmp/smoke-comp' 2>&1)
+  if grep -q 'smoke-comp: installed' <<<"${inst}"; then
+    ok "a component installs at runtime"
+  else
+    bad "component install failed: ${inst}"
+  fi
+  if [ "${oauth_gate}" != true ]; then
+    page=""
+    for _ in $(seq 1 10); do
+      page=$(curl -s --max-time 5 -u "${AUTH}" "${BASE}/${ENV_PREFIX}/smoke-comp/")
+      grep -q smoke-component-page <<<"${page}" && break
+      sleep 1
+    done
+    grep -q smoke-component-page <<<"${page}" \
+      && ok "its page is served at /${ENV_PREFIX}/smoke-comp/ with no restart" \
+      || bad "/${ENV_PREFIX}/smoke-comp/ did not serve the component: ${page:0:80}"
+    grep -q 'Smoke component' <<<"$(curl -s --max-time 5 -u "${AUTH}" "${BASE}/${ENV_PREFIX}/")" \
+      && ok "it is listed on the /${ENV_PREFIX}/ index" \
+      || bad "the index does not list the installed component"
+  else
+    skip "the installed component's page (the OAuth gate answers before it does)"
+  fi
+  out=$(docker exec -u dev "${CONTAINER}" bash -lc 'smoke-comp-hello; echo "env=${SMOKE_COMPONENT_ENV:-unset}"' 2>&1 | tr -d '\r')
+  grep -q smoke-component-command <<<"${out}" \
+    && ok "its bin/ command is on PATH in a login shell" \
+    || bad "its command is not on PATH: ${out}"
+  grep -q 'env=from-component' <<<"${out}" \
+    && ok "its [env] reaches a new login shell" \
+    || bad "its [env] did not reach a login shell: ${out}"
+  again=$(docker exec -u dev "${CONTAINER}" bash -lc 'agent-env component install /tmp/smoke-comp' 2>&1)
+  grep -q 'smoke-comp: installed' <<<"${again}" \
+    && ok "installing the same folder again is harmless" \
+    || bad "a repeated install failed: ${again}"
+  docker exec -u dev "${CONTAINER}" bash -c \
+    'rm -rf /tmp/smoke-comp2 && cp -r /tmp/smoke-comp /tmp/smoke-comp2' 2>/dev/null
+  other=$(docker exec -u dev "${CONTAINER}" bash -lc 'agent-env component install /tmp/smoke-comp2' 2>&1 || true)
+  grep -q -- '--force' <<<"${other}" \
+    && ok "another folder under a taken name is refused without --force" \
+    || bad "a second folder took over the name: ${other}"
+  un=$(docker exec -u dev "${CONTAINER}" bash -lc 'agent-env component uninstall smoke-comp' 2>&1)
+  gone=$(docker exec -u dev "${CONTAINER}" bash -lc 'command -v smoke-comp-hello || echo gone; pitchfork list' 2>&1 | tr -d '\r')
+  if grep -q 'uninstalled' <<<"${un}" && grep -q '^gone' <<<"${gone}" \
+      && ! grep -qE 'agent-env-smoke-comp/web +running' <<<"${gone}"; then
+    ok "uninstall stops it and takes its command away"
+  else
+    bad "uninstall left something behind: ${un} / ${gone}"
+  fi
+  if [ "${oauth_gate}" != true ]; then
+    c=$(code "${BASE}/${ENV_PREFIX}/smoke-comp/")
+    [[ "$c" == 404 ]] && ok "its page is gone after uninstall (404)" \
+                      || bad "/${ENV_PREFIX}/smoke-comp/ answered $c after uninstall"
+  fi
+  docker exec -u dev "${CONTAINER}" bash -c 'rm -rf /tmp/smoke-comp /tmp/smoke-comp2' 2>/dev/null || true
+
+  # Startup scripts, when CI gives the container one (it installs a component
+  # named smoke-provisioned, which must be running by the time we look).
+  prov=$(docker exec -u dev "${CONTAINER}" bash -lc 'agent-env logs provision' 2>&1 | tr -d '\r')
+  if grep -q '\[provision\]' <<<"${prov}"; then
+    grep -q ': done' <<<"${prov}" && ! grep -q FAILED <<<"${prov}" \
+      && ok "the startup scripts ran and succeeded" \
+      || bad "a startup script failed: $(tail -n 3 <<<"${prov}")"
+    # Started after the built-ins, which are what "healthy" waits for.
+    for _ in $(seq 1 30); do
+      user_daemons=$(docker exec -u dev "${CONTAINER}" bash -lc 'pitchfork list' 2>/dev/null || true)
+      grep -qE 'agent-env-smoke-provisioned/web +running' <<<"${user_daemons}" && break
+      sleep 1
+    done
+    grep -qE 'agent-env-smoke-provisioned/web +running' <<<"${user_daemons}" \
+      && ok "a component a startup script installed is running on the same start" \
+      || bad "the provisioned component is not running: ${user_daemons}"
+  else
+    skip "startup scripts (none were given to this container)"
+  fi
+
   head_ "mosh"
   docker exec "${CONTAINER}" sh -c 'command -v mosh-server >/dev/null' \
     && ok "mosh-server present ($(docker exec "${CONTAINER}" sh -c 'mosh-server --version 2>&1 | head -1'))" \
@@ -906,6 +1070,17 @@ with open("/etc/mise/mise.lock", "rb") as fh:
   logs=$(docker logs "${CONTAINER}" 2>&1 | grep -c '^\[global/')
   [[ "$logs" -gt 0 ]] && ok "daemon output reaches docker logs (${logs} lines)" \
                       || bad "no daemon output in docker logs"
+  # The components' daemons are the user's supervisor's, and their output has
+  # to arrive too. The terminal and file manager are on in every CI run, and both
+  # say something when they start.
+  ulogs=$(docker logs "${CONTAINER}" 2>&1 | grep -c '^\[agent-env-')
+  [[ "$ulogs" -gt 0 ]] && ok "the components' daemon output reaches docker logs (${ulogs} lines)" \
+                       || bad "no output from the components' daemons in docker logs"
+  # The user's follower is restarted whenever their daemons change (the
+  # install above did); the old ones must go, or every line arrives N times.
+  followers=$(docker exec "${CONTAINER}" pgrep -u dev -fc '^pitchfork logs --follow' 2>/dev/null | tr -d '\r')
+  [[ "${followers:-0}" -le 1 ]] && ok "one follower for the user's daemons (${followers:-0})" \
+                                || bad "${followers} followers of the user's logs: old ones are not stopped"
 else
   skip "everything inside the container: set CONTAINER=<name> and run where its docker daemon is"
 fi

@@ -1,0 +1,6 @@
+namespace = "agent-env-files"
+
+[daemons.dufs]
+run = "/opt/agent-env/bin/run-dufs"
+retry = true
+ready_port = 5000

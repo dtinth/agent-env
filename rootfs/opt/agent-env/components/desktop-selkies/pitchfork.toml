@@ -1,0 +1,23 @@
+namespace = "agent-env-desktop-selkies"
+
+[daemons.xvfb]
+run = "/opt/agent-env/bin/run-xvfb"
+retry = true
+ready_cmd = { run = "xdpyinfo >/dev/null 2>&1", timeout = "60s" }
+
+[daemons.session]
+run = 'cd "$HOME" && exec /opt/agent-env/bin/run-desktop'
+depends = ["xvfb"]
+retry = true
+
+# One null sink, "output", whose monitor Selkies streams as the desktop's audio.
+[daemons.pulseaudio]
+run = "/opt/agent-env/bin/run-pulseaudio"
+retry = true
+ready_cmd = 'test -S "$XDG_RUNTIME_DIR/pulse/native"'
+
+[daemons.selkies]
+run = "/opt/agent-env/bin/run-selkies"
+depends = ["xvfb", "session", "pulseaudio"]
+retry = true
+ready_port = 6081
