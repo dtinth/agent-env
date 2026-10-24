@@ -16,7 +16,7 @@ import { CopyButton } from "../app/ui.tsx";
 // The built-ins
 // ---------------------------------------------------------------------------
 
-export type Badge = "at /" | "host flags" | "tailnet only" | "prototype" | "https or localhost";
+export type Badge = "at /" | "host flags" | "not published" | "prototype" | "https or localhost";
 export type Group = "browser" | "root" | "infra";
 
 export interface CatalogEntry {
@@ -100,19 +100,15 @@ export const CATALOG: CatalogEntry[] = [
     title: "SMB share",
     summary: "The workspace as an SMB share, for the iPad Files app or Finder. Sign in as dev.",
     where: "smb://host/workspace",
-    badges: ["tailnet only"],
+    badges: ["not published"],
     group: "infra",
     field: "smb",
     needs:
-      "A tailnet: a file share cannot sit behind the sign-in, so it is never published elsewhere.",
+      "Port 445 is never published, since a file share cannot sit behind the sign-in. On a tailnet it is reachable as is; elsewhere, forward it to the container yourself, on a network you trust.",
   },
 ];
 
 export const entry = (id: Component) => CATALOG.find((e) => e.id === id)!;
-
-/** Whether this deployment can have it at all: SMB only on a tailnet. */
-export const offered = (c: Configurator, id: Component) =>
-  id !== "smb" || c.fields.mode === "tailscale";
 
 export const isOn = (c: Configurator, id: Component) => componentsOf(c.fields).includes(id);
 

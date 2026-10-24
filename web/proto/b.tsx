@@ -22,7 +22,6 @@ import {
   entry,
   type Extras,
   isOn,
-  offered,
   provisionFiles,
   repoName,
   RepoRows,
@@ -43,9 +42,7 @@ function Item(props: {
   title: string;
   sub: ComponentChildren;
   on?: boolean;
-  onToggle?: (on: boolean) => void;
   dim?: boolean;
-  disabled?: boolean;
 }) {
   return (
     <li>
@@ -60,14 +57,12 @@ function Item(props: {
           <span class="pb-item-title">{props.title}</span>
           <span class="pb-item-sub">{props.sub}</span>
         </span>
-        {props.onToggle && (
-          <Switch
-            on={!!props.on}
-            onChange={props.onToggle}
-            label={props.title}
-            disabled={props.disabled}
-          />
+        {props.on !== undefined && (
+          <span class={`pb-state ${props.on ? "on" : ""}`}>{props.on ? "On" : "Off"}</span>
         )}
+        <span class="pb-chev" aria-hidden="true">
+          ›
+        </span>
       </div>
     </li>
   );
@@ -92,7 +87,6 @@ function Head(props: {
   on?: boolean;
   onToggle?: (on: boolean) => void;
   kicker: string;
-  disabled?: boolean;
 }) {
   return (
     <header class="pb-head">
@@ -105,7 +99,7 @@ function Head(props: {
       {props.onToggle && (
         <label class="pb-head-switch">
           <span>{props.on ? "On" : "Off"}</span>
-          <Switch on={!!props.on} onChange={props.onToggle} label="On" disabled={props.disabled} />
+          <Switch on={!!props.on} onChange={props.onToggle} label="On" />
         </label>
       )}
     </header>
@@ -123,17 +117,8 @@ function BuiltinDetail({ c, id }: { c: Configurator; id: Component }) {
         badges={e.badges}
         on={isOn(c, id)}
         onToggle={(on) => setOn(c, id, on)}
-        disabled={!offered(c, id)}
       />
       <p class="pb-lede">{e.summary}</p>
-      {!offered(c, id) && (
-        <div class="pb-blocked">
-          <p>
-            <b>Needs a tailnet.</b> A file share cannot sit behind the sign-in, so it is only
-            offered when this deployment is on a tailnet, where the tailnet is the boundary.
-          </p>
-        </div>
-      )}
       <Facts
         rows={[
           ["Shows up at", <code>{id === "smb" ? "smb://<host>/workspace" : e.where}</code>],
@@ -291,9 +276,6 @@ function RunsB({ c, x }: { c: Configurator; x: Extras }) {
       title={entry(id).title}
       sub={sub}
       on={isOn(c, id)}
-      onToggle={(on) => setOn(c, id, on)}
-      dim={!offered(c, id)}
-      disabled={!offered(c, id)}
     />
   );
   const files = provisionFiles(x);
@@ -351,7 +333,6 @@ function RunsB({ c, x }: { c: Configurator; x: Extras }) {
                 : `${f.desktop === "desktop-selkies" ? "Selkies" : "noVNC"} · ${c.answers.desktopSize?.replace("x", "×")}`
             }
             on={f.desktop !== "none"}
-            onToggle={(on) => c.set("desktop", on ? "desktop" : "none")}
           />
           {builtin("terminal", "/~env/terminal")}
           {builtin("files", "/~env/files")}
@@ -365,7 +346,7 @@ function RunsB({ c, x }: { c: Configurator; x: Extras }) {
             dim={f.opencode}
           />
           {builtin("docker", "needs host flags")}
-          {builtin("smb", offered(c, "smb") ? "smb://…/workspace" : "needs a tailnet")}
+          {builtin("smb", "smb://…/workspace")}
         </ul>
         <div class="pb-label">Yours</div>
         <ul>
