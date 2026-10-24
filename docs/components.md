@@ -13,9 +13,13 @@ The image comes with these:
 | `desktop` | An XFCE desktop in the browser, at `/~env/desktop` |
 | `terminal` | A shell in the browser, at `/~env/terminal` |
 | `files` | A file manager for the workspace, at `/~env/files` |
-| `opencode` | OpenCode's web UI, at `/`. Give it a provider API key (such as `ANTHROPIC_API_KEY`) in your compose file, or sign in from its UI. |
+| `opencode` | OpenCode's web UI, at `/`. Connect a provider with `/connect` in the UI. |
 | `docker` | Your own Docker engine inside the container. The host has to allow it with extra flags; see [Docker inside the container](../AGENTS.md#docker-inside-the-container). |
-| `smb` | The workspace as an SMB share, for the iPad Files app or Finder |
+| `smb` | The workspace as an SMB share, for the iPad Files app or Finder. Sign in as `dev`; the password and the address to connect to are on the `/~env/` page. |
+
+The `smb` password is generated the first time it starts and kept from then on.
+To choose your own, set `SMB_PASSWORD` in your compose file. On a tailnet it is
+reachable as is; otherwise the configurator publishes port 445 for it.
 
 Choose them with one setting in your compose file:
 
