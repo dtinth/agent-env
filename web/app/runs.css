@@ -267,23 +267,36 @@ button.r-item.here {
   color: var(--accent-sky);
 }
 .r-flags {
-  margin: 0.7rem 0 0;
-  padding: 0.8rem 1rem;
-  background: var(--bg-deep);
-  border: 1px solid var(--border-weak);
-  border-radius: var(--radius-md);
+  margin: 0.8rem 0 0;
 }
-.r-flags dt {
-  margin-top: 0.7rem;
-  font-size: 0.85rem;
+.r-flags .flag {
+  margin-top: 1rem;
+  padding-left: 0.9rem;
+  border-left: 2px solid var(--border-weak);
 }
-.r-flags dt:first-child {
+.r-flags .flag:first-child {
   margin-top: 0;
 }
+.r-flags dt {
+  margin-bottom: 0.3rem;
+  font-size: 0.85rem;
+}
 .r-flags dd {
-  margin: 0.15rem 0 0;
-  font-size: 0.86rem;
+  margin: 0.2rem 0 0;
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+.r-flags dd b {
+  font-weight: 700;
+}
+.r-flags dd.grants b {
+  color: var(--ok);
+}
+.r-flags dd.denies {
   color: var(--fg-muted);
+}
+.r-flags dd.denies b {
+  color: var(--fg-primary);
 }
 
 button.r-back {
