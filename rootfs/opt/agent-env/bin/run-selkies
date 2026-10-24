@@ -15,7 +15,7 @@ done
 
 args=(
   --addr=127.0.0.1
-  --port="${SELKIES_PORT:-6081}"
+  --port=6081
   --subfolder="${SELKIES_SUBFOLDER:-/~env/desktop}"
   --enable-basic-auth=false
   --enable-https=false
