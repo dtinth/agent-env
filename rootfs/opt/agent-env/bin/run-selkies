@@ -20,6 +20,12 @@ args=(
   --enable-basic-auth=false
   --enable-https=false
   --file-manager-path="${WORKSPACE_DIR:-/workspace}"
+  # Pin the client UI scaling (a single value locks it, so the client cannot
+  # change it). Without this Selkies auto-picks from the device pixel ratio and
+  # lands on 300% on a phone, which breaks its own layout. 96 DPI = 100%, i.e.
+  # 1:1 like noVNC; the desktop's own DESKTOP_DPI already scales XFCE inside the
+  # display.
+  --scaling-dpi="${SELKIES_SCALING_DPI:-96}"
 )
 
 # The display is a fixed-size Xvfb (DESKTOP_RESOLUTION): it has no RandR modes
