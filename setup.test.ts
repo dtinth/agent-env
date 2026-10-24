@@ -102,9 +102,20 @@ function envOf(dir: string): Record<string, string> {
   return out;
 }
 
+/** The components of the default answers, and the same without OpenCode. */
+const WITH_OPENCODE = ["desktop", "terminal", "files", "opencode"];
+const NO_AGENT = ["desktop", "terminal", "files"];
+const REMOVED_KEYS = [
+  "AGENT_ENV_PRESET",
+  "DESKTOP_ENABLE",
+  "DESKTOP_BACKEND",
+  "TTYD_ENABLE",
+  "DUFS_ENABLE",
+  "DOCKER_ROOTLESS_ENABLE",
+];
+
 const BASE = {
-  preset: "opencode",
-  rootlessDocker: false,
+  components: WITH_OPENCODE,
   sshKeys: "ssh-ed25519 AAAA test@host",
   sshPort: 2222,
   workspaceKind: "volume",
@@ -180,7 +191,12 @@ test("every emitted key is documented in .env.example", () => {
   for (const answers of [LOCAL, CADDY, GITHUB, TS]) {
     const dir = tmp();
     run(answers, dir);
-    for (const [, k] of readText(`${dir}/.env`).matchAll(/^#?\s*([A-Z][A-Z0-9_]*)=/gm)) {
+    const keys = [
+      ...[...readText(`${dir}/.env`).matchAll(/^#?\s*([A-Z][A-Z0-9_]*)=/gm)].map((m) => m[1]),
+      // The settings in compose.yaml, AGENT_ENV_COMPONENTS among them.
+      ...Object.keys(settingsOf(dir)),
+    ];
+    for (const k of keys) {
       if (!documented.has(k) && !SIDECAR_KEYS.has(k)) undocumented.add(k);
     }
   }
@@ -191,34 +207,96 @@ test("every emitted key is documented in .env.example", () => {
   );
 });
 
-test("booleans are emitted canonically", () => {
-  // The image accepts 1/yes/on/enabled too, but the healthcheck, the agent-env
-  // helper and the smoke suite all compare against a literal. A non-canonical
-  // value here would desynchronise them from what the entrypoint decided.
-  const dir = tmp();
-  run(
-    {
-      ...LOCAL,
-      preset: "vanilla",
-      primaryPort: 3000,
-      rootlessDocker: true,
-    },
-    dir,
-  );
-  const env = envOf(dir);
-  for (const k of ["DOCKER_ROOTLESS_ENABLE"]) {
-    assertMatch(env[k], /^(true|false)$/, `${k}=${env[k]} is not canonical`);
+test("the components are written out, and the settings they replaced are not", () => {
+  for (const answers of [LOCAL, CADDY, GITHUB, TS, { ...LOCAL, components: [] }]) {
+    const dir = tmp();
+    assertEquals(run(answers, dir).code, 0);
+    const env = envOf(dir);
+    assertEquals(env.AGENT_ENV_COMPONENTS, answers.components.join(","));
+    for (const k of REMOVED_KEYS) assert(!(k in env), `${k} written`);
   }
 });
 
-test("the vanilla preset takes a command, and $PORT survives Compose", () => {
+test("an answers file can give the components as a comma-separated string", () => {
+  const dir = tmp();
+  assertEquals(run({ ...LOCAL, components: " files , terminal" }, dir).code, 0);
+  assertEquals(envOf(dir).AGENT_ENV_COMPONENTS, "terminal,files");
+});
+
+test("an unknown component is refused by name", () => {
+  const dir = tmp();
+  const r = run({ ...LOCAL, components: ["dekstop"] }, dir);
+  assertEquals(r.code, 2);
+  assertStringIncludes(r.stdout, "dekstop");
+  assert(!existsSync(`${dir}/compose.yaml`));
+});
+
+test("both desktops at once are refused", () => {
+  const dir = tmp();
+  const r = run({ ...LOCAL, components: ["desktop", "desktop-selkies"] }, dir);
+  assertEquals(r.code, 1);
+  assertStringIncludes(r.stdout, "one desktop");
+  assert(!existsSync(`${dir}/compose.yaml`));
+});
+
+test("the SMB share needs the tailnet, and is never published", () => {
+  for (const answers of [LOCAL, CADDY, PLATFORM]) {
+    const dir = tmp();
+    const r = run({ ...answers, components: ["files", "smb"] }, dir);
+    assertEquals(r.code, 1, `${answers.mode} accepted smb`);
+    assertStringIncludes(r.stdout, "tailnet");
+    assert(!existsSync(`${dir}/compose.yaml`));
+  }
+  const dir = tmp();
+  assertEquals(run({ ...TS, components: ["files", "smb"] }, dir).code, 0);
+  assertEquals(envOf(dir).AGENT_ENV_COMPONENTS, "files,smb");
+  assert(!readText(`${dir}/compose.yaml`).includes("445"), "published SMB");
+  assert(!("SMB_PASSWORD" in envOf(dir)), "SMB_PASSWORD is the container's to generate");
+});
+
+test("a deployment from before components keeps what it was running", () => {
+  const dir = tmp();
+  // What version 1 wrote: the old answer keys in compose.yaml, and settings
+  // the image now refuses, one of them added to .env by hand.
+  const { components: _, ...v1 } = LOCAL;
+  writeText(
+    `${dir}/compose.yaml`,
+    `services: {}\nx-agent-env: ${JSON.stringify({ ...v1, version: 1, preset: "opencode", desktopBackend: "selkies", rootlessDocker: true })}\n`,
+  );
+  writeText(
+    `${dir}/.env`,
+    "GATEWAY_PASSWORD=kept\nTTYD_ENABLE=false\nDOCKER_ROOTLESS_ENABLE=true\nAGENT_ENV_PRESET=opencode\n",
+  );
+  // Nothing about components in the answers: the previous deployment decides.
+  assertEquals(run(v1, dir, ["--force"]).code, 0);
+  const env = envOf(dir);
+  assertEquals(env.AGENT_ENV_COMPONENTS, "desktop-selkies,files,opencode,docker");
+  assertEquals(env.GATEWAY_PASSWORD, "kept");
+  for (const k of REMOVED_KEYS) assert(!(k in env), `${k} kept`);
+  assertStringIncludes(readText(`${dir}/compose.yaml`), "SYS_ADMIN");
+});
+
+test("an answers file in version 1's terms still means what it did", () => {
+  const { components: _, ...v1 } = LOCAL;
+  const dir = tmp();
+  assertEquals(
+    run({ ...v1, preset: "opencode", desktopBackend: "selkies", rootlessDocker: true }, dir).code,
+    0,
+  );
+  assertEquals(envOf(dir).AGENT_ENV_COMPONENTS, "desktop-selkies,terminal,files,opencode,docker");
+  // Giving both shapes at once leaves it unclear which was meant.
+  const both = tmp();
+  assertEquals(run({ ...LOCAL, preset: "opencode" }, both).code, 2);
+});
+
+test("without OpenCode / takes a command, and $PORT survives Compose", () => {
   // Compose expands $VAR in a value, which would hand the command an empty
   // port. It has to come out as $$PORT in compose.yaml.
   const dir = tmp();
   const r = run(
     {
       ...LOCAL,
-      preset: "vanilla",
+      components: NO_AGENT,
       primaryPort: 3000,
       primaryCommand: "npm run dev -- --port $PORT",
     },
@@ -236,22 +314,22 @@ test("the vanilla preset takes a command, and $PORT survives Compose", () => {
 
 test("clearing the command drops it from a regenerated .env", () => {
   // An old PRIMARY_COMMAND carried through from the previous .env would keep
-  // running under vanilla and stop an opencode container from starting at all.
+  // running without OpenCode and stop an opencode container from starting at all.
   const dir = tmp();
-  const vanilla = { ...LOCAL, preset: "vanilla", primaryPort: 3000 };
+  const vanilla = { ...LOCAL, components: NO_AGENT, primaryPort: 3000 };
   run({ ...vanilla, primaryCommand: "node app.js" }, dir);
   assertEquals(envOf(dir).PRIMARY_COMMAND, "node app.js");
   // Unmentioned answers fall back to the previous run's; clearing says so.
   run({ ...vanilla, primaryCommand: "" }, dir, ["--force"]);
   assert(!("PRIMARY_COMMAND" in envOf(dir)), "the cleared command came back");
   run({ ...vanilla, primaryCommand: "node app.js" }, dir, ["--force"]);
-  run({ ...LOCAL, preset: "opencode", primaryCommand: "" }, dir, ["--force"]);
+  run({ ...LOCAL, components: WITH_OPENCODE, primaryCommand: "" }, dir, ["--force"]);
   assert(!("PRIMARY_COMMAND" in envOf(dir)), "switching to opencode kept the command");
 });
 
-test("the opencode preset runs its own server, so a command is refused", () => {
+test("OpenCode is at /, so a command for / is refused", () => {
   const dir = tmp();
-  const r = run({ ...LOCAL, preset: "opencode", primaryCommand: "node app.js" }, dir);
+  const r = run({ ...LOCAL, components: WITH_OPENCODE, primaryCommand: "node app.js" }, dir);
   assertEquals(r.code, 2);
   assert(!existsSync(`${dir}/compose.yaml`));
 });
@@ -304,7 +382,7 @@ test("the rootless-Docker flags are all present, or none are", () => {
   const off = tmp(),
     on = tmp();
   run(LOCAL, off);
-  run({ ...LOCAL, rootlessDocker: true }, on);
+  run({ ...LOCAL, components: [...WITH_OPENCODE, "docker"] }, on);
 
   const offCompose = readText(`${off}/compose.yaml`);
   for (const flag of [
@@ -329,7 +407,7 @@ test("the rootless-Docker flags are all present, or none are", () => {
   ]) {
     assertStringIncludes(onCompose, flag);
   }
-  assertEquals(envOf(on).DOCKER_ROOTLESS_ENABLE, "true");
+  assertEquals(envOf(on).AGENT_ENV_COMPONENTS, "desktop,terminal,files,opencode,docker");
 });
 
 test("mode decides the network shape", () => {
@@ -557,10 +635,12 @@ test("a non-boolean answer cannot enable a privileged feature", () => {
   // JSON has strings, and "false" is truthy. Inferring from truthiness meant a
   // typo added SYS_ADMIN and relaxed seccomp.
 
-  // The canonical spellings are honoured, and "false" means false.
+  // The canonical spellings are honoured, and "false" means false. Version 1's
+  // key is the one that takes a boolean now.
+  const { components: _, ...v1 } = LOCAL;
   const off = tmp();
-  assertEquals(run({ ...LOCAL, rootlessDocker: "false" }, off).code, 0);
-  assertEquals(envOf(off).DOCKER_ROOTLESS_ENABLE, "false");
+  assertEquals(run({ ...v1, rootlessDocker: "false" }, off).code, 0);
+  assert(!envOf(off).AGENT_ENV_COMPONENTS.includes("docker"));
   assert(
     !readText(`${off}/compose.yaml`).includes("SYS_ADMIN"),
     'the string "false" still widened the sandbox',
@@ -570,7 +650,7 @@ test("a non-boolean answer cannot enable a privileged feature", () => {
   // widened by accident.
   for (const v of ["no", "0", 0, "", null, "yes"]) {
     const dir = tmp();
-    const r = run({ ...LOCAL, rootlessDocker: v } as Record<string, unknown>, dir);
+    const r = run({ ...v1, rootlessDocker: v } as Record<string, unknown>, dir);
     assertEquals(r.code, 2, `accepted rootlessDocker=${JSON.stringify(v)}`);
     assert(!existsSync(`${dir}/compose.yaml`));
   }
@@ -994,18 +1074,26 @@ test("the home directory can come from the host", () => {
 
 test("the wizard takes a desktop size, scale and backend from an answers file", () => {
   const dir = tmp();
-  run({ ...LOCAL, desktopSize: "2560x1440", desktopScale: 150, desktopBackend: "selkies" }, dir);
+  run(
+    {
+      ...LOCAL,
+      desktopSize: "2560x1440",
+      desktopScale: 150,
+      components: ["desktop-selkies", "terminal"],
+    },
+    dir,
+  );
   const compose = readText(`${dir}/compose.yaml`);
   assertStringIncludes(compose, "DESKTOP_RESOLUTION=2560x1440x24");
   assertStringIncludes(compose, "DESKTOP_DPI=144");
-  assertStringIncludes(compose, "DESKTOP_BACKEND=selkies");
+  assertStringIncludes(compose, "AGENT_ENV_COMPONENTS=desktop-selkies,terminal");
 });
 
 test("answers from before they moved into compose.yaml are still offered", () => {
   // A deployment made by an older version has agent-env.setup.json beside it
   // and no x-agent-env key. Its answers must still come back as defaults.
   const dir = tmp();
-  const vanilla = { ...LOCAL, preset: "vanilla", primaryPort: 3000 };
+  const vanilla = { ...LOCAL, components: NO_AGENT, primaryPort: 3000 };
   writeText(
     `${dir}/agent-env.setup.json`,
     JSON.stringify({ ...vanilla, primaryCommand: "node app.js" }),

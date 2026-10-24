@@ -17,7 +17,11 @@
  * the next run can offer them as defaults; `answersFromCompose` reads them.
  */
 
-export const VERSION = 1;
+/**
+ * The answers' shape. 2 replaced `preset`, `desktopBackend` and
+ * `rootlessDocker` with `components`; `migrateAnswers` reads the old shape.
+ */
+export const VERSION = 2;
 
 /** The environment's name when none is given: the Compose project, and its hostname. */
 export const DEFAULT_NAME = "agent-env";
@@ -45,10 +49,112 @@ export function clientSecretKey(authMode: AuthMode): string | undefined {
       : undefined;
 }
 
-export const PRESETS = ["opencode", "vanilla"] as const;
-export type Preset = (typeof PRESETS)[number];
-export const DESKTOP_BACKENDS = ["novnc", "selkies"] as const;
-export type DesktopBackend = (typeof DESKTOP_BACKENDS)[number];
+/**
+ * The image's built-in components, in the order they are written to
+ * AGENT_ENV_COMPONENTS. See docs/components.md.
+ */
+export const COMPONENTS = [
+  "desktop",
+  "desktop-selkies",
+  "terminal",
+  "files",
+  "opencode",
+  "docker",
+  "smb",
+] as const;
+export type Component = (typeof COMPONENTS)[number];
+/** What the image runs when AGENT_ENV_COMPONENTS is unset. */
+export const DEFAULT_COMPONENTS: readonly Component[] = ["desktop", "terminal", "files"];
+/** The two ways to serve the desktop. Both live at /~env/desktop, so one at most. */
+export const DESKTOPS = ["desktop", "desktop-selkies"] as const;
+
+export const isComponent = (v: unknown): v is Component =>
+  typeof v === "string" && (COMPONENTS as readonly string[]).includes(v);
+
+/** Known names, once each, in the canonical order. */
+export function sortComponents(list: readonly string[]): Component[] {
+  return COMPONENTS.filter((c) => list.includes(c));
+}
+
+/** The desktop component in the list, if there is one. */
+export function desktopOf(list: readonly string[]): (typeof DESKTOPS)[number] | undefined {
+  return DESKTOPS.find((d) => list.includes(d));
+}
+
+/**
+ * Settings the image now refuses to start with, because AGENT_ENV_COMPONENTS
+ * replaced them. Never written, and dropped from an existing .env.
+ */
+export const REMOVED_KEYS = [
+  "AGENT_ENV_PRESET",
+  "DESKTOP_ENABLE",
+  "DESKTOP_BACKEND",
+  "TTYD_ENABLE",
+  "DUFS_ENABLE",
+  "DOCKER_ROOTLESS_ENABLE",
+] as const;
+
+/** Answers as version 1 wrote them. Read by `migrateAnswers`, never written. */
+export interface LegacyAnswers {
+  preset?: string;
+  desktopBackend?: string;
+  rootlessDocker?: boolean;
+}
+
+/** How the image read a boolean setting; anything else was its default. */
+const truthy = (v: string) => /^(1|true|yes|on|enabled)$/i.test(v.trim());
+const falsy = (v: string) => /^(0|false|no|off|disabled)$/i.test(v.trim());
+
+/**
+ * The components an older deployment was running, from its version 1 answers
+ * and the settings in its .env that replaced them. Answers that already have
+ * `components` keep them, adjusted by any of those settings the .env still
+ * has, since those are what the container was actually doing. With neither,
+ * the answers come back as they were, and the defaults apply.
+ */
+export function migrateAnswers(
+  prev: Partial<Answers> & LegacyAnswers,
+  existingEnv = "",
+): Partial<Answers> {
+  const { preset, desktopBackend, rootlessDocker, ...rest } = prev;
+  const env = parseEnvFile(existingEnv);
+  const legacyEnv = REMOVED_KEYS.some((k) => k in env);
+  const legacyAnswers =
+    preset !== undefined || desktopBackend !== undefined || rootlessDocker !== undefined;
+  if (!Array.isArray(rest.components) && !legacyAnswers && !legacyEnv) return rest;
+
+  const list = new Set<string>(
+    Array.isArray(rest.components) ? rest.components : DEFAULT_COMPONENTS,
+  );
+  const toggle = (c: Component, on: boolean | undefined) => {
+    if (on === true) list.add(c);
+    if (on === false) list.delete(c);
+  };
+  const selkies = (on: boolean) => {
+    if (!desktopOf([...list])) return;
+    list.delete("desktop");
+    list.delete("desktop-selkies");
+    list.add(on ? "desktop-selkies" : "desktop");
+  };
+  if (preset !== undefined) toggle("opencode", preset === "opencode");
+  if (desktopBackend !== undefined) selkies(desktopBackend === "selkies");
+  if (typeof rootlessDocker === "boolean") toggle("docker", rootlessDocker);
+
+  const flag = (k: string): boolean | undefined => {
+    const v = env[k]?.value;
+    return v === undefined ? undefined : truthy(v) ? true : falsy(v) ? false : undefined;
+  };
+  if (env.AGENT_ENV_PRESET) toggle("opencode", env.AGENT_ENV_PRESET.value.trim() === "opencode");
+  if (env.DESKTOP_BACKEND) selkies(env.DESKTOP_BACKEND.value.trim() === "selkies");
+  if (flag("DESKTOP_ENABLE") === false) {
+    list.delete("desktop");
+    list.delete("desktop-selkies");
+  }
+  if (flag("TTYD_ENABLE") === false) list.delete("terminal");
+  if (flag("DUFS_ENABLE") === false) list.delete("files");
+  toggle("docker", flag("DOCKER_ROOTLESS_ENABLE"));
+  return { ...rest, components: sortComponents([...list]) };
+}
 
 export const DEFAULT_DESKTOP_SIZE = "1920x1080";
 /** Sizes the forms offer by name; any other WxH is a custom size. */
@@ -111,19 +217,16 @@ export interface Answers {
   allowedEmails?: string;
   allowedEmailDomains?: string;
   gatewayUser?: string;
-  /** What the environment is for; see rootfs/opt/agent-env/presets. */
-  preset: Preset;
-  /** Where / goes when no preset server answers it (vanilla only). */
+  /** The built-in components to run, in COMPONENTS order; see docs/components.md. */
+  components: Component[];
+  /** Where / goes when opencode is not running. */
   primaryPort?: number;
-  /** A command the container supervises at / (vanilla only). */
+  /** A command the container supervises at /, when opencode is not running. */
   primaryCommand?: string;
-  /** How the desktop reaches the browser; absent means noVNC. */
-  desktopBackend?: DesktopBackend;
   /** Virtual screen size as "WxH"; absent means 1920x1080. */
   desktopSize?: string;
   /** Text and UI size in percent (100 = 96 DPI); absent means 100. */
   desktopScale?: number;
-  rootlessDocker: boolean;
   /** Memory limit in GiB for the agent-env container; absent means none. */
   memoryGiB?: number;
   /**
@@ -171,13 +274,6 @@ export function randomSecret(bytes = 32): string {
     .replaceAll("/", "_")
     .replaceAll("=", "");
 }
-
-/**
- * The image accepts 1/yes/on/enabled as well as true, but everything that reads
- * the generated config back compares against a literal. Emit only true/false,
- * so a value typed here cannot desynchronise a reader from the entrypoint.
- */
-const bool = (v: boolean) => (v ? "true" : "false");
 
 export interface EnvEntry {
   /** Unquoted, for reuse as a value. */
@@ -532,9 +628,26 @@ export function validate(a: Answers): Problem[] {
       field("githubTeam", CHECKS.githubTeam(a.githubTeam, a.githubOrg));
     }
   }
-  if (a.desktopBackend !== undefined && !DESKTOP_BACKENDS.includes(a.desktopBackend)) {
-    field("desktopBackend", "must be novnc or selkies");
-  } else if (a.desktopBackend === "selkies") {
+  const components: unknown[] = Array.isArray(a.components) ? a.components : [];
+  const has = (c: Component) => components.includes(c);
+  const unknown = components.filter((c) => !isComponent(c));
+  if (!Array.isArray(a.components)) {
+    field("components", "a list of components, like desktop, terminal, files");
+  } else if (unknown.length) {
+    field(
+      "components",
+      `unknown component ${unknown.map((c) => JSON.stringify(c)).join(", ")}; the built-in ones are ${COMPONENTS.join(", ")}`,
+    );
+  } else if (has("desktop") && has("desktop-selkies")) {
+    field("components", "pick one desktop: desktop and desktop-selkies both live at /~env/desktop");
+  } else if (has("smb") && a.mode !== "tailscale") {
+    // SMB cannot sit behind the gateway's sign-in, and publishing 445 puts a
+    // file share on the open network. On a tailnet it needs neither.
+    field(
+      "components",
+      "the SMB share needs the tailnet mode, where nothing has to be published for it",
+    );
+  } else if (has("desktop-selkies")) {
     // Selkies' page refuses to start outside a secure context: https, or
     // localhost. noVNC has no such rule, so this is the one place to say so.
     const url = publicUrlFor(a);
@@ -543,7 +656,7 @@ export function validate(a: Answers): Problem[] {
       !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(url)
     ) {
       field(
-        "desktopBackend",
+        "components",
         "Selkies needs https or localhost; this URL is plain http on another host. Use noVNC, or serve it over https.",
       );
     }
@@ -561,13 +674,10 @@ export function validate(a: Answers): Problem[] {
       field("desktopScale", "a whole percentage from 100 to 400");
     }
   }
-  if (a.preset === "vanilla") port("primaryPort", a.primaryPort);
+  if (!has("opencode")) port("primaryPort", a.primaryPort);
   if (a.primaryCommand) {
-    if (a.preset !== "vanilla") {
-      field(
-        "primaryCommand",
-        "only the vanilla preset takes one; the opencode preset runs its own server",
-      );
+    if (has("opencode")) {
+      field("primaryCommand", "OpenCode is at /, so there is no command to run there");
     } else if (/[\r\n]/.test(a.primaryCommand)) {
       field("primaryCommand", "one line only");
     }
@@ -723,11 +833,11 @@ export function renderEnv(
     "GOOGLE_CLIENT_ID",
     "GITHUB_CLIENT_ID",
     "GATEWAY_USER",
-    "AGENT_ENV_PRESET",
-    "DESKTOP_BACKEND",
+    "AGENT_ENV_COMPONENTS",
     "PRIMARY_PORT",
     "PRIMARY_COMMAND",
-    "DOCKER_ROOTLESS_ENABLE",
+    // The image refuses to start with any of these, so an old .env loses them.
+    ...REMOVED_KEYS,
     "SSH_AUTHORIZED_KEYS",
     "PUID",
     "PGID",
@@ -775,17 +885,22 @@ export function renderEnv(
     secret("GATEWAY_PASSWORD", () => rand(18, "GATEWAY_PASSWORD"));
   }
 
-  set("AGENT_ENV_PRESET", a.preset);
-  if (a.desktopBackend === "selkies") set("DESKTOP_BACKEND", "selkies");
-  if (a.desktopSize && a.desktopSize !== DEFAULT_DESKTOP_SIZE) {
-    set("DESKTOP_RESOLUTION", `${a.desktopSize}x24`);
+  // Always written, even when it is the image's default: the list is the
+  // whole answer, and leaving it unset would hand it to whatever a later
+  // image's default turns out to be.
+  set("AGENT_ENV_COMPONENTS", sortComponents(a.components).join(","));
+  if (desktopOf(a.components)) {
+    if (a.desktopSize && a.desktopSize !== DEFAULT_DESKTOP_SIZE) {
+      set("DESKTOP_RESOLUTION", `${a.desktopSize}x24`);
+    }
+    if (a.desktopScale && a.desktopScale !== 100) {
+      set("DESKTOP_DPI", String(dpiFor(a.desktopScale)));
+    }
   }
-  if (a.desktopScale && a.desktopScale !== 100) set("DESKTOP_DPI", String(dpiFor(a.desktopScale)));
-  if (a.preset === "vanilla") {
+  if (!a.components.includes("opencode")) {
     set("PRIMARY_PORT", String(a.primaryPort ?? 3000));
     if (a.primaryCommand) set("PRIMARY_COMMAND", a.primaryCommand);
   }
-  set("DOCKER_ROOTLESS_ENABLE", bool(a.rootlessDocker));
   const ssh = normaliseSshKeys(a.sshKeys);
   if (ssh) set("SSH_AUTHORIZED_KEYS", ssh);
   // The container's user takes the owner of whichever directory is bind-mounted;
@@ -961,8 +1076,8 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
     L.push("");
   }
 
-  if (a.rootlessDocker) {
-    L.push("    # DOCKER_ROOTLESS_ENABLE=true needs all five of these. The entrypoint");
+  if (a.components.includes("docker")) {
+    L.push("    # The docker component needs all five of these. The entrypoint");
     L.push("    # names any that are missing and leaves the daemon down.");
     L.push("    cap_add:");
     L.push("      - SYS_ADMIN # setuid newuidmap, to map the subuid range");
@@ -1103,7 +1218,9 @@ export function answersFromCompose(text: string): Partial<Answers> | null {
   if (!m) return null;
   try {
     const v: unknown = JSON.parse(m[1].replace(/\$\$/g, "$"));
-    return v && typeof v === "object" && !Array.isArray(v) ? (v as Partial<Answers>) : null;
+    return v && typeof v === "object" && !Array.isArray(v)
+      ? migrateAnswers(v as Partial<Answers> & LegacyAnswers)
+      : null;
   } catch {
     return null;
   }

@@ -65,10 +65,10 @@ services:
       - GATEWAY_PASSWORD
 
       # --- What lives at / ------------------------------------------------
-      # AGENT_ENV_PRESET=opencode installs OpenCode and serves it at /. The default,
-      # vanilla, installs no agent and hands / to whatever is on PRIMARY_PORT
-      # (or runs PRIMARY_COMMAND there).
-      - AGENT_ENV_PRESET
+      # The built-in components to run, e.g. "opencode,terminal,files".
+      # Unset means desktop,terminal,files. Without opencode, / goes to
+      # whatever is on PRIMARY_PORT (or runs PRIMARY_COMMAND there).
+      - AGENT_ENV_COMPONENTS
       - PRIMARY_COMMAND
       - PRIMARY_PORT
 
@@ -103,7 +103,7 @@ services:
     # Chromium needs more than the default 64 MB of /dev/shm.
     shm_size: "2gb"
 
-    # Uncomment together with DOCKER_ROOTLESS_ENABLE=true to let the dev user
+    # Uncomment, and add docker to AGENT_ENV_COMPONENTS, to let the dev user
     # run their own rootless Docker engine — a database, a queue, anything the
     # agent wants a container for. Each line is load-bearing; the entrypoint
     # names any that are missing and leaves the daemon down.
