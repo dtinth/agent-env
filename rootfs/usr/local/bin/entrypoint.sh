@@ -1306,11 +1306,6 @@ EOF
 
     # Must stay directly under [env]: in TOML everything after a table header
     # belongs to that table, and emit_daemon opens [daemons.*] below.
-    #
-    # Each component's [env], so its daemons see it: they are the user's
-    # supervisor's children, and it inherits this table.
-    "${COMPONENTS_TOOL}" env-toml
-
     if is_true "${DOCKER_ROOTLESS_ENABLE}"; then
       printf 'DOCKER_HOST = "%s"\n' "${DOCKER_ROOTLESS_HOST}"
       printf 'DOCKER_ROOTLESS_DATA_ROOT = "%s"\n' "${DOCKER_ROOTLESS_DATA_ROOT}"
@@ -1354,17 +1349,29 @@ EOF
 
     if is_true "${USER_SUPERVISOR_ENABLE}"; then
       # It runs the provision scripts before it starts, and those may clone
-      # repositories, so give it time.
+      # repositories, so give it time: every script its whole allowance, and
+      # the supervisor itself the old 900s on top. Running out would restart it
+      # and run the scripts all over again.
+      [[ "${PROVISION_TIMEOUT:-900}" =~ ^[0-9]+$ ]] \
+        || die "PROVISION_TIMEOUT=${PROVISION_TIMEOUT} must be a whole number of seconds"
+      local scripts=(/etc/agent-env/provision.d/*) n_scripts=0 script
+      for script in "${scripts[@]}"; do [[ -f "${script}" ]] && n_scripts=$((n_scripts + 1)); done
+      local user_sup_wait=$(( 900 + n_scripts * ${PROVISION_TIMEOUT:-900} ))
       local user_sup_ready="ready_cmd = { run = \"true\", timeout = \"5s\" }"
       if is_true "${USER_WEB_ENABLE}"; then
-        user_sup_ready="ready_port = { port = ${USER_WEB_PORT}, timeout = \"900s\" }"
+        user_sup_ready="ready_port = { port = ${USER_WEB_PORT}, timeout = \"${user_sup_wait}s\" }"
       fi
+      # Each component's [env] goes here, on the user's supervisor alone, so
+      # its daemons inherit it and the system's never see it: a component must
+      # not be able to reconfigure oauth2-proxy or Caddy.
+      local comp_env
+      comp_env="$("${COMPONENTS_TOOL}" env-toml)"
       emit_daemon user-supervisor "/opt/agent-env/bin/run-user-supervisor" \
         "user = \"${USER_NAME}\"" \
         "dir = \"${WORKSPACE_DIR}\"" \
         'retry = true' \
         "${user_sup_ready}" \
-        "env = { PITCHFORK_STATE_DIR = \"${XDG_RUNTIME_DIR}/pitchfork\" }"
+        "env = { PITCHFORK_STATE_DIR = \"${XDG_RUNTIME_DIR}/pitchfork\"${comp_env:+, ${comp_env}} }"
     fi
 
     # pitchfork captures each daemon's output into its own log store rather than

@@ -982,6 +982,9 @@ namespace = "agent-env-smoke-comp"
 run = "echo smoke-component-page > index.html && exec python3 -m http.server 18765 --bind 127.0.0.1"
 ready_port = 18765
 retry = true
+[daemons.worker]
+run = "exec sleep 86400"
+retry = true
 TOML
     printf "#!/bin/sh\necho smoke-component-command\n" > "$d/bin/smoke-comp-hello"
     chmod +x "$d/bin/smoke-comp-hello"' 2>/dev/null
@@ -1020,6 +1023,26 @@ TOML
   grep -q 'smoke-comp: installed' <<<"${again}" \
     && ok "installing the same folder again is harmless" \
     || bad "a repeated install failed: ${again}"
+  # A daemon taken out of pitchfork.toml stops when the component is reinstalled.
+  docker exec -u dev "${CONTAINER}" bash -c \
+    'sed -i "/^\[daemons.worker\]/,\$d" /tmp/smoke-comp/pitchfork.toml' 2>/dev/null
+  docker exec -u dev "${CONTAINER}" bash -lc 'agent-env component install /tmp/smoke-comp' >/dev/null 2>&1 || true
+  after=$(docker exec -u dev "${CONTAINER}" bash -lc 'pitchfork list' 2>&1 | tr -d '\r')
+  if grep -qE 'agent-env-smoke-comp/web +running' <<<"${after}" \
+      && ! grep -qE 'agent-env-smoke-comp/worker +running' <<<"${after}"; then
+    ok "a daemon removed from pitchfork.toml stops on reinstall"
+  else
+    bad "after removing worker and reinstalling: $(grep smoke-comp <<<"${after}" | tr '\n' ';')"
+  fi
+  # A command may not replace one of the system's: ~/.agent-env/bin is first on PATH.
+  docker exec -u dev "${CONTAINER}" bash -c '
+    d=/tmp/smoke-comp3; rm -rf "$d"; mkdir -p "$d/bin"
+    printf "name = \"smoke-comp3\"\n" > "$d/agent-env-component.toml"
+    printf "#!/bin/sh\n" > "$d/bin/sudo"; chmod +x "$d/bin/sudo"' 2>/dev/null
+  shadow=$(docker exec -u dev "${CONTAINER}" bash -lc 'agent-env component check /tmp/smoke-comp3' 2>&1 || true)
+  grep -q 'would replace' <<<"${shadow}" \
+    && ok "a bin/ command named like a system one (sudo) is refused" \
+    || bad "bin/sudo was not refused: ${shadow}"
   docker exec -u dev "${CONTAINER}" bash -c \
     'rm -rf /tmp/smoke-comp2 && cp -r /tmp/smoke-comp /tmp/smoke-comp2' 2>/dev/null
   other=$(docker exec -u dev "${CONTAINER}" bash -lc 'agent-env component install /tmp/smoke-comp2' 2>&1 || true)
@@ -1039,7 +1062,21 @@ TOML
     [[ "$c" == 404 ]] && ok "its page is gone after uninstall (404)" \
                       || bad "/${ENV_PREFIX}/smoke-comp/ answered $c after uninstall"
   fi
-  docker exec -u dev "${CONTAINER}" bash -c 'rm -rf /tmp/smoke-comp /tmp/smoke-comp2' 2>/dev/null || true
+  docker exec -u dev "${CONTAINER}" bash -c 'rm -rf /tmp/smoke-comp /tmp/smoke-comp2 /tmp/smoke-comp3' 2>/dev/null || true
+
+  # A component's [env] is given to the user's supervisor alone: the gateway
+  # (oauth2-proxy, Caddy) must never see it.
+  if [ "${OPENCODE}" = true ]; then
+    leaked=$(docker exec "${CONTAINER}" sh -c \
+      'grep OPENCODE_SERVER /opt/agent-env/pitchfork/config.toml | grep -vc PITCHFORK_STATE_DIR' 2>/dev/null | tr -d '\r' || true)
+    reached=$(docker exec -u dev "${CONTAINER}" sh -c \
+      'cat /proc/$(pgrep -u dev -f "[o]pencode(\.exe)? serve --service" | head -1)/environ | tr "\0" "\n" | grep -c "^OPENCODE_SERVER="' 2>/dev/null | tr -d '\r' || true)
+    [[ "${leaked}" == 0 && "${reached}" == 1 ]] \
+      && ok "a component's [env] reaches its daemons, and only the user's supervisor" \
+      || bad "component [env] placement: ${leaked:-?} line(s) outside the user supervisor, reached the server: ${reached:-?}"
+  else
+    skip "component [env] placement (needs the opencode component)"
+  fi
 
   # Startup scripts, when CI gives the container one (it installs a component
   # named smoke-provisioned, which must be running by the time we look).
