@@ -10,12 +10,20 @@ import {
   answersFromCompose,
   generate,
   InvalidAnswers,
+  migrateAnswers,
   needsClientSecret,
+  REMOVED_KEYS,
   normaliseSshKeys,
   validate,
   VERSION,
 } from "./generate.ts";
-import { DEFAULT_FIELDS, type Fields, nextSteps, toAnswers } from "./web/app/model.ts";
+import {
+  DEFAULT_FIELDS,
+  type Fields,
+  fieldsFromAnswers,
+  nextSteps,
+  toAnswers,
+} from "./web/app/model.ts";
 
 const BASIC: Answers = {
   version: VERSION,
@@ -23,8 +31,7 @@ const BASIC: Answers = {
   publicUrl: "http://localhost:8080",
   authMode: "basic",
   gatewayUser: "dev",
-  preset: "opencode",
-  rootlessDocker: false,
+  components: ["desktop", "terminal", "files", "opencode"],
   sshKeys: "",
   sshPort: 2222,
   workspace: { kind: "volume" },
@@ -49,7 +56,7 @@ test("the same answers give the same files", () => {
 test("compose.yaml carries the answers it was made from", () => {
   const answers: Answers = {
     ...BASIC,
-    preset: "vanilla",
+    components: ["desktop", "terminal", "files"],
     primaryPort: 3000,
     // A $ that Compose must not interpolate, and a # a naive reader would cut at.
     primaryCommand: "npm run dev -- --port $PORT # and $$ too",
@@ -189,29 +196,187 @@ test("with both bind-mounted, /workspace's owner wins and home needs a path", ()
   );
 });
 
-test("the Selkies desktop is written to compose.yaml, and noVNC leaves no trace", () => {
-  const selkies = generate({ ...BASIC, desktopBackend: "selkies" }, { randomSecret: fixed });
-  assert(selkies["compose.yaml"].includes("DESKTOP_BACKEND=selkies"));
-  const novnc = generate(
-    { ...BASIC, desktopBackend: "novnc" },
-    { existingEnv: "DESKTOP_BACKEND=selkies\n" },
+test("the components are always written out, in the image's order", () => {
+  const compose = (a: Partial<Answers>) =>
+    generate({ ...BASIC, ...a }, { randomSecret: fixed })["compose.yaml"];
+  assert(compose({}).includes('"AGENT_ENV_COMPONENTS=desktop,terminal,files,opencode"'));
+  assert(
+    compose({ components: ["files", "desktop-selkies"] }).includes(
+      '"AGENT_ENV_COMPONENTS=desktop-selkies,files"',
+    ),
   );
-  assert(!novnc[".env"].includes("DESKTOP_BACKEND"));
-  assert(!novnc["compose.yaml"].includes("DESKTOP_BACKEND"));
+  // An empty list is an answer too: nothing but SSH, sign-in and /~env/.
+  assert(compose({ components: [] }).includes('"AGENT_ENV_COMPONENTS="'));
+});
+
+test("the settings components replaced are never written, and an old .env loses them", () => {
+  const existingEnv = [
+    "AGENT_ENV_PRESET=opencode",
+    "DESKTOP_ENABLE=true",
+    "DESKTOP_BACKEND=selkies",
+    "TTYD_ENABLE=true",
+    "DUFS_ENABLE=true",
+    "DOCKER_ROOTLESS_ENABLE=false",
+    "ANTHROPIC_API_KEY=sk-kept",
+    "",
+  ].join("\n");
+  for (const a of [
+    BASIC,
+    { ...BASIC, components: ["desktop-selkies", "docker"] },
+    { ...BASIC, components: [] },
+  ] as Answers[]) {
+    for (const files of [
+      generate(a, { randomSecret: fixed }),
+      generate(a, { randomSecret: fixed, existingEnv }),
+    ]) {
+      for (const k of REMOVED_KEYS) {
+        assert(!files[".env"].includes(k), `${k} in .env`);
+        assert(!files["compose.yaml"].includes(`${k}=`), `${k} in compose.yaml`);
+        assert(!files["compose.yaml"].includes(`- ${k}\n`), `${k} passed through`);
+      }
+    }
+  }
+  assert(generate(BASIC, { existingEnv })[".env"].includes("ANTHROPIC_API_KEY=sk-kept"));
+});
+
+test("version 1 answers become components", () => {
+  const v1 = (legacy: object, env = "") =>
+    migrateAnswers({ ...BASIC, components: undefined, ...legacy } as never, env).components;
+  assertEquals(v1({ preset: "vanilla", rootlessDocker: false }), ["desktop", "terminal", "files"]);
+  assertEquals(v1({ preset: "opencode", rootlessDocker: false }), [
+    "desktop",
+    "terminal",
+    "files",
+    "opencode",
+  ]);
+  assertEquals(v1({ preset: "vanilla", desktopBackend: "selkies", rootlessDocker: true }), [
+    "desktop-selkies",
+    "terminal",
+    "files",
+    "docker",
+  ]);
+  // The legacy keys do not survive the trip.
+  const migrated = migrateAnswers({ ...BASIC, preset: "opencode" } as never);
+  assert(!("preset" in migrated) && !("rootlessDocker" in migrated));
+  // A compose.yaml written by version 1 reads back in the new shape.
+  const { components: _, ...rest } = BASIC;
+  const old = `x-agent-env: ${JSON.stringify({ ...rest, version: 1, preset: "opencode", desktopBackend: "selkies", rootlessDocker: true })}\n`;
+  assertEquals(answersFromCompose(old)?.components, [
+    "desktop-selkies",
+    "terminal",
+    "files",
+    "opencode",
+    "docker",
+  ]);
+});
+
+test("the settings in an old .env say what was running", () => {
+  const from = (env: string) =>
+    migrateAnswers({ preset: "vanilla", rootlessDocker: false } as never, env).components;
+  assertEquals(from("DESKTOP_ENABLE=false\n"), ["terminal", "files"]);
+  assertEquals(from("TTYD_ENABLE=false\nDUFS_ENABLE=0\n"), ["desktop"]);
+  assertEquals(from("DESKTOP_BACKEND=selkies\n"), ["desktop-selkies", "terminal", "files"]);
+  assertEquals(from("DOCKER_ROOTLESS_ENABLE=true\n"), ["desktop", "terminal", "files", "docker"]);
+  assertEquals(from("AGENT_ENV_PRESET=opencode\n"), ["desktop", "terminal", "files", "opencode"]);
+  // A .env on its own is enough, with nothing else to go on.
+  assertEquals(migrateAnswers({}, "TTYD_ENABLE=false\n").components, ["desktop", "files"]);
+  // Neither: the answers are left alone, and the defaults apply.
+  assertEquals(migrateAnswers({}, "MISE_TOOLS=node\n"), {});
+  // The page reads the same mapping into its form.
+  const f = fieldsFromAnswers(
+    migrateAnswers({ preset: "opencode" } as never, "DESKTOP_ENABLE=false\n"),
+  );
+  assertEquals(f.desktop, "none");
+  assertEquals(f.opencode, true);
+});
+
+test("one desktop at most", () => {
+  assertEquals(
+    validate({ ...BASIC, components: ["desktop", "desktop-selkies"] }).map((p) => p.field),
+    ["components"],
+  );
+  assertEquals(
+    validate({ ...BASIC, components: ["dekstop"] as never }).map((p) => p.field),
+    ["components"],
+  );
+});
+
+test("the SMB share is refused anywhere but a tailnet, and never published", () => {
+  const ts: Answers = {
+    ...BASIC,
+    mode: "tailscale",
+    tsHostname: "work.tail1234.ts.net",
+    publicUrl: "https://work.tail1234.ts.net",
+    sshPort: undefined,
+    components: ["files", "smb"],
+  };
+  assertEquals(validate(ts), []);
+  const compose = generate(ts, { randomSecret: fixed })["compose.yaml"];
+  assert(compose.includes('"AGENT_ENV_COMPONENTS=files,smb"'));
+  assert(!compose.includes("445"), "published SMB");
+  for (const a of [
+    { ...BASIC, components: ["smb"] },
+    {
+      ...BASIC,
+      mode: "caddy",
+      authMode: "basic",
+      domain: "agent.example.com",
+      publicUrl: "https://agent.example.com",
+      components: ["smb"],
+    },
+  ] as Answers[]) {
+    const problems = validate(a);
+    assertEquals(
+      problems.map((p) => p.field),
+      ["components"],
+    );
+    assert(problems[0].message.includes("tailnet"), problems[0].message);
+  }
+});
+
+test("a command for / is refused while OpenCode is at /", () => {
+  assertEquals(
+    validate({ ...BASIC, primaryCommand: "node app.js" }).map((p) => p.field),
+    ["primaryCommand"],
+  );
+  const files = generate(
+    { ...BASIC, components: ["terminal"], primaryCommand: "node app.js" },
+    { randomSecret: fixed },
+  );
+  assert(files["compose.yaml"].includes('"PRIMARY_COMMAND=node app.js"'));
+  assert(files["compose.yaml"].includes('"PRIMARY_PORT=3000"'));
+  assert(!generate(BASIC, { randomSecret: fixed })["compose.yaml"].includes("PRIMARY_PORT"));
+});
+
+test("the docker host flags come with the docker component, and only with it", () => {
+  const flags = [
+    "SYS_ADMIN",
+    "seccomp=unconfined",
+    "apparmor=unconfined",
+    "systempaths=unconfined",
+    "/dev/net/tun",
+  ];
+  const on = generate({ ...BASIC, components: ["docker"] }, { randomSecret: fixed });
+  const off = generate(BASIC, { randomSecret: fixed });
+  for (const flag of flags) {
+    assert(on["compose.yaml"].includes(flag), `${flag} missing`);
+    assert(!off["compose.yaml"].includes(flag), `${flag} without docker`);
+  }
 });
 
 test("Selkies is refused on plain http away from localhost, and only then", () => {
-  const proxied = { ...BASIC, behindProxy: true, desktopBackend: "selkies" as const };
+  const selkies: Answers = { ...BASIC, components: ["desktop-selkies"] };
+  const proxied = { ...selkies, behindProxy: true };
   const bad = validate({ ...proxied, publicUrl: "http://box.lan:8080" });
   assertEquals(
     bad.map((p) => p.field),
-    ["desktopBackend"],
+    ["components"],
   );
   assertEquals(validate({ ...proxied, publicUrl: "https://box.example.com" }), []);
   assertEquals(validate({ ...proxied, publicUrl: "http://localhost:9000" }), []);
-  assertEquals(validate({ ...BASIC, desktopBackend: "selkies" }), []);
+  assertEquals(validate(selkies), []);
   assertEquals(
-    validate({ ...proxied, publicUrl: "http://box.lan:8080", desktopBackend: "novnc" }),
+    validate({ ...proxied, publicUrl: "http://box.lan:8080", components: ["desktop"] }),
     [],
   );
 });
@@ -236,6 +401,12 @@ test("screen size and text scale become DESKTOP_RESOLUTION and DESKTOP_DPI", () 
   );
   assert(!chosen[".env"].includes("800x600"));
   assert(chosen["compose.yaml"].includes("DESKTOP_RESOLUTION=1280x720x24"));
+  // Without a desktop there is no screen to size.
+  const none = generate(
+    { ...BASIC, components: ["terminal"], desktopSize: "3840x2160", desktopScale: 200 },
+    { randomSecret: fixed },
+  );
+  assert(!none["compose.yaml"].includes("DESKTOP_"));
 });
 
 test("a screen size or scale the display cannot use is refused", () => {
@@ -258,6 +429,33 @@ test("the page takes only plain decimals for a number", () => {
   assertEquals(fields({ sshPort: "0x50" }), ["sshPort"]);
   assertEquals(fields({ memoryGiB: " 1.5 ", swapGiB: "0", cpus: "0.5" }), []);
   assertEquals(toAnswers({ ...DEFAULT_FIELDS, memoryGiB: "", cpus: "" }).memoryGiB, undefined);
+});
+
+test("the page's choices become components", () => {
+  assertEquals(toAnswers(DEFAULT_FIELDS).components, ["desktop", "terminal", "files"]);
+  const ts = { ...DEFAULT_FIELDS, mode: "tailscale", tsHostname: "w.tail1.ts.net" };
+  const picked: Fields = {
+    ...ts,
+    desktop: "desktop-selkies",
+    terminal: false,
+    opencode: true,
+    docker: true,
+    smb: true,
+  };
+  assertEquals(toAnswers(picked).components, [
+    "desktop-selkies",
+    "files",
+    "opencode",
+    "docker",
+    "smb",
+  ]);
+  // SMB is offered only on a tailnet, and left behind like that mode's answers.
+  assertEquals(toAnswers({ ...picked, mode: "local" }).components.includes("smb"), false);
+  // And back, for a deployment imported into the form.
+  assertEquals(
+    toAnswers({ ...DEFAULT_FIELDS, ...fieldsFromAnswers(toAnswers(picked)) }).components,
+    toAnswers(picked).components,
+  );
 });
 
 // A pasted client secret is for .env alone: compose.yaml carries the answers,

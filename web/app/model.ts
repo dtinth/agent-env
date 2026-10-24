@@ -13,6 +13,10 @@ import {
   ANSWERS_KEY,
   type AuthMode,
   clientSecretKey,
+  type Component,
+  desktopOf,
+  migrateAnswers,
+  sortComponents,
   needsClientSecret,
   DEFAULT_NAME,
   DESKTOP_SIZES,
@@ -21,8 +25,6 @@ import {
   LEGACY_ANSWERS_FILE,
   hostPathFor,
   type Mode,
-  type DesktopBackend,
-  type Preset,
   type Problem,
   publicUrlFor,
   randomSecret,
@@ -50,14 +52,18 @@ export const DEFAULT_FIELDS = {
   allowedEmails: "",
   allowedEmailDomains: "",
   gatewayUser: "dev",
-  preset: "vanilla",
+  // AGENT_ENV_COMPONENTS, one field per choice. The desktop is one of three.
+  desktop: "desktop" as "none" | "desktop" | "desktop-selkies",
+  terminal: true,
+  fileManager: true,
+  opencode: false,
+  docker: false,
+  smb: false,
   primaryPort: "3000",
   primaryCommand: "",
-  desktopBackend: "novnc",
   desktopSizePick: "1920x1080",
   desktopSizeCustom: "",
   desktopScale: "100",
-  rootlessDocker: false,
   memoryGiB: "",
   swapGiB: "",
   cpus: "",
@@ -83,7 +89,7 @@ export const DEMO_FIELDS: Partial<Fields> = {
   domain: "agent.example.com",
   authMode: "google",
   googleClientId: "1234-abc.apps.googleusercontent.com",
-  preset: "opencode",
+  opencode: true,
   sshKeys: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample dtinth@laptop",
   timezone: "Asia/Bangkok",
 };
@@ -96,10 +102,24 @@ const num = (v: string): number | undefined => {
   return t === "" ? undefined : /^\d+(\.\d+)?$/.test(t) ? Number(t) : NaN;
 };
 
+/** The components the fields choose, in AGENT_ENV_COMPONENTS order. */
+export function componentsOf(f: Fields): Component[] {
+  const list: string[] = [];
+  if (f.desktop !== "none") list.push(f.desktop);
+  if (f.terminal) list.push("terminal");
+  if (f.fileManager) list.push("files");
+  if (f.opencode) list.push("opencode");
+  if (f.docker) list.push("docker");
+  // Offered only on a tailnet, and left behind like the other mode's answers.
+  if (f.smb && f.mode === "tailscale") list.push("smb");
+  return sortComponents(list);
+}
+
 export function toAnswers(f: Fields): Answers {
   const mode = f.mode as Mode;
   const authMode = f.authMode as AuthMode;
-  const preset = f.preset as Preset;
+  const components = componentsOf(f);
+  const opencode = components.includes("opencode");
   const behindProxy = mode === "local" ? f.behindProxy : undefined;
   const a: Answers = {
     version: VERSION,
@@ -112,8 +132,7 @@ export function toAnswers(f: Fields): Answers {
     acmeEmail: mode === "caddy" ? f.acmeEmail.trim() : undefined,
     tsHostname: mode === "tailscale" ? f.tsHostname.trim() : undefined,
     authMode,
-    preset,
-    desktopBackend: f.desktopBackend as DesktopBackend,
+    components,
     desktopSize:
       f.desktopSizePick === "custom"
         ? f.desktopSizeCustom
@@ -122,9 +141,8 @@ export function toAnswers(f: Fields): Answers {
             .replace(/\s*[x×]\s*/, "x")
         : f.desktopSizePick,
     desktopScale: Number(f.desktopScale),
-    primaryPort: preset === "vanilla" ? num(f.primaryPort) : undefined,
-    primaryCommand: preset === "vanilla" ? f.primaryCommand.trim() || undefined : undefined,
-    rootlessDocker: f.rootlessDocker,
+    primaryPort: opencode ? undefined : num(f.primaryPort),
+    primaryCommand: opencode ? undefined : f.primaryCommand.trim() || undefined,
     memoryGiB: num(f.memoryGiB),
     swapGiB: num(f.swapGiB),
     cpus: num(f.cpus),
@@ -236,10 +254,9 @@ export const SECTIONS: Section[] = [
     id: "runs",
     title: "What runs",
     fields: [
-      "preset",
+      "components",
       "primaryPort",
       "primaryCommand",
-      "desktopBackend",
       "desktopSize",
       "desktopScale",
       "memoryGiB",
@@ -248,9 +265,14 @@ export const SECTIONS: Section[] = [
     ],
     summary: (a) =>
       [
-        a.preset === "opencode" ? "OpenCode" : "Vanilla",
-        `${a.desktopBackend === "selkies" ? "Selkies" : "noVNC"} ${a.desktopSize?.replace("x", "×")}`,
-        a.rootlessDocker ? "Docker" : "",
+        a.components.includes("opencode") ? "OpenCode" : "",
+        desktopOf(a.components)
+          ? `${desktopOf(a.components) === "desktop-selkies" ? "Selkies" : "noVNC"} ${a.desktopSize?.replace("x", "×")}`
+          : "No desktop",
+        a.components.includes("terminal") ? "Terminal" : "",
+        a.components.includes("files") ? "Files" : "",
+        a.components.includes("docker") ? "Docker" : "",
+        a.components.includes("smb") ? "SMB" : "",
         a.memoryGiB !== undefined ? `${a.memoryGiB} GiB` : "",
         a.cpus !== undefined ? plural(a.cpus, "CPU") : "",
       ]
@@ -293,7 +315,7 @@ export const FIELD_LABELS: Record<string, string> = {
   githubTeam: "Allowed teams",
   primaryPort: "Primary port",
   primaryCommand: "Command",
-  desktopBackend: "Desktop",
+  components: "Components",
   desktopSize: "Screen size",
   desktopScale: "Text size",
   memoryGiB: "Memory limit",
@@ -369,17 +391,23 @@ export function fieldsFromAnswers(a: Partial<Answers>): Partial<Fields> {
   put("allowedEmails", a.allowedEmails);
   put("allowedEmailDomains", a.allowedEmailDomains);
   put("gatewayUser", a.gatewayUser);
-  put("preset", a.preset);
+  if (Array.isArray(a.components)) {
+    const has = (c: Component) => a.components!.includes(c);
+    put("desktop", desktopOf(a.components) ?? "none");
+    put("terminal", has("terminal"));
+    put("fileManager", has("files"));
+    put("opencode", has("opencode"));
+    put("docker", has("docker"));
+    put("smb", has("smb"));
+  }
   put("primaryPort", str(a.primaryPort));
   put("primaryCommand", a.primaryCommand);
-  put("desktopBackend", a.desktopBackend);
   if (a.desktopSize) {
     const known = DESKTOP_SIZES.some((s) => s.value === a.desktopSize);
     put("desktopSizePick", known ? a.desktopSize : "custom");
     if (!known) put("desktopSizeCustom", a.desktopSize);
   }
   put("desktopScale", str(a.desktopScale));
-  put("rootlessDocker", a.rootlessDocker);
   put("memoryGiB", str(a.memoryGiB));
   put("swapGiB", str(a.swapGiB));
   put("cpus", str(a.cpus));
@@ -414,7 +442,7 @@ export function readImport(text: string): { answers: Partial<Answers> | null } |
   try {
     const v: unknown = JSON.parse(text);
     if (v && typeof v === "object" && !Array.isArray(v) && "mode" in v) {
-      return { answers: v as Partial<Answers> };
+      return { answers: migrateAnswers(v as Partial<Answers>) };
     }
   } catch {
     // Not the legacy file either; say what was expected below.
@@ -470,7 +498,10 @@ function initialFields(): { fields: Fields; restored: boolean; chosen: boolean }
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
       return {
-        fields: { ...base, ...fieldsFromAnswers(JSON.parse(saved) as Partial<Answers>) },
+        fields: {
+          ...base,
+          ...fieldsFromAnswers(migrateAnswers(JSON.parse(saved) as Partial<Answers>)),
+        },
         restored: true,
         chosen: true,
       };
@@ -517,15 +548,22 @@ export function useConfigurator() {
   const importDeployment = (answers: Partial<Answers> | null, env: string) => {
     // Either way the .env's secrets are the ones meant, so a client secret
     // typed earlier gives way to the one it has.
+    // An older .env says what was running in settings the image no longer
+    // takes; they become components here, and are dropped from the new .env.
     if (!answers) {
-      setFields((f) => ({ ...f, existingEnv: env, googleClientSecret: "" }));
+      setFields((f) => ({
+        ...f,
+        ...fieldsFromAnswers(migrateAnswers({ components: componentsOf(f) }, env)),
+        existingEnv: env,
+        googleClientSecret: "",
+      }));
       return;
     }
     touched.add("authMode");
     setFields((f) => ({
       ...DEFAULT_FIELDS,
       timezone: f.timezone,
-      ...fieldsFromAnswers(answers),
+      ...fieldsFromAnswers(migrateAnswers(answers, env)),
       existingEnv: env,
     }));
   };

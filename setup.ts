@@ -48,14 +48,19 @@ import {
   needsClientSecret,
   LEGACY_ANSWERS_FILE,
   type Mode,
+  type Component,
+  COMPONENTS,
+  DEFAULT_COMPONENTS,
   DEFAULT_DESKTOP_SIZE,
-  type DesktopBackend,
+  desktopOf,
   DESKTOP_SIZES,
-  type Preset,
+  isComponent,
+  migrateAnswers,
   portClashProblem,
   type Problem,
   publicUrlFor,
   refusal,
+  sortComponents,
   validate,
   VERSION,
   type Workspace,
@@ -511,50 +516,23 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
     gatewayUser = await ask("gatewayUser", "Username", prev.gatewayUser ?? "dev");
   }
 
-  // 3. What lives at /.
-  const agentPreset = await select<Preset>(
-    "preset",
-    "What should this environment run?",
-    [
-      {
-        value: "vanilla",
-        label: "Nothing in particular",
-        hint: "no agent installed; / goes to whatever you run on a port",
-      },
-      {
-        value: "opencode",
-        label: "OpenCode",
-        hint: "installs OpenCode and serves its web UI at /",
-      },
-    ],
-    prev.preset ?? "vanilla",
-  );
-  const desktopBackend = await select<DesktopBackend>(
-    "desktopBackend",
-    "How should the desktop reach your browser?",
-    [
-      {
-        value: "novnc",
-        label: "noVNC",
-        hint: "works everywhere, several people can drive it at once",
-      },
-      {
-        value: "selkies",
-        label: "Selkies (prototype)",
-        hint: "audio and smoother video; needs https or localhost, one person drives",
-      },
-    ],
-    prev.desktopBackend ?? "novnc",
-  );
+  // 3. What runs. One list, AGENT_ENV_COMPONENTS, asked about a piece at a
+  //    time; each piece defaults to what was running before.
+  const components = await chooseComponents(prev.components, mode);
+  const desktop = desktopOf(components);
+
   const knownSize = (v: string | undefined) => DESKTOP_SIZES.some((s) => s.value === v);
   const sizeCheck = (v: string) => (/^\d{3,5}x\d{3,5}$/.test(v) ? null : "write it like 1920x1080");
-  let desktopSize: string;
-  if ("desktopSize" in preset) {
+  // Without a desktop these are not asked, and the previous ones are kept for
+  // when it comes back.
+  let desktopSize = prev.desktopSize;
+  let desktopScale = prev.desktopScale;
+  if (desktop && "desktopSize" in preset) {
     // An --answers file names the size outright; there is no menu to pick from.
     desktopSize = await ask("desktopSize", "Screen size", DEFAULT_DESKTOP_SIZE, {
       validate: sizeCheck,
     });
-  } else {
+  } else if (desktop) {
     const pick = await select<string>(
       "desktopSizePick",
       "How big should the desktop screen be?",
@@ -578,34 +556,34 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
           )
         : pick;
   }
-  desktopSize = desktopSize.toLowerCase();
-  // A number in an answers file, a menu string at the prompt.
-  if ("desktopScale" in preset) preset.desktopScale = String(preset.desktopScale);
-  const desktopScale = Number(
-    await select<string>(
-      "desktopScale",
-      "How large should text and windows look? (raise it on a high-resolution screen)",
-      [
-        { value: "100", label: "100%", hint: "normal" },
-        { value: "125", label: "125%" },
-        { value: "150", label: "150%" },
-        { value: "200", label: "200%", hint: "HiDPI, for a 4K screen" },
-        { value: "300", label: "300%" },
-      ],
-      String(prev.desktopScale ?? 100),
-    ),
-  );
-  let primaryPort: number | undefined;
-  let primaryCommand: string | undefined;
-  // Not asked under opencode, so an answers file naming one would be dropped
-  // without a word.
-  if (agentPreset !== "vanilla" && preset.primaryCommand) {
-    bad(
-      "primaryCommand",
-      "only the vanilla preset takes one; the opencode preset runs its own server",
+  desktopSize = desktopSize?.toLowerCase();
+  if (desktop) {
+    // A number in an answers file, a menu string at the prompt.
+    if ("desktopScale" in preset) preset.desktopScale = String(preset.desktopScale);
+    desktopScale = Number(
+      await select<string>(
+        "desktopScale",
+        "How large should text and windows look? (raise it on a high-resolution screen)",
+        [
+          { value: "100", label: "100%", hint: "normal" },
+          { value: "125", label: "125%" },
+          { value: "150", label: "150%" },
+          { value: "200", label: "200%", hint: "HiDPI, for a 4K screen" },
+          { value: "300", label: "300%" },
+        ],
+        String(prev.desktopScale ?? 100),
+      ),
     );
   }
-  if (agentPreset === "vanilla") {
+  let primaryPort: number | undefined;
+  let primaryCommand: string | undefined;
+  const opencode = components.includes("opencode");
+  // Not asked with opencode, so an answers file naming one would be dropped
+  // without a word.
+  if (opencode && preset.primaryCommand) {
+    bad("primaryCommand", "OpenCode is at /, so there is no command to run there");
+  }
+  if (!opencode) {
     primaryPort = Number(
       await ask(
         "primaryPort",
@@ -621,23 +599,6 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
         prev.primaryCommand ?? "",
         { optional: true },
       )) || undefined;
-  }
-
-  // 4. Extras. Each of these costs something, so they are asked rather than
-  //    assumed.
-  const rootlessDocker = await yesNo(
-    "rootlessDocker",
-    "Let the agent run its own containers (rootless Docker)?",
-    prev.rootlessDocker ?? false,
-  );
-  if (rootlessDocker) {
-    note(
-      C.dim("  Adds five host flags that widen the sandbox. See AGENTS.md before shipping this."),
-    );
-    if (mode === "tailscale") {
-      warn("Rootless Docker inside the Tailscale network namespace is UNTESTED.");
-      warn("Inner published ports land in the tailnet namespace and need serve config.");
-    }
   }
 
   // Limits are for a shared host. Blank means none, which is what a machine of
@@ -831,13 +792,11 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
     allowedEmails,
     allowedEmailDomains,
     gatewayUser,
-    preset: agentPreset,
-    desktopBackend,
+    components,
     desktopSize,
     desktopScale,
     primaryPort,
     primaryCommand,
-    rootlessDocker,
     memoryGiB,
     swapGiB,
     cpus,
@@ -847,6 +806,123 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
     home,
     timezone,
   };
+}
+
+/**
+ * AGENT_ENV_COMPONENTS, a question per component. An answers file gives the
+ * list as `components`, or in version 1's terms (`preset`, `desktopBackend`,
+ * `rootlessDocker`), which still mean what they did.
+ */
+async function chooseComponents(
+  previous: Component[] | undefined,
+  mode: Mode,
+): Promise<Component[]> {
+  let start = previous ?? [...DEFAULT_COMPONENTS];
+  const old = ["preset", "desktopBackend", "rootlessDocker"].filter((k) => k in preset);
+  if ("components" in preset && old.length) {
+    bad(old[0], "give the components, or the older preset/desktopBackend/rootlessDocker, not both");
+  }
+  if ("components" in preset) {
+    const given = preset.components;
+    const list = Array.isArray(given)
+      ? given
+      : typeof given === "string"
+        ? given
+            .split(",")
+            .map((c) => c.trim())
+            .filter(Boolean)
+        : null;
+    if (!list) bad("components", 'expected a list, like ["desktop", "terminal"]');
+    const unknown = list.filter((c) => !isComponent(c));
+    if (unknown.length) {
+      bad("components", `unknown ${unknown.join(", ")}; expected some of ${COMPONENTS.join(", ")}`);
+    }
+    // Both desktops is an answer to report, not to quietly resolve: validate
+    // says so after the questions.
+    return sortComponents(list);
+  }
+  // Version 1's keys, checked as strictly as they were then: "false" must not
+  // be read as true and widen the sandbox.
+  const legacy: { preset?: string; desktopBackend?: string; rootlessDocker?: boolean } = {};
+  if ("preset" in preset) {
+    legacy.preset = await select(
+      "preset",
+      "",
+      [
+        { value: "vanilla", label: "" },
+        { value: "opencode", label: "" },
+      ],
+      "vanilla",
+    );
+  }
+  if ("desktopBackend" in preset) {
+    legacy.desktopBackend = await select(
+      "desktopBackend",
+      "",
+      [
+        { value: "novnc", label: "" },
+        { value: "selkies", label: "" },
+      ],
+      "novnc",
+    );
+  }
+  if ("rootlessDocker" in preset) {
+    legacy.rootlessDocker = await yesNo("rootlessDocker", "", false);
+  }
+  if (Object.keys(legacy).length) {
+    start = migrateAnswers({ components: start, ...legacy }).components ?? start;
+  }
+  if (!interactive) return start;
+
+  const on = new Set<Component>(start);
+  const desktop = await select<"none" | Component>(
+    "__desktop",
+    "A desktop in the browser?",
+    [
+      {
+        value: "desktop",
+        label: "Yes, with noVNC",
+        hint: "works everywhere, several people can drive it at once",
+      },
+      {
+        value: "desktop-selkies",
+        label: "Yes, with Selkies (prototype)",
+        hint: "audio and smoother video; needs https or localhost, one person drives",
+      },
+      { value: "none", label: "No desktop" },
+    ],
+    desktopOf(start) ?? "none",
+  );
+  on.delete("desktop");
+  on.delete("desktop-selkies");
+  if (desktop !== "none") on.add(desktop);
+
+  const choose = async (c: Component, question: string) => {
+    if (await yesNo(`__${c}`, question, on.has(c))) on.add(c);
+    else on.delete(c);
+  };
+  await choose("terminal", "A terminal in the browser?");
+  await choose("files", "A file manager in the browser?");
+  await choose("opencode", "OpenCode at /?");
+  await choose("docker", "Let the agent run its own containers (rootless Docker)?");
+  if (on.has("docker")) {
+    note(
+      C.dim("  Adds five host flags that widen the sandbox. See AGENTS.md before shipping this."),
+    );
+    if (mode === "tailscale") {
+      warn("Rootless Docker inside the Tailscale network namespace is UNTESTED.");
+      warn("Inner published ports land in the tailnet namespace and need serve config.");
+    }
+  }
+  if (mode === "tailscale") {
+    await choose("smb", "Share the workspace over SMB, for the Files app or Finder?");
+    if (on.has("smb")) {
+      note(C.dim("  Sign in as dev; the password is on the /~env/ page."));
+    }
+  } else if (on.delete("smb")) {
+    warn("The SMB share needs the tailnet mode, so it is off now.");
+  }
+  return sortComponents([...on]);
 }
 
 // ---------------------------------------------------------------------------
@@ -886,9 +962,12 @@ async function main() {
   const p = (f: string) => `${outDir.replace(/\/$/, "")}/${f}`;
   // The answers live in compose.yaml now; a deployment from before that still
   // has them in the file beside it.
-  const prev: Partial<Answers> =
+  // Either may be from before components, and so may the .env beside them.
+  const prev: Partial<Answers> = migrateAnswers(
     answersFromCompose(readIfExists(p("compose.yaml")) ?? "") ??
-    JSON.parse(readIfExists(p(LEGACY_ANSWERS_FILE)) ?? "{}");
+      JSON.parse(readIfExists(p(LEGACY_ANSWERS_FILE)) ?? "{}"),
+    readIfExists(p(".env")) ?? "",
+  );
   const answers = await collect(prev);
   // collect() has already asked about everything validate() checks, one
   // question at a time; this is the backstop, not the first line.

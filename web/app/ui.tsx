@@ -426,33 +426,11 @@ function Runs({ c }: { c: Configurator }) {
   const { fields: f } = c;
   return (
     <>
-      <h3>Agent</h3>
-      <Choices
-        c={c}
-        name="preset"
-        cols={2}
-        options={[
-          {
-            value: "vanilla",
-            title: "Nothing in particular",
-            desc: (
-              <>
-                No agent; <code>/</code> goes to whatever you run on a port.
-              </>
-            ),
-          },
-          {
-            value: "opencode",
-            title: "OpenCode",
-            desc: (
-              <>
-                Installed for you; its web UI is at <code>/</code>.
-              </>
-            ),
-          },
-        ]}
-      />
-      {f.preset === "vanilla" && (
+      <h3>At /</h3>
+      <Check c={c} name="opencode">
+        OpenCode <small> — installed for you; its web UI is at /</small>
+      </Check>
+      {!f.opencode && (
         <div class="row">
           <Text
             c={c}
@@ -482,56 +460,75 @@ function Runs({ c }: { c: Configurator }) {
       <h3>Desktop</h3>
       <Choices
         c={c}
-        name="desktopBackend"
-        cols={2}
+        name="desktop"
+        cols={3}
         options={[
           {
-            value: "novnc",
+            value: "desktop",
             title: "noVNC",
             desc: "Works everywhere; several people can drive it at once.",
           },
           {
-            value: "selkies",
+            value: "desktop-selkies",
             title: "Selkies (prototype)",
             desc: "Audio and smoother video; needs https or localhost; one person drives.",
           },
+          {
+            value: "none",
+            title: "No desktop",
+          },
         ]}
       />
-      {c.errorFor("desktopBackend") && <p class="callout danger">{c.errorFor("desktopBackend")}</p>}
-      <div class="row">
-        <Select
-          c={c}
-          name="desktopSizePick"
-          label="Screen size"
-          class="grow"
-          options={[...DESKTOP_SIZES, { value: "custom", label: "Something else…" }]}
-        />
-        {f.desktopSizePick === "custom" && (
-          <Text
+      {f.desktop !== "none" && (
+        <div class="row">
+          <Select
             c={c}
-            name="desktopSizeCustom"
-            label="Width × height"
-            placeholder="2200x1300"
-            error="desktopSize"
+            name="desktopSizePick"
+            label="Screen size"
             class="grow"
+            options={[...DESKTOP_SIZES, { value: "custom", label: "Something else…" }]}
           />
-        )}
-        <Select
-          c={c}
-          name="desktopScale"
-          label="Text and window size"
-          class="grow"
-          error="desktopScale"
-          options={DESKTOP_SCALES.map((s) => ({
-            value: String(s),
-            label: s === 100 ? "100% (normal)" : s === 200 ? "200% (HiDPI)" : `${s}%`,
-          }))}
-        />
-      </div>
-      <Check c={c} name="rootlessDocker">
+          {f.desktopSizePick === "custom" && (
+            <Text
+              c={c}
+              name="desktopSizeCustom"
+              label="Width × height"
+              placeholder="2200x1300"
+              error="desktopSize"
+              class="grow"
+            />
+          )}
+          <Select
+            c={c}
+            name="desktopScale"
+            label="Text and window size"
+            class="grow"
+            error="desktopScale"
+            options={DESKTOP_SCALES.map((s) => ({
+              value: String(s),
+              label: s === 100 ? "100% (normal)" : s === 200 ? "200% (HiDPI)" : `${s}%`,
+            }))}
+          />
+        </div>
+      )}
+      <h3>Also</h3>
+      <Check c={c} name="terminal">
+        A terminal in the browser
+      </Check>
+      <Check c={c} name="fileManager">
+        A file manager in the browser
+      </Check>
+      <Check c={c} name="docker">
         Let the agent run its own containers (rootless Docker)
         <small> — adds host flags that widen the sandbox</small>
       </Check>
+      {f.mode === "tailscale" && (
+        <Check c={c} name="smb">
+          Share the workspace over SMB
+          <small> — for the Files app or Finder; the password is on the /~env/ page</small>
+        </Check>
+      )}
+      {c.errorFor("components") && <p class="callout danger">{c.errorFor("components")}</p>}
       <h3>
         Limits <small>(optional; blank means none)</small>
       </h3>
