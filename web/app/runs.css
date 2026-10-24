@@ -1,14 +1,12 @@
-/* The "What runs" prototypes. Only the tokens in claw.css; dark only. */
+/* The "What runs" step: a list of everything, and the chosen one's detail. */
 
-/* ------------------------------------------------------------------ shared */
-
-.p-badges {
+.r-badges {
   display: inline-flex;
   flex-wrap: wrap;
   gap: 0.3rem;
   vertical-align: middle;
 }
-.p-badge {
+.r-badge {
   font: 600 10.5px var(--font-sans);
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -19,27 +17,23 @@
   white-space: nowrap;
   text-shadow: none;
 }
-.p-badge-at- {
+.r-badge-at- {
   color: var(--accent-lime);
   border-color: #7a8f3f;
 }
-.p-badge-host-flags {
-  color: var(--warn);
-  border-color: #6b5f1e;
-}
-.p-badge-not-published {
+.r-badge-not-published {
   color: var(--accent-sky);
   border-color: #3e6573;
 }
-.p-badge-prototype {
+.r-badge-prototype {
   color: var(--accent-pink);
   border-color: #7a4f6c;
 }
-.p-badge-https-or-localhost {
+.r-badge-https-or-localhost {
   color: var(--fg-warm);
 }
 
-button.p-switch {
+button.r-switch {
   flex: none;
   position: relative;
   width: 2.3rem;
@@ -50,10 +44,7 @@ button.p-switch {
   border: 1px solid var(--border-base);
   box-shadow: inset 0 1px 3px #00000080;
 }
-button.p-switch:hover {
-  background: var(--bg-deep);
-}
-.p-switch span {
+.r-switch span {
   position: absolute;
   top: 2px;
   left: 2px;
@@ -63,81 +54,44 @@ button.p-switch:hover {
   background: var(--fg-muted);
   transition: all 150ms ease-out;
 }
-button.p-switch.on {
+button.r-switch.on {
   background: #3d4a1d;
   border-color: #7a8f3f;
 }
-.p-switch.on span {
+.r-switch.on span {
   left: calc(100% - 1.3rem + 4px);
   background: var(--accent-lime);
 }
 
-.p-yaml {
-  margin-top: 1.2rem;
-  border: 1px solid var(--border-weak);
-  border-radius: var(--radius-md);
-  background: var(--bg-deep);
-  overflow: hidden;
-}
-.p-yaml-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.4rem 0.6rem 0.4rem 0.8rem;
-  border-bottom: 1px solid var(--border-weak);
-  font-size: 0.85rem;
-  color: var(--fg-muted);
-}
-.p-mock {
-  margin-left: 0.6rem;
-  font: 600 10.5px var(--font-sans);
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--accent-pink);
-  border: 1px dashed #7a4f6c;
-  border-radius: 999px;
-  padding: 1px 6px;
-}
-.p-yaml pre {
-  border: none;
-  border-radius: 0;
-  max-height: 22rem;
-}
-.p-yaml-empty {
-  margin: 0;
-  padding: 0.9rem 0.8rem;
-  font-size: 0.85rem;
-  color: var(--fg-muted);
-}
-
-/* --------------------------------------------------- B — list and detail */
-
-.pb {
+.r {
   display: grid;
   grid-template-columns: 15.5rem minmax(0, 1fr);
   margin: -1.4rem -1.6rem 0;
   min-height: 34rem;
 }
-.pb-list {
+.r-list {
   background: var(--bg-deep);
   border-right: 1px solid var(--border-weak);
   border-top-left-radius: var(--radius-lg);
   padding: 0.9rem 0.6rem;
 }
-.pb-list ul {
+.r-list ul {
   list-style: none;
-  margin: 0 0 0.6rem;
+  margin: 0;
   padding: 0;
 }
-.pb-label {
-  font: 700 0.72rem var(--font-sans);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--accent-pink);
-  padding: 0.4rem 0.6rem 0.3rem;
+.r-list ul + ul {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border-weak);
 }
-.pb-item {
+button.r-item {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: none;
+  box-shadow: none;
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -146,33 +100,33 @@ button.p-switch.on {
   border: 1px solid transparent;
   cursor: pointer;
 }
-.pb-item:hover {
+button.r-item:hover {
   background: var(--bg-base);
 }
-.pb-item.here {
+button.r-item.here {
   background: var(--bg-raised);
   border-color: var(--border-weak);
   box-shadow: inset 3px 0 0 var(--accent-lime);
 }
-.pb-item-text {
+.r-item-text {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
   line-height: 1.3;
 }
-.pb-item-title {
+.r-item-title {
   font-weight: 600;
   font-size: 14px;
 }
-.pb-item-sub {
+.r-item-sub {
   font-size: 0.75rem;
   color: var(--fg-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.pb-state {
+.r-state {
   font-size: 0.72rem;
   font-weight: 600;
   letter-spacing: 0.03em;
@@ -181,25 +135,26 @@ button.p-switch.on {
   border: 1px solid var(--border-weak);
   border-radius: 999px;
 }
-.pb-state.on {
+.r-state.on {
   color: var(--accent-lime);
   border-color: color-mix(in srgb, var(--accent-lime) 45%, transparent);
 }
-.pb-chev {
+.r-chev {
   color: var(--fg-muted);
   font-size: 1.1rem;
   line-height: 1;
 }
-.pb-item.here .pb-chev {
+.r-item.problem .r-item-title::after {
+  content: " !";
+  color: var(--warn);
+}
+.r-item.here .r-chev {
   color: var(--accent-lime);
 }
-.pb-item.dim .pb-item-title {
-  color: var(--fg-muted);
-}
-.pb-item.here .pb-item-title {
+.r-item.here .r-item-title {
   color: var(--fg-strong);
 }
-.pb-value {
+.r-value {
   margin: 0.6rem 0.3rem 0;
   padding-top: 0.7rem;
   border-top: 1px solid var(--border-weak);
@@ -207,29 +162,29 @@ button.p-switch.on {
   flex-direction: column;
   gap: 0.3rem;
 }
-.pb-value span {
+.r-value span {
   font-size: 0.7rem;
   letter-spacing: 0.04em;
   color: var(--fg-muted);
 }
-.pb-value code {
+.r-value code {
   font-size: 0.78rem;
   overflow-wrap: anywhere;
   align-self: flex-start;
 }
-.pb-detail {
+.r-detail {
   padding: 1.4rem 1.6rem 0;
   min-width: 0;
 }
-.pb-head {
+.r-head {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
   gap: 1rem;
   padding-bottom: 0.8rem;
   border-bottom: 1px solid var(--border-weak);
 }
-.pb-head h2 {
+.r-head h2 {
   font-size: 1.4rem;
   margin: 0;
   display: flex;
@@ -238,25 +193,18 @@ button.p-switch.on {
   gap: 0.2rem 0.6rem;
   white-space: nowrap;
 }
-.pb-kicker {
-  font-size: 0.75rem;
-  color: var(--fg-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-.pb-head-switch {
+.r-head-switch {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   font-size: 0.85rem;
   color: var(--fg-muted);
-  margin-top: 1.1rem;
 }
-.pb-lede {
+.r-lede {
   margin: 0.8rem 0 0;
   font-size: 0.95rem;
 }
-.pb-facts {
+.r-facts {
   display: grid;
   grid-template-columns: 8rem minmax(0, 1fr);
   gap: 0.45rem 1rem;
@@ -267,50 +215,50 @@ button.p-switch.on {
   border-radius: var(--radius-md);
   font-size: 0.88rem;
 }
-.pb-facts dt {
+.r-facts dt {
   color: var(--fg-muted);
 }
-.pb-facts dd {
+.r-facts dd {
   margin: 0;
 }
-.pb-detail > h3 {
+.r-detail > h3 {
   margin-top: 1.3rem;
 }
 
-button.pb-back {
+button.r-back {
   display: none;
 }
 
 /* On a phone, the list and the detail take turns. */
 @media (max-width: 700px) {
-  .pb {
+  .r {
     grid-template-columns: minmax(0, 1fr);
     min-height: 0;
   }
-  .pb-list {
+  .r-list {
     border-right: none;
     border-top-right-radius: var(--radius-lg);
   }
-  .pb.open .pb-list,
-  .pb:not(.open) .pb-detail {
+  .r.open .r-list,
+  .r:not(.open) .r-detail {
     display: none;
   }
-  .pb-item {
+  button.r-item {
     padding: 0.65rem 0.7rem;
   }
-  .pb-detail {
+  .r-detail {
     padding: 1rem 1.1rem 0;
   }
-  button.pb-back {
+  button.r-back {
     display: inline-block;
     margin: 0 0 0.9rem;
     font-size: 0.85rem;
   }
-  .pb-facts {
+  .r-facts {
     grid-template-columns: minmax(0, 1fr);
     gap: 0.15rem;
   }
-  .pb-facts dd + dt {
+  .r-facts dd + dt {
     margin-top: 0.5rem;
   }
 }

@@ -1,18 +1,8 @@
-/**
- * The configurator's shell: the stepper, the running summary and the review
- * step. web/main.tsx renders it as it is; the prototypes under web/proto/ pass
- * their own body for the "What runs" step.
- */
+/** The configurator's shell: the stepper, the running summary and the review step. */
 
-import type { JSX } from "preact";
 import { useState } from "preact/hooks";
-import {
-  type Configurator,
-  nextSteps,
-  SECTIONS,
-  type SectionId,
-  useConfigurator,
-} from "./model.ts";
+import { nextSteps, SECTIONS, type SectionId, useConfigurator } from "./model.ts";
+import { Runs } from "./runs.tsx";
 import { FilesPanel, ImportDialog, OkIcon, ProblemList, SectionBody, WarnIcon } from "./ui.tsx";
 
 const STEPS: { id: SectionId; title: string }[] = [
@@ -20,7 +10,7 @@ const STEPS: { id: SectionId; title: string }[] = [
   { id: "files", title: "Review & download" },
 ];
 
-export function App(props: { runs?: (c: Configurator) => JSX.Element } = {}) {
+export function App() {
   const c = useConfigurator();
   const [step, setStep] = useState<SectionId>("where");
   const [importing, setImporting] = useState(false);
@@ -112,7 +102,7 @@ export function App(props: { runs?: (c: Configurator) => JSX.Element } = {}) {
       ) : (
         <main class="c-main">
           <section class="card c-form">
-            {step === "runs" && props.runs ? props.runs(c) : <SectionBody c={c} id={step} />}
+            {step === "runs" ? <Runs c={c} /> : <SectionBody c={c} id={step} />}
             <footer class="c-foot">
               <button disabled={index === 0} onClick={() => setStep(STEPS[index - 1].id)}>
                 ← Back

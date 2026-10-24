@@ -173,6 +173,18 @@ export function dpiFor(scale: number): number {
 }
 /** The top-level key in compose.yaml that records the answers it was made from. */
 export const ANSWERS_KEY = "x-agent-env";
+
+/** Where the startup script lands: the image runs what is in provision.d at every start. */
+export const STARTUP_SCRIPT_TARGET = "/etc/agent-env/provision.d/10-startup";
+
+/** The script as it is written out: Unix line ends, no blank lines around it; "" for none. */
+export function startupScriptBody(a: Pick<Answers, "startupScript">): string {
+  return (a.startupScript ?? "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/^([ \t]*\n)+/, "")
+    .trimEnd();
+}
+
 /**
  * Where the answers lived before they moved into compose.yaml. Read, never
  * written, so a deployment made by an older version still upgrades.
@@ -236,6 +248,11 @@ export interface Answers {
   swapGiB?: number;
   /** CPUs the container may use, like 2.5; absent means all of them. */
   cpus?: number;
+  /**
+   * A bash script run as dev on every start, before any component; absent
+   * means none. It is how components of your own get installed.
+   */
+  startupScript?: string;
   sshKeys: string;
   sshPort?: number;
   workspace: Workspace;
@@ -1083,6 +1100,18 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
     L.push("");
   }
 
+  const script = startupScriptBody(a);
+  if (script) {
+    L.push("    # The startup script: run as dev, in a login shell, on every start");
+    L.push("    # and before any component. `agent-env logs provision` shows what it");
+    L.push("    # did. It is written from the answers at the end of this file, so");
+    L.push("    # change it with the configurator rather than here.");
+    L.push("    configs:");
+    L.push("      - source: startup-script");
+    L.push(`        target: ${STARTUP_SCRIPT_TARGET}`);
+    L.push("");
+  }
+
   L.push("    volumes:");
   if (a.workspace.kind === "path") {
     // Normalised here too, not only by the front ends: any caller of generate
@@ -1163,11 +1192,15 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
   const configs: [string, string][] = [];
   if (a.mode === "caddy") configs.push(["caddyfile", renderCaddyfile(a)]);
   if (a.mode === "tailscale") configs.push(["ts-serve", renderTsServe(a)]);
+  if (script) configs.push(["startup-script", script]);
   if (configs.length) {
     L.push("configs:");
     for (const [name, body] of configs) {
       L.push(`  ${name}:`);
-      L.push("    content: |");
+      // YAML takes a block's indentation from its first non-blank line, so a
+      // script that starts indented says how deep the block is instead.
+      const first = body.split("\n").find((l) => l.trim()) ?? "";
+      L.push(`    content: ${/^[ \t]/.test(first) ? "|2" : "|"}`);
       for (const line of body.trimEnd().split("\n")) {
         // Compose interpolates ${...} inside content, so a literal $ is $$.
         L.push(line ? `      ${line.replace(/\$/g, "$$$$")}` : "");

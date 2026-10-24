@@ -1105,3 +1105,16 @@ test("answers from before they moved into compose.yaml are still offered", () =>
   // From here on compose.yaml is where they come from.
   assertStringIncludes(readText(`${dir}/compose.yaml`), '"primaryCommand":"node app.js"');
 });
+
+test("the startup script is kept from last time, and cleared only when asked", () => {
+  const dir = tmp();
+  const script = 'agent-env component install ~/src/mine # in "$HOME"';
+  assertEquals(run({ ...LOCAL, startupScript: script }, dir).code, 0);
+  assertEquals(inlineConfig(readText(`${dir}/compose.yaml`), "startup-script").trimEnd(), script);
+  // Not asked at a prompt, so a run that does not mention it keeps it.
+  run({ ...LOCAL }, dir, ["--force"]);
+  assertEquals(inlineConfig(readText(`${dir}/compose.yaml`), "startup-script").trimEnd(), script);
+  run({ ...LOCAL, startupScript: "" }, dir, ["--force"]);
+  assert(!readText(`${dir}/compose.yaml`).includes("startup-script"), "the cleared script stayed");
+  assertEquals(run({ ...LOCAL, startupScript: ["a list"] }, tmp()).code, 2);
+});
