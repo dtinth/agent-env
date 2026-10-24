@@ -10,7 +10,7 @@ import { type Component, STARTUP_SCRIPT_TARGET } from "../../generate.ts";
 import { type Configurator, componentsOf } from "./model.ts";
 import { Choices, DesktopGeometry, LimitFields, type Option } from "./ui.tsx";
 
-type Badge = "at /" | "not published" | "prototype" | "https or localhost";
+type Badge = "at /" | "https or localhost";
 
 interface Entry {
   title: string;
@@ -28,18 +28,16 @@ const ENTRIES: Record<Component, Entry> = {
   desktop: {
     title: "Desktop",
     sub: "/~env/desktop",
-    summary:
-      "XFCE on a virtual display. Headed agent-browser sessions show up here, so you can watch the agent work.",
+    summary: "Runs the XFCE desktop environment on a virtual display with web-based access.",
     where: "/~env/desktop",
     badges: [],
   },
   "desktop-selkies": {
     title: "Desktop",
     sub: "/~env/desktop",
-    summary:
-      "XFCE on a virtual display. Headed agent-browser sessions show up here, so you can watch the agent work.",
+    summary: "Runs the XFCE desktop environment on a virtual display with web-based access.",
     where: "/~env/desktop",
-    badges: ["prototype", "https or localhost"],
+    badges: ["https or localhost"],
     needs: "An https address, or localhost: Selkies refuses to start otherwise.",
   },
   terminal: {
@@ -74,12 +72,10 @@ const ENTRIES: Record<Component, Entry> = {
   smb: {
     title: "SMB share",
     sub: "smb://…/workspace",
-    summary:
-      "The workspace as an SMB share, for the iPad Files app or Finder. Sign in as dev; the password is on the /~env/ page.",
+    summary: "The workspace becomes a network drive, for the iPad Files app or Finder.",
     where: "smb://<host>/workspace",
-    badges: ["not published"],
-    needs:
-      "Port 445 is never published, since a file share cannot sit behind the sign-in. On a tailnet it is reachable as is; elsewhere, forward it to the container yourself, on a network you trust.",
+    badges: [],
+    needs: "Something that can reach port 445; see below.",
   },
 };
 
@@ -91,7 +87,7 @@ const DESKTOP_OPTIONS: Option[] = [
   },
   {
     value: "desktop-selkies",
-    title: "Selkies (prototype)",
+    title: "Selkies",
     desc: "Audio and smoother video; needs https or localhost; one person drives.",
   },
 ];
@@ -236,7 +232,7 @@ function ComponentDetail({ c, id }: { c: Configurator; id: Component }) {
       )}
       {id === "docker" && (
         <>
-          <h3>What it means for you</h3>
+          <h3>Behavior</h3>
           <ul class="r-points">
             <li class="ok">The agent can start containers. The container cannot reach the host.</li>
             <li class="ok">
@@ -281,6 +277,38 @@ function ComponentDetail({ c, id }: { c: Configurator; id: Component }) {
             <li class="no">It cannot do raw input or output to hardware.</li>
             <li class="no">It cannot change the host's files or settings.</li>
           </ul>
+        </>
+      )}
+      {id === "smb" && (
+        <>
+          <h3>Behavior</h3>
+          <ul class="r-points">
+            <li class="ok">The container runs a network drive from the workspace.</li>
+            <li class="ok">
+              You open it in the iPad Files app or in Finder, and edit the files directly.
+            </li>
+            <li class="ok">
+              You sign in as <code>dev</code>. The password is the one on the <code>/~env/</code>{" "}
+              page.
+            </li>
+          </ul>
+          <h3>Reaching the share</h3>
+          {c.fields.mode === "tailscale" ? (
+            <ul class="r-points">
+              <li class="ok">You run on a tailnet, so the share is reachable on it as is.</li>
+            </ul>
+          ) : (
+            <>
+              <ul class="r-points">
+                <li class="warn">
+                  Port 445 is not open. A file share cannot sit behind the web sign-in.
+                </li>
+              </ul>
+              <p class="r-verdict">
+                Forward port 445 to the container yourself. Use a network you trust.
+              </p>
+            </>
+          )}
         </>
       )}
     </>
@@ -433,10 +461,6 @@ export function Runs({ c }: { c: Configurator }) {
             }
           />
         </ul>
-        <div class="r-value">
-          <span>AGENT_ENV_COMPONENTS</span>
-          <code>{componentsOf(f).join(",\u200b") || '""'}</code>
-        </div>
       </nav>
       <section class="r-detail">
         <button type="button" class="r-back" onClick={() => setOpen(false)}>

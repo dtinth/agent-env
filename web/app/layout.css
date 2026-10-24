@@ -100,6 +100,8 @@ button.link:hover {
 }
 .c-form {
   padding: 1.4rem 1.6rem;
+  /* Clip the bled-out runs panel to the card's rounded corners. */
+  overflow: hidden;
 }
 /* The first field in a step: room below it rather than above. */
 .field.c-name {

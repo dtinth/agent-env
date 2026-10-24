@@ -21,14 +21,6 @@
   color: var(--accent-lime);
   border-color: #7a8f3f;
 }
-.r-badge-not-published {
-  color: var(--accent-sky);
-  border-color: #3e6573;
-}
-.r-badge-prototype {
-  color: var(--accent-pink);
-  border-color: #7a4f6c;
-}
 .r-badge-https-or-localhost {
   color: var(--fg-warm);
 }
@@ -153,24 +145,6 @@ button.r-item.here {
 }
 .r-item.here .r-item-title {
   color: var(--fg-strong);
-}
-.r-value {
-  margin: 0.6rem 0.3rem 0;
-  padding-top: 0.7rem;
-  border-top: 1px solid var(--border-weak);
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-}
-.r-value span {
-  font-size: 0.7rem;
-  letter-spacing: 0.04em;
-  color: var(--fg-muted);
-}
-.r-value code {
-  font-size: 0.78rem;
-  overflow-wrap: anywhere;
-  align-self: flex-start;
 }
 .r-detail {
   padding: 1.4rem 1.6rem 0;
