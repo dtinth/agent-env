@@ -17,11 +17,9 @@ interface Entry {
   /** Under the title in the list. */
   sub: string;
   summary: string;
-  /** Where it shows up. */
-  where: string;
   badges: Badge[];
-  /** What the host or deployment has to provide. */
-  needs?: string;
+  /** Behavior bullets. Docker and SMB render their own block instead. */
+  behavior?: ComponentChildren[];
 }
 
 const ENTRIES: Record<Component, Entry> = {
@@ -29,53 +27,72 @@ const ENTRIES: Record<Component, Entry> = {
     title: "Desktop",
     sub: "/~env/desktop",
     summary: "Runs the XFCE desktop environment on a virtual display with web-based access.",
-    where: "/~env/desktop",
     badges: [],
+    behavior: [
+      <>
+        Opens the XFCE desktop at <code>/~env/desktop</code> in the browser.
+      </>,
+      "Headed agent-browser sessions show up here, so you can watch the agent work.",
+    ],
   },
   "desktop-selkies": {
     title: "Desktop",
     sub: "/~env/desktop",
     summary: "Runs the XFCE desktop environment on a virtual display with web-based access.",
-    where: "/~env/desktop",
     badges: ["https or localhost"],
-    needs: "An https address, or localhost: Selkies refuses to start otherwise.",
+    behavior: [
+      <>
+        Opens the XFCE desktop at <code>/~env/desktop</code> in the browser.
+      </>,
+      "Headed agent-browser sessions show up here, so you can watch the agent work.",
+    ],
   },
   terminal: {
     title: "Terminal",
     sub: "/~env/terminal",
     summary: "A login shell in the browser, over ttyd.",
-    where: "/~env/terminal",
     badges: [],
+    behavior: [
+      <>
+        Opens a login shell at <code>/~env/terminal</code>, over ttyd.
+      </>,
+    ],
   },
   files: {
     title: "Files",
     sub: "/~env/files",
     summary: "Browse, upload and download the workspace, with dufs.",
-    where: "/~env/files",
     badges: [],
+    behavior: [
+      <>
+        Serves the workspace at <code>/~env/files</code>, over dufs.
+      </>,
+      "You browse, upload and download the files there.",
+    ],
   },
   opencode: {
     title: "OpenCode",
     sub: "at /",
     summary: "OpenCode's web UI and API. Installed on first start and kept current.",
-    where: "/",
     badges: ["at /"],
+    behavior: [
+      <>
+        Serves OpenCode's web UI and API at <code>/</code>.
+      </>,
+      "Installed on first start and kept up to date.",
+    ],
   },
   docker: {
     title: "Docker",
     sub: "containers for the agent",
     summary: "A rootless Docker engine of your own, so the agent can run containers.",
-    where: "—",
     badges: [],
-    needs: "Five host flags in compose.yaml; see below.",
   },
   smb: {
     title: "SMB share",
     sub: "smb://…/workspace",
     summary: "The workspace becomes a network drive, for the iPad Files app or Finder.",
-    where: "smb://<host>/workspace",
     badges: [],
-    needs: "Something that can reach port 445; see below.",
   },
 };
 
@@ -194,19 +211,6 @@ function Head(props: {
   );
 }
 
-function Facts(props: { rows: [string, ComponentChildren][] }) {
-  return (
-    <dl class="r-facts">
-      {props.rows.map(([k, v]) => (
-        <>
-          <dt>{k}</dt>
-          <dd>{v}</dd>
-        </>
-      ))}
-    </dl>
-  );
-}
-
 function ComponentDetail({ c, id }: { c: Configurator; id: Component }) {
   const e = ENTRIES[id];
   return (
@@ -218,12 +222,16 @@ function ComponentDetail({ c, id }: { c: Configurator; id: Component }) {
         onToggle={(on) => setOn(c, id === "desktop-selkies" ? "desktop" : id, on)}
       />
       <p class="r-lede">{e.summary}</p>
-      <Facts
-        rows={[
-          ["Shows up at", <code>{e.where}</code>],
-          ["Needs", e.needs ?? "Nothing extra."],
-        ]}
-      />
+      {e.behavior && (
+        <>
+          <h3>Behavior</h3>
+          <ul class="r-points">
+            {e.behavior.map((b) => (
+              <li class="ok">{b}</li>
+            ))}
+          </ul>
+        </>
+      )}
       {id === "opencode" && (
         <p class="hint">
           Only one thing answers at <code>/</code>. With OpenCode off, a component of yours can have

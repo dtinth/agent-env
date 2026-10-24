@@ -178,23 +178,6 @@ button.r-item.here {
   margin: 0.8rem 0 0;
   font-size: 0.95rem;
 }
-.r-facts {
-  display: grid;
-  grid-template-columns: 8rem minmax(0, 1fr);
-  gap: 0.45rem 1rem;
-  margin: 1rem 0 0;
-  padding: 0.8rem 1rem;
-  background: var(--bg-deep);
-  border: 1px solid var(--border-weak);
-  border-radius: var(--radius-md);
-  font-size: 0.88rem;
-}
-.r-facts dt {
-  color: var(--fg-muted);
-}
-.r-facts dd {
-  margin: 0;
-}
 .r-detail > h3 {
   margin-top: 1.3rem;
 }
@@ -306,12 +289,5 @@ button.r-back {
     display: inline-block;
     margin: 0 0 0.9rem;
     font-size: 0.85rem;
-  }
-  .r-facts {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 0.15rem;
-  }
-  .r-facts dd + dt {
-    margin-top: 0.5rem;
   }
 }
