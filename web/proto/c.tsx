@@ -21,7 +21,6 @@ import {
   ComponentsProblem,
   entry,
   type Extras,
-  offered,
   provisionFiles,
   repoName,
   RepoRows,
@@ -36,7 +35,7 @@ function Picker(props: { c: Configurator; x: Extras; onClose: () => void }) {
   const { c, x } = props;
   const [url, setUrl] = useState("");
   const on = componentsOf(c.fields);
-  const left = CATALOG.filter((e) => offered(c, e.id) && !on.includes(e.id));
+  const left = CATALOG.filter((e) => !on.includes(e.id));
   const add = (id: Component) => {
     setOn(c, id, true);
     props.onClose();
@@ -279,7 +278,7 @@ function RunsC({ c, x }: { c: Configurator; x: Extras }) {
           </Panel>
         )}
         {list.includes("smb") && (
-          <Panel id="smb" open={open} toggle={toggle} title="SMB share" aside="tailnet">
+          <Panel id="smb" open={open} toggle={toggle} title="SMB share" aside="port 445">
             <p class="pc-text">
               Sign in as <code>dev</code>. The password is generated on first start and shown on the{" "}
               <code>/~env/</code> page; set <code>SMB_PASSWORD</code> in <code>.env</code> to choose

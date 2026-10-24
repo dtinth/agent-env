@@ -21,7 +21,6 @@ import {
   entry,
   type Extras,
   isOn,
-  offered,
   RepoRows,
   ScriptEditor,
   setOn,
@@ -156,7 +155,7 @@ function RunsA({ c, x }: { c: Configurator; x: Extras }) {
       <Group title="Infrastructure">
         <div class="pa-grid">
           <Toggle c={c} id="docker" />
-          {offered(c, "smb") && <Toggle c={c} id="smb" />}
+          <Toggle c={c} id="smb" />
         </div>
         {f.docker && (
           <p class="callout">
