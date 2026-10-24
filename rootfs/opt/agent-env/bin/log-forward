@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Both supervisors' daemon output, to PID 1's stdout, so `docker logs` and the
+# container's log driver see everything.
+#
+# pitchfork keeps each daemon's output in its own log store rather than on any
+# stdout. The system one is followed directly. The user's — where every
+# component's daemons run — is followed as the user, since its store is theirs.
+# `pitchfork logs --follow` only ever follows the daemons that existed when it
+# started, and the user's set grows (components start after the supervisor, and
+# can be installed at any time), so that follower is restarted whenever the set
+# changes: the new daemons' output so far first, then everyone's from then on.
+set -uo pipefail
+
+user="$(sed -n 's/^USER_NAME=//p' /run/agent-env/env 2>/dev/null | head -1)"
+user="${user:-dev}"
+uid="$(id -u "${user}")"
+user_state="/run/user/${uid}/pitchfork"
+
+as_user() {
+  runuser -u "${user}" -- env -u PITCHFORK_CONFIG_DIR \
+    HOME="/home/${user}" PITCHFORK_STATE_DIR="${user_state}" "$@"
+}
+
+follow_user() {
+  local known="" now follower="" id
+  while :; do
+    # A directory holding the supervisor's socket, once it is up.
+    if [[ -e "${user_state}/sock" ]]; then
+      now="$(as_user pitchfork list 2>/dev/null | awk 'NF {print $1}' | sort | paste -sd' ' -)"
+      if [[ -n "${now}" && "${now}" != "${known}" ]]; then
+        [[ -n "${follower}" ]] && kill "${follower}" 2>/dev/null
+        for id in ${now}; do
+          [[ " ${known} " == *" ${id} "* ]] && continue
+          as_user pitchfork logs --raw --no-pager "${id}" 2>/dev/null
+        done
+        # exec in the subshell, so $! is runuser itself, which passes the
+        # signal on: killing a plain function's subshell would orphan it.
+        # shellcheck disable=SC2086
+        ( exec runuser -u "${user}" -- env -u PITCHFORK_CONFIG_DIR \
+            HOME="/home/${user}" PITCHFORK_STATE_DIR="${user_state}" \
+            pitchfork logs --follow --raw --no-pager -n 0 ${now} 2>/dev/null ) &
+        follower=$!
+        known="${now}"
+      fi
+    fi
+    sleep 5
+  done
+}
+
+follow_user >/proc/1/fd/1 2>&1 &
+user_pid=$!
+pitchfork logs --follow --raw >/proc/1/fd/1 2>/proc/1/fd/2 &
+system_pid=$!
+trap 'pkill -P "${user_pid}" 2>/dev/null; kill "${user_pid}" "${system_pid}" 2>/dev/null; exit 0' TERM INT
+wait -n
+pkill -P "${user_pid}" 2>/dev/null
+kill "${user_pid}" "${system_pid}" 2>/dev/null
+exit 1

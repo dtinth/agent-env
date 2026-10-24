@@ -1,0 +1,8 @@
+namespace = "agent-env-smb"
+
+# Port 445 as the dev user: Docker sets net.ipv4.ip_unprivileged_port_start=0
+# inside a container, so no capability is needed to bind it.
+[daemons.smbd]
+run = "./run"
+ready_port = 445
+retry = true

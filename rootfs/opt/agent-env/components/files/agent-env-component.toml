@@ -1,0 +1,9 @@
+name = "files"
+title = "Files"
+summary = "Browse, upload and download the workspace"
+
+# dufs is told its prefix with --path-prefix, so the path is passed through.
+[http]
+port = 5000
+path = "~env/files"
+strip = false

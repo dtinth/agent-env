@@ -1,0 +1,9 @@
+name = "terminal"
+title = "Terminal"
+summary = "A login shell, over a websocket"
+
+# ttyd is told its own --base-path, so the path is passed through.
+[http]
+port = 7681
+path = "~env/terminal"
+strip = false

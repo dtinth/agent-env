@@ -11,6 +11,7 @@ The image comes with these:
 | Name | What it gives you |
 |---|---|
 | `desktop` | An XFCE desktop in the browser, at `/~env/desktop` |
+| `desktop-selkies` | The same desktop over [Selkies](https://selkies.io) instead, with audio (a prototype). Use it in place of `desktop`, not as well; the page needs HTTPS or `localhost`. |
 | `terminal` | A shell in the browser, at `/~env/terminal` |
 | `files` | A file manager for the workspace, at `/~env/files` |
 | `opencode` | OpenCode's web UI, at `/`. Connect a provider with `/connect` in the UI. |
@@ -18,8 +19,10 @@ The image comes with these:
 | `smb` | The workspace as an SMB share, for the iPad Files app or Finder. Sign in as `dev`; the password and the address to connect to are on the `/~env/` page. |
 
 The `smb` password is generated the first time it starts and kept from then on.
-To choose your own, set `SMB_PASSWORD` in your compose file. On a tailnet it is
-reachable as is; otherwise the configurator publishes port 445 for it.
+To choose your own, set `SMB_PASSWORD` in your compose file. It is meant for an
+environment on a tailnet, where it is reachable as is, and the configurator only
+offers it there. Elsewhere you would have to publish port 445 yourself; never do
+that on a public address.
 
 Choose them with one setting in your compose file:
 
@@ -143,6 +146,7 @@ summary = "One line about what it is"
 port = 8000            # where your app listens, on 127.0.0.1
 path = "~env/my-app"   # this is the default: ~env/<name>
 strip = true           # this is the default; see below
+start = "index.html"   # optional: the page /~env/my-app/ opens, if not its own
 
 # Optional, any number of them: links shown on the /~env/ index page and by
 # `agent-env urls`, for things that are not web pages.
@@ -184,6 +188,9 @@ In a `url`, `{host}` becomes the host name in your environment's address: for
 #### `[env]`
 
 For fixed values. For values that have to be worked out each time, use `env.sh`.
+
+New shells see a change straight away. Daemons see it from the next container
+start, and `install` reminds you when that applies.
 
 ### The other files
 

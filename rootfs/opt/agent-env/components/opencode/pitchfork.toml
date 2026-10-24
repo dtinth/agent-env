@@ -1,0 +1,8 @@
+namespace = "agent-env-opencode"
+
+# OpenCode and the proxy that adds its login, as one daemon: the password belongs
+# to one server process, so if either half dies both are started again.
+[daemons.server]
+run = "./run"
+ready_port = { port = 4097, timeout = "120s" }
+retry = true

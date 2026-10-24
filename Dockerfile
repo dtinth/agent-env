@@ -21,7 +21,7 @@ ARG TTYD_VERSION=1.7.7
 ARG PITCHFORK_VERSION=2.22.0
 ARG OAUTH2_PROXY_VERSION=7.15.4
 ARG CADDY_VERSION=2.11.4
-# Engine + rootless helpers + the compose plugin, for DOCKER_ROOTLESS_ENABLE=true.
+# Engine + rootless helpers + the compose plugin, for the docker component.
 ARG DOCKER_VERSION=29.7.2
 ARG DOCKER_COMPOSE_VERSION=5.5.0
 
@@ -59,7 +59,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       # browser for agent-browser
       chromium chromium-sandbox \
       # rootless docker: subuid mapping, its network and storage helpers.
-      # Inert unless DOCKER_ROOTLESS_ENABLE=true.
+      # Inert unless the docker component is listed.
       uidmap slirp4netns fuse-overlayfs iptables nftables \
     && rm -rf /var/lib/apt/lists/*
 
@@ -99,7 +99,7 @@ RUN set -eux; \
 # ---------------------------------------------------------------------------
 # Docker engine, rootless helpers and the compose plugin.
 #
-# Present in the image but never started unless DOCKER_ROOTLESS_ENABLE=true,
+# Present in the image but never started unless the docker component is listed,
 # because a rootless daemon needs the host to relax the container's sandbox —
 # see AGENTS.md. The engine runs as the dev user, under their own supervisor.
 # ---------------------------------------------------------------------------
@@ -137,7 +137,7 @@ RUN set -eux; \
 # From PyPI rather than the project's .deb: the wheels are published for amd64
 # and arm64 (pixelflux and pcmflux, the native capture and encode halves, are
 # manylinux_2_28 wheels), and they install into a venv of their own that
-# nothing else on the system depends on. Inert unless the backend is chosen.
+# nothing else on the system depends on. Inert unless desktop-selkies is listed.
 # ---------------------------------------------------------------------------
 ARG SELKIES_VERSION=2.0.0
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -148,6 +148,18 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && python3 -m venv /opt/selkies \
     && /opt/selkies/bin/pip install --no-cache-dir "selkies==${SELKIES_VERSION}" \
     && /opt/selkies/bin/selkies --help >/dev/null \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# Samba, for the smb component: the workspace as an SMB share. Run by the dev
+# user with a config of its own, so Debian's service setup is never used.
+# Inert unless the component is listed.
+# ---------------------------------------------------------------------------
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    set -eux; \
+    apt-get update && apt-get install -y --no-install-recommends samba \
+    && /usr/sbin/smbd --version \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------
@@ -203,9 +215,9 @@ ENV USER_NAME=${USER_NAME} \
 # Node and dufs (via mise), installed as the user.
 #
 # The agent tools are deliberately not here. They move faster than this image
-# does, so the active preset's tools are installed into the home volume at first
-# start and upgraded at every start; see rootfs/opt/agent-env/presets and the
-# entrypoint.
+# does, so the enabled components' tools are installed into the home volume at
+# first start and upgraded at every start; see rootfs/opt/agent-env/components
+# and the entrypoint.
 # ---------------------------------------------------------------------------
 USER ${USER_NAME}
 WORKDIR /home/${USER_NAME}
@@ -226,6 +238,9 @@ COPY rootfs/ /
 
 RUN set -eux; \
     chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/agent-env /opt/agent-env/bin/*; \
+    chmod +x /opt/agent-env/components/opencode/run /opt/agent-env/components/smb/run; \
+    # Where compose `configs:` put the operator's startup scripts.
+    install -d -m 755 /etc/agent-env/provision.d; \
     # Debian's /etc/bash.bashrc is what an interactive non-login shell reads —
     # a terminal on the desktop, or `docker exec -it`. It does not source
     # profile.d, so wire mise's shims in from here too.
@@ -280,26 +295,22 @@ ENV TZ=UTC \
     GATEWAY_PORT=8080 \
     AUTH_MODE=google \
     PUBLIC_URL=http://localhost:8080 \
-    OPENCODE_DISABLE_AUTOUPDATE=1 \
     SSH_ENABLE=true \
     SSH_PORT=22 \
-    DESKTOP_ENABLE=true \
     DESKTOP_RESOLUTION=1920x1080x24 \
     DESKTOP_DISPLAY=:1 \
-    TTYD_ENABLE=true \
     TTYD_WRITABLE=true \
     USER_SUPERVISOR_ENABLE=true \
     USER_WEB_ENABLE=true \
     USER_WEB_PORT=4747 \
     USER_WEB_PATH=pitchfork \
-    DOCKER_ROOTLESS_ENABLE=false \
     AGENT_ENV_STATE_DIR=/var/lib/agent-env \
     MISE_CONFIG_DIR=/home/dev/.config/mise \
     # From here on, mise installs into the home volume, and /opt/mise — the
     # image's own node and dufs — is read as a shared, read-only install dir.
     MISE_DATA_DIR=/home/dev/.local/share/mise \
     MISE_SHARED_INSTALL_DIRS=/opt/mise/installs \
-    PATH=/home/dev/.local/share/mise/shims:/opt/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin \
+    PATH=/home/dev/.agent-env/bin:/home/dev/.local/share/mise/shims:/opt/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin \
     DISPLAY=:1 \
     CHROME_BIN=/usr/bin/chromium \
     XDG_RUNTIME_DIR=/run/user/1000

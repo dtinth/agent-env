@@ -20,6 +20,10 @@ mkdir -p "${PITCHFORK_STATE_DIR}" "${HOME}/.config/pitchfork"
 
 /opt/agent-env/bin/compact-pf-logs "${PITCHFORK_STATE_DIR}/logs" || true
 
+# The operator's startup scripts first, so whatever they install (a component
+# cloned from a repository, say) is in place before anything starts.
+/opt/agent-env/bin/provision || true
+
 args=(--boot)
 
 # The web UI is told its prefix so it can be reverse-proxied under a path.
@@ -29,7 +33,7 @@ if [[ "${USER_WEB_ENABLE:-true}" == "true" ]]; then
 fi
 
 # --boot starts any daemon marked `boot_start = true` in the user's config,
-# which is where the OpenCode server is defined.
+# which is where the daemon that starts every component's daemons is defined.
 # --force because only one supervisor per container is ever wanted, and a
 # restart should take over rather than bail out.
 exec pitchfork supervisor run --force "${args[@]}"

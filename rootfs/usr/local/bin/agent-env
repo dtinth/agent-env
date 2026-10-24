@@ -2,6 +2,25 @@
 # Small operator helper for the running container.
 set -euo pipefail
 
+COMPONENTS_TOOL=/opt/agent-env/bin/agent-env-components
+
+# Components are the user's: installing one runs as them (the tool sudos for
+# the parts that need root), and so does reading what is installed.
+case "${1:-}" in
+  component|components)
+    exec "${COMPONENTS_TOOL}" "${@:2}"
+    ;;
+esac
+case "${1:-}:${2:-}" in
+  logs:provision)
+    user="$(sed -n 's/^USER_NAME=//p' /run/agent-env/env 2>/dev/null | head -1)"
+    log="/home/${user:-dev}/.local/state/agent-env/provision.log"
+    if [[ -s "${log}" ]]; then exec cat "${log}"; fi
+    echo "no provision scripts ran at the last start (none in /etc/agent-env/provision.d)"
+    exit 0
+    ;;
+esac
+
 # The primary service is a daemon of the dev user's own supervisor, not the
 # system one, so its logs and its start/stop/restart go there. This runs before
 # the sudo re-exec below, which would only land in the wrong supervisor.
@@ -48,27 +67,17 @@ RUN_ENV=/run/agent-env/env
 # shellcheck disable=SC1090
 [[ -r "${RUN_ENV}" ]] && . "${RUN_ENV}"
 
-# The active preset's own subcommands, one help line each, from the "# help:"
-# comment at the top of each script in presets/<name>/commands/.
-PRESET_COMMANDS="/opt/agent-env/presets/${AGENT_ENV_PRESET:-vanilla}/commands"
-preset_commands() {
-  local f name help
-  for f in "${PRESET_COMMANDS}"/*; do
-    [[ -x "${f}" ]] || continue
-    name="${f##*/}"
-    help="$(sed -n 's/^# help: //p' "${f}" | head -1)"
-    printf '  agent-env %-20s%s\n' "${name}" "${help}"
-  done
-}
-
 usage() {
   cat <<EOF
 agent-env — manage this workstation
 
+  agent-env component ...       Install, list and remove components
+                                (agent-env component help)
   agent-env status              Show the state of every service
   agent-env urls                Print the URLs this container serves
   agent-env logs [service]      Follow logs (all services, or one)
-  agent-env restart <service>   Restart one service (e.g. primary, desktop, caddy)
+  agent-env logs provision      What the startup scripts did at the last start
+  agent-env restart <service>   Restart one service (e.g. primary, caddy)
   agent-env start <service>     Start one service
   agent-env stop <service>      Stop one service
   agent-env top                 pitchfork's interactive dashboard
@@ -76,12 +85,11 @@ agent-env — manage this workstation
   agent-env daemons             Show the rendered daemon definitions
   agent-env mine                List *your* daemons, not the system's
   agent-env x-cookie            Print the X cookie, to drive the display remotely
-$(preset_commands)
 
 The system services above belong to the root supervisor (these commands sudo
-into it for you). Your own daemons live in a second, unprivileged supervisor:
-run \`pitchfork\` directly, and define them in ~/.config/pitchfork/config.toml
-or a pitchfork.toml beside your code.
+into it for you). Your own daemons, the components' among them, live in a
+second, unprivileged supervisor: run \`pitchfork\` directly, and define them in
+~/.config/pitchfork/config.toml or a pitchfork.toml beside your code.
 
 Services are supervised by pitchfork, so anything it can do is also available
 by running \`pitchfork\` directly.
@@ -105,31 +113,8 @@ case "${1:-help}" in
     exec env -u PITCHFORK_STATE_DIR -u PITCHFORK_CONFIG_DIR pitchfork list
     ;;
   urls)
-    base="${PUBLIC_URL:-http://localhost:8080}"
-    prefix="${ENV_PREFIX:-~env}"
-    if [[ "${PRIMARY_SUPERVISED:-false}" == "true" ]]; then
-      printf 'Primary service : %s/  (%s, on 127.0.0.1:%s)\n' "${base}" "${AGENT_ENV_PRESET:-vanilla}" "${PRIMARY_PORT:-3000}"
-    else
-      printf 'Primary service : %s/  (proxies to 127.0.0.1:%s)\n' "${base}" "${PRIMARY_PORT:-3000}"
-    fi
-    printf 'Environment     : %s/%s/\n' "${base}" "${prefix}"
-    [[ "${TTYD_ENABLE:-true}" == "true" ]] && \
-      printf '%-15s : %s/%s/\n' \
-        "Terminal" \
-        "${base}" "${TTYD_PATH:-${prefix}/terminal}"
-    [[ "${DESKTOP_ENABLE:-true}" == "true" ]] && \
-      printf 'Desktop (%s) : %s/%s/\n' "$([[ "${DESKTOP_BACKEND:-novnc}" == selkies ]] && echo Selkies || echo noVNC)" "${base}" "${DESKTOP_PATH:-${prefix}/desktop}"
-    [[ "${DUFS_ENABLE:-true}" == "true" ]] && \
-      printf 'Files           : %s/%s/\n' "${base}" "${DUFS_PATH:-${prefix}/files}"
-    [[ "${USER_WEB_ENABLE:-true}" == "true" ]] && \
-      printf 'Daemons         : %s/%s\n' "${base}" "${USER_WEB_PATH:-pitchfork}"
-    printf 'Health          : %s/%s\n' "${base}" "${HEALTH_PATH:-${prefix}/healthz}"
-    if [[ "${SSH_ENABLE:-true}" == "true" ]]; then
-      printf 'SSH             : ssh %s@<host> -p %s\n' "${USER_NAME:-dev}" "${SSH_PORT:-22}"
-      printf 'mosh            : mosh -p 60000:60010 --ssh="ssh -p %s" %s@<host>\n' \
-        "${SSH_PORT:-22}" "${USER_NAME:-dev}"
-    fi
-    true
+    # From the same record the index is rendered from, so the two agree.
+    exec "${COMPONENTS_TOOL}" urls
     ;;
   logs)
     if [[ -n "${2:-}" ]]; then exec pitchfork logs --follow "$2"; fi
@@ -159,10 +144,6 @@ case "${1:-help}" in
     usage
     ;;
   *)
-    # A subcommand the active preset brings with it.
-    if [[ "$1" =~ ^[a-z][a-z0-9-]*$ && -x "${PRESET_COMMANDS}/$1" ]]; then
-      exec "${PRESET_COMMANDS}/$1" "${@:2}"
-    fi
     echo "unknown command: $1" >&2
     usage >&2
     exit 1

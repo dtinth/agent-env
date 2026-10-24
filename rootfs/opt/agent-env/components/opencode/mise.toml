@@ -1,0 +1,9 @@
+# OpenCode, installed into the home volume and upgraded at every start. To pin a
+# version, declare the tool yourself in ~/.config/mise/config.toml, which takes
+# precedence.
+#
+# `allow_builds` lets the package's postinstall script run; mise skips scripts by
+# default, and this one uses its own to select a native binary.
+
+[tools]
+"npm:@opencode/cli" = { version = "latest", allow_builds = ["@opencode/cli"] }
