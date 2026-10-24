@@ -252,22 +252,48 @@ function ComponentDetail({ c, id }: { c: Configurator; id: Component }) {
           <p class="r-verdict">Leave it off unless the agent needs to run containers.</p>
           <h3>The five flags, in plain words</h3>
           <p class="hint">
-            The configurator writes these into <code>compose.yaml</code> for you. They loosen the
-            sandbox the rootless engine runs in — still well short of <code>--privileged</code>.
+            The configurator writes these into <code>compose.yaml</code> for you. Each opens one
+            narrow thing the rootless engine needs, and leaves shut what <code>--privileged</code>{" "}
+            would throw open.
           </p>
           <dl class="r-flags">
-            <dt>
-              <code>cap_add: SYS_ADMIN</code>
-            </dt>
-            <dd>broad control of mounts and namespaces, which the inner engine needs</dd>
-            <dt>
-              unconfined <code>seccomp</code> · <code>AppArmor</code> · <code>systempaths</code>
-            </dt>
-            <dd>relax the kernel sandbox so the engine and its containers can start</dd>
-            <dt>
-              <code>/dev/net/tun</code>
-            </dt>
-            <dd>gives the inner engine its own network</dd>
+            <div class="flag">
+              <dt>
+                <code>cap_add: SYS_ADMIN</code>
+              </dt>
+              <dd class="grants">
+                <b>Opens</b> the mount and namespace control the engine uses to build containers.
+              </dd>
+              <dd class="denies">
+                <b>Still shut:</b> raw device I/O, loading kernel modules, and every other root
+                capability — <code>--privileged</code> would grant them all.
+              </dd>
+            </div>
+            <div class="flag">
+              <dt>
+                unconfined <code>seccomp</code> · <code>AppArmor</code> · <code>systempaths</code>
+              </dt>
+              <dd class="grants">
+                <b>Opens</b> the extra syscalls, self-mounts and sysctls the engine's own containers
+                need to start.
+              </dd>
+              <dd class="denies">
+                <b>Still shut:</b> the host's filesystem and devices — it only relaxes this inside
+                its own namespaces.
+              </dd>
+            </div>
+            <div class="flag">
+              <dt>
+                <code>/dev/net/tun</code>
+              </dt>
+              <dd class="grants">
+                <b>Opens</b> one network device, so the engine can run its own private network.
+              </dd>
+              <dd class="denies">
+                <b>Still shut:</b> the rest of <code>/dev</code> — <code>--privileged</code> hands
+                over every host device.
+              </dd>
+            </div>
           </dl>
         </>
       )}
