@@ -17,8 +17,6 @@ import {
   type Extras,
   isOn,
   provisionFiles,
-  repoName,
-  RepoRows,
   ScriptEditor,
   setOn,
   Switch,
@@ -26,7 +24,7 @@ import {
   YamlPreview,
 } from "./extras.tsx";
 
-type Sel = `c:${Component}` | "desktop" | `repo:${number}` | "script" | "limits";
+type Sel = `c:${Component}` | "desktop" | "script" | "limits";
 
 function Item(props: {
   sel: Sel;
@@ -180,26 +178,6 @@ function DesktopDetail({ c }: { c: Configurator }) {
   );
 }
 
-function RepoDetail({ x, i }: { x: Extras; i: number }) {
-  const r = x.repos[i];
-  const name = r.url.trim() ? repoName(r.url) : "New repository";
-  return (
-    <>
-      <Head kicker="Your component" title={name} />
-      <p class="pb-lede">
-        A folder with an <code>agent-env-component.toml</code>, kept in git. The startup script
-        clones it into <code>~/src/{r.url.trim() ? repoName(r.url) : "…"}</code> on the first start,
-        pulls it on the next ones, and runs <code>agent-env component install .</code> each time.
-      </p>
-      <RepoRows x={x} only={i} />
-      <p class="hint">
-        A private repository needs a token in the URL; pass it in through <code>.env</code>.
-      </p>
-      <YamlPreview x={x} />
-    </>
-  );
-}
-
 function RunsB({ c, x }: { c: Configurator; x: Extras }) {
   const [sel, pick] = useState<Sel>("desktop");
   // On a phone the list and the detail take turns: picking opens the detail.
@@ -234,6 +212,10 @@ function RunsB({ c, x }: { c: Configurator; x: Extras }) {
           Runs as <code>dev</code> before any component starts, every time the container starts.
           Make it safe to repeat. What it did is in <code>agent-env logs provision</code>.
         </p>
+        <p class="hint">
+          Components of your own go in here too: get the folder onto the disk (a{" "}
+          <code>git clone</code>, say) and run <code>agent-env component install</code> on it.
+        </p>
         <ScriptEditor x={x} rows={9} />
         <YamlPreview x={x} />
       </>
@@ -248,17 +230,7 @@ function RunsB({ c, x }: { c: Configurator; x: Extras }) {
         <LimitFields c={c} />
       </>
     );
-  else if (sel.startsWith("repo:")) {
-    const i = Number(sel.slice(5));
-    detail = x.repos[i] ? (
-      <RepoDetail x={x} i={i} />
-    ) : (
-      <p class="muted pb-gone">
-        Removed. It is no longer cloned or installed; a copy already in <code>~/src</code> stays
-        installed until <code>agent-env component uninstall</code>.
-      </p>
-    );
-  } else detail = <BuiltinDetail c={c} id={sel.slice(2) as Component} />;
+  else detail = <BuiltinDetail c={c} id={sel.slice(2) as Component} />;
 
   return (
     <div class={`pb ${open ? "open" : ""}`}>
@@ -282,30 +254,6 @@ function RunsB({ c, x }: { c: Configurator; x: Extras }) {
           {builtin("opencode", "at /")}
           {builtin("docker", "containers for the agent")}
           {builtin("smb", "smb://…/workspace")}
-        </ul>
-        <div class="pb-label">Yours</div>
-        <ul>
-          {x.repos.map((r, i) => (
-            <Item
-              sel={`repo:${i}`}
-              current={sel}
-              onSelect={setSel}
-              title={r.url.trim() ? repoName(r.url) : "New repository"}
-              sub="from git"
-            />
-          ))}
-          <li>
-            <button
-              type="button"
-              class="pb-add"
-              onClick={() => {
-                x.addRepo();
-                setSel(`repo:${x.repos.length}`);
-              }}
-            >
-              + Add from git
-            </button>
-          </li>
         </ul>
         <div class="pb-label">Setup</div>
         <ul>
