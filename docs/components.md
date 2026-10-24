@@ -19,10 +19,9 @@ The image comes with these:
 | `smb` | The workspace as an SMB share, for the iPad Files app or Finder. Sign in as `dev`; the password and the address to connect to are on the `/~env/` page. |
 
 The `smb` password is generated the first time it starts and kept from then on.
-To choose your own, set `SMB_PASSWORD` in your compose file. It is meant for an
-environment on a tailnet, where it is reachable as is, and the configurator only
-offers it there. Elsewhere you would have to publish port 445 yourself; never do
-that on a public address.
+To choose your own, set `SMB_PASSWORD` in your compose file. On a tailnet it is
+reachable as is. Elsewhere the configurator does not publish port 445, so forward
+it to the container yourself, on a network you trust; never on a public address.
 
 Choose them with one setting in your compose file:
 
