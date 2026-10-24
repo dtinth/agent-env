@@ -87,10 +87,11 @@ defaults plus a supplied command (`-e 'PRIMARY_COMMAND=python3 -m http.server
 `.github/workflows/docker.yml`. The suite reads the desktop backend from the
 enabled components; `SMOKE_DESKTOP_BACKEND` still overrides it.
 
-A clean opencode run reports 98 passed, 0 failed, 2 skipped — the oversized
+A clean opencode run reports 101 passed, 0 failed, 2 skipped — the oversized
 `*_FILE` guard and the startup-script checks, since it is given neither. The
-default-components run reports 100 passed, 0 failed, 1 skipped — the
-credential-isolation check, since nothing is supervised at `/` to inspect.
+default-components run reports 102 passed, 0 failed, 2 skipped — the
+credential-isolation check, since nothing is supervised at `/` to inspect, and
+where a component's `[env]` goes, which needs `opencode`.
 Skips are counted and printed rather than dropped, so a total that moves means a
 check appeared or vanished; `passed + skipped` is what stays constant across
 auth modes. A full build from cold cache takes ~10 minutes; the
@@ -524,13 +525,17 @@ be handed it, and the smoke suite asserts the gateway config adds no
 
 A component's `[env]` reaches login shells (through the profile snippet),
 `ssh box some-command` (through `/etc/environment`, which pam_env reads for every
-session), and daemons (the entrypoint copies it into the system supervisor's
-`[env]` at boot, which the user's supervisor inherits — so a component installed
-later reaches daemons from the next container start). `env.sh` is for values
+session), and daemons (the entrypoint puts it in the `user-supervisor` daemon's
+own `env` at boot, which the user's daemons inherit — so a component installed
+later reaches daemons from the next container start). It is deliberately not in
+the system supervisor's `[env]`: there it would reach oauth2-proxy, which reads
+`OAUTH2_PROXY_*` as configuration, and Caddy. `env.sh` is for values
 that have to be computed, and only login shells source it. A component may not
 set the environment's own plumbing (`PATH`, `HOME`, `DISPLAY`, the `MISE_*` and
 `PITCHFORK_*` directories and so on). `~/.agent-env/bin`, where the components'
-commands are linked, is first on `PATH` everywhere.
+commands are linked, is first on `PATH` everywhere, so a command there may not
+share a name with one of the system's (`sudo`, `pitchfork`, anything in
+`/usr/bin` and the like).
 
 ### How the OpenCode server itself is protected
 
@@ -838,8 +843,9 @@ you put above that block is yours and is left alone.
 
 Before the supervisor starts, `run-user-supervisor` runs the
 [startup scripts](#startup-scripts), so a component one of them installs is in
-place by the time `components` runs. The system supervisor waits up to 900 s for
-it to come up, to leave them room.
+place by the time `components` runs. The system supervisor waits for it to come
+up for 900 s plus `PROVISION_TIMEOUT` per script, so a slow but working set of
+scripts never times it out (which would restart it, and run them all again).
 
 Add your own alongside it:
 

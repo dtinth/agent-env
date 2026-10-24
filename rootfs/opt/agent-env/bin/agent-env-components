@@ -66,6 +66,11 @@ RESERVED_ENV = {
     "PITCHFORK_CONFIG_DIR", "MISE_DATA_DIR", "MISE_CONFIG_DIR",
     "MISE_SHARED_INSTALL_DIRS", "MISE_STATE_DIR", "MISE_CACHE_DIR",
 }
+# ~/.agent-env/bin is first on PATH, so a command there named like one of the
+# system's (sudo, pitchfork, caddy) would replace it for everything, the
+# entrypoint and the gateway included.
+SYSTEM_BIN_DIRS = ("/opt/agent-env/bin", "/usr/local/sbin", "/usr/local/bin",
+                   "/usr/sbin", "/usr/bin", "/sbin", "/bin")
 
 
 class ComponentError(Exception):
@@ -339,6 +344,10 @@ def load_component(folder: Path, rt: Runtime, source: str) -> dict:
                 raise ComponentError(f"bin/{entry.name}: not a file")
             if not os.access(entry, os.X_OK):
                 raise ComponentError(f"bin/{entry.name}: not executable (chmod +x it)")
+            shadowed = next((d for d in SYSTEM_BIN_DIRS if os.path.lexists(os.path.join(d, entry.name))), None)
+            if shadowed:
+                raise ComponentError(
+                    f"bin/{entry.name}: would replace the system's {shadowed}/{entry.name}; rename it")
             comp["bin"].append(entry.name)
 
     return comp
@@ -426,8 +435,8 @@ def collect(rt: Runtime, warn) -> tuple[list[dict], list[dict]]:
 def root_of(comps: list[dict], rt: Runtime) -> dict:
     for c in comps:
         if c["http"] and c["http"]["path"] == "":
-            return {"kind": "component", "name": c["name"], "title": c["title"],
-                    "summary": c["summary"], "port": c["http"]["port"]}
+            return {"kind": "component", "name": c["name"], "source": c["source"],
+                    "title": c["title"], "summary": c["summary"], "port": c["http"]["port"]}
     if rt.primary_command:
         return {"kind": "command", "title": "PRIMARY_COMMAND",
                 "summary": "Your PRIMARY_COMMAND, at /", "port": rt.primary_port}
@@ -713,7 +722,7 @@ def reconcile(rt: Runtime, boot: bool, reload: bool, warn, log) -> dict:
     write_atomic(STATE_FILE, json.dumps(state, indent=2) + "\n")
 
     if reload:
-        reload_gateway(warn)
+        reload_gateway()
     log(f"components: {', '.join(c['name'] for c in comps) or 'none'}"
         + (f"; skipped: {', '.join(s['name'] for s in skipped)}" if skipped else ""))
     return state
@@ -727,7 +736,7 @@ def _gid(group: str) -> int:
         return 0
 
 
-def reload_gateway(warn) -> None:
+def reload_gateway() -> None:
     sock = Path("/var/lib/caddy/admin.sock")
     if not sock.exists():
         # Not up yet (a provision script at boot); it reads the new files when it starts.
@@ -738,7 +747,11 @@ def reload_gateway(warn) -> None:
          "caddy", "reload", "--config", str(CADDYFILE), "--address", CADDY_ADMIN],
         capture_output=True, text=True)
     if r.returncode != 0:
-        warn("could not reload the gateway: " + (r.stderr.strip().splitlines() or ["?"])[-1])
+        # The new files were validated and stay in place, so the gateway picks
+        # them up when it next starts; say so rather than report success.
+        raise ComponentError(
+            "the gateway did not reload, so the change applies from the next container start: "
+            + (r.stderr.strip().splitlines() or ["?"])[-1])
 
 
 # ---------------------------------------------------------------------------
@@ -772,11 +785,9 @@ def pitchfork(args: list[str], cwd: str | None = None, check: bool = False) -> s
     return r
 
 
-def start_component(comp: dict, restart: bool = False) -> None:
+def start_component(comp: dict) -> None:
     if not comp["daemons"]:
         return
-    if restart:
-        stop_component(comp)
     # One at a time, dependencies first (see start_order): each start waits for
     # its daemon to be ready, so by the time a daemon is started everything it
     # depends on is already up and pitchfork has nothing to start twice.
@@ -903,8 +914,11 @@ def cmd_install(rt: Runtime, folder: str, force: bool) -> int:
 
     mise_install(comp)
     if supervisor_running():
-        changed = bool(old and old.get("pitchfork_hash") != comp.get("pitchfork_hash"))
-        start_component(comp, restart=changed)
+        # Stop what the old definition ran, not the new one's names: a daemon
+        # taken out of pitchfork.toml must not be left running.
+        if same and old and old.get("pitchfork_hash") != comp.get("pitchfork_hash"):
+            stop_component(old)
+        start_component(comp)
         started = f", {len(comp['daemons'])} daemon(s) running" if comp["daemons"] else ""
     else:
         started = ", starting with the environment" if comp["daemons"] else ""
@@ -995,10 +1009,11 @@ def cmd_urls(rt: Runtime) -> int:
 
 
 def cmd_env_toml(rt: Runtime) -> int:
-    """[env] lines for the system supervisor's config, so daemons see them."""
-    for c in load_state()["components"]:
-        for k, v in c["env"].items():
-            print(f"{k} = {json.dumps(v)}")
+    """Every component's [env], as the inside of a TOML inline table: the
+    entrypoint puts it in the user supervisor's daemon env, so the components'
+    daemons see it and the system's (the gateway's included) do not."""
+    pairs = [f"{k} = {json.dumps(v)}" for c in load_state()["components"] for k, v in c["env"].items()]
+    print(", ".join(pairs))
     return 0
 
 

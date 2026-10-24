@@ -199,7 +199,7 @@ start, and `install` reminds you when that applies.
 | `pitchfork.toml` | The daemons to keep running. See below. |
 | `mise.toml` | Tools to install with [mise](https://mise.jdx.dev), in the usual `[tools]` format. They are available everywhere, including to your daemons' `run` commands. They are installed when you install the component, and updated to the latest version at every container start unless you give an exact version. |
 | `env.sh` | A shell script run by every login shell: the browser terminal and SSH sessions. Use it for values that have to be computed, such as a password read from a file. Daemons and `ssh box some-command` do not see these values; a daemon that needs a computed value should work it out in its own `run` script. |
-| `bin/` | Commands, available everywhere: terminals, SSH, and daemons. Each needs to be executable and start with a `#!` line. Two components cannot provide a command with the same name. |
+| `bin/` | Commands, available everywhere: terminals, SSH, and daemons. Each needs to be executable and start with a `#!` line. Two components cannot provide a command with the same name, and a command cannot be named like one the system already has, such as `sudo` or `git`. |
 
 #### `pitchfork.toml`
 

@@ -16,12 +16,18 @@ health_path="$(value HEALTH_PATH)";   health_path="${health_path:-~env/healthz}"
 # The gateway is the one thing that is always true of a healthy container.
 curl -fsS --max-time 4 "http://127.0.0.1:${gateway_port}/${health_path}" >/dev/null
 
-# And whatever serves /, only when the image is supervising it: a component
-# that serves /, or PRIMARY_COMMAND. Deliberately not the primary port otherwise:
-# nothing is required to be listening there, and the gateway already answers with
-# the environment index if it isn't. Read from components.json rather than the
-# env file, because installing a component can change it after boot.
-root_port="$(jq -r 'if .root.kind == "none" then empty else .root.port end' \
+# Everything below runs in the user's supervisor, so with it off there is
+# nothing more to wait for.
+[[ "$(value USER_SUPERVISOR_ENABLE)" != false ]] || exit 0
+
+# And whatever serves /, only when the image is supervising it: a built-in
+# component that serves /, or PRIMARY_COMMAND. Deliberately not the primary port
+# otherwise: nothing is required to be listening there, and the gateway already
+# answers with the environment index if it isn't. Nor one of the user's own
+# components: like those below, that is theirs to fix. Read from
+# components.json rather than the env file, because installing a component can
+# change it after boot.
+root_port="$(jq -r 'if .root.kind == "none" or .root.source == "user" then empty else .root.port end' \
   /run/agent-env/components.json 2>/dev/null || true)"
 if [[ -n "${root_port}" ]]; then
   exec 3<>"/dev/tcp/127.0.0.1/${root_port}"
@@ -31,10 +37,7 @@ fi
 # "healthy" means the desktop, terminal and file manager are actually up, not
 # merely routed. Only the built-ins: one of the user's own that never comes up
 # is theirs to fix, and must not make an orchestrator restart the container.
-# Nothing to wait for when the user's supervisor, which runs them, is off.
-if [[ "$(value USER_SUPERVISOR_ENABLE)" != false ]]; then
-  for port in $(jq -r '.components[] | select(.source == "builtin" and .http != null) | .http.port' \
-      /run/agent-env/components.json 2>/dev/null); do
-    exec 3<>"/dev/tcp/127.0.0.1/${port}"
-  done
-fi
+for port in $(jq -r '.components[] | select(.source == "builtin" and .http != null) | .http.port' \
+    /run/agent-env/components.json 2>/dev/null); do
+  exec 3<>"/dev/tcp/127.0.0.1/${port}"
+done
