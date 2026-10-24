@@ -914,13 +914,12 @@ async function chooseComponents(
       warn("Inner published ports land in the tailnet namespace and need serve config.");
     }
   }
-  if (mode === "tailscale") {
-    await choose("smb", "Share the workspace over SMB, for the Files app or Finder?");
-    if (on.has("smb")) {
-      note(C.dim("  Sign in as dev; the password is on the /~env/ page."));
+  await choose("smb", "Share the workspace over SMB, for the Files app or Finder?");
+  if (on.has("smb")) {
+    note(C.dim("  Sign in as dev; the password is on the /~env/ page."));
+    if (mode !== "tailscale") {
+      note(C.dim("  Port 445 is not published: forward it yourself, on a network you trust."));
     }
-  } else if (on.delete("smb")) {
-    warn("The SMB share needs the tailnet mode, so it is off now.");
   }
   return sortComponents([...on]);
 }

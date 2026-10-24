@@ -253,9 +253,10 @@ wrong. It also does the things that are tedious by hand and easy to forget:
   OAuth one with no allow list. Everything in this container is root-capable.
 - Writes `AGENT_ENV_COMPONENTS` every time, even when it is the default, so a
   later image's default never changes what a deployment runs. It refuses
-  `desktop` with `desktop-selkies`, `smb` outside the tailnet mode (a file share
-  cannot sit behind the gateway's sign-in, so it must not be published), and
-  `desktop-selkies` on plain HTTP to anything but localhost.
+  `desktop` with `desktop-selkies`, and `desktop-selkies` on plain HTTP to
+  anything but localhost. It never publishes `smb`'s port 445 (a file share
+  cannot sit behind the gateway's sign-in); outside the tailnet mode the next
+  steps say to forward it yourself.
 - Emits all five host flags the `docker` component needs together, or none —
   four out of five leaves the daemon down.
 - Reads `PUID`/`PGID` off a host directory you mount, so files stay yours.
@@ -569,9 +570,10 @@ ttyd, dufs and oauth2-proxy are all bound to loopback.
 The `smb` component runs Samba as `dev`, sharing the workspace as `workspace` on
 port 445 — no capability needed, since Docker lets unprivileged processes bind
 low ports inside a container. Samba cannot sit behind the gateway's sign-in, so
-it is meant for a tailnet, where the Tailscale sidecar shares the container's
-network namespace and the tailnet is the boundary; the configurator offers it
-only there. Sign in as `dev`, with `SMB_PASSWORD` if it is set, or else a
+the configurator never publishes 445. On a tailnet the Tailscale sidecar shares
+the container's network namespace and the tailnet is the boundary; anywhere
+else each Compose project has its own network, and reaching it is yours to
+arrange (forward 445 to the container on a network you trust). Sign in as `dev`, with `SMB_PASSWORD` if it is set, or else a
 password generated on first start and kept in
 `~/.local/state/agent-env/smb-password`, so a device that saved it keeps working.
 The address and the password are on `/~env/` and in `agent-env urls`. Samba's

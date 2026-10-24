@@ -640,13 +640,6 @@ export function validate(a: Answers): Problem[] {
     );
   } else if (has("desktop") && has("desktop-selkies")) {
     field("components", "pick one desktop: desktop and desktop-selkies both live at /~env/desktop");
-  } else if (has("smb") && a.mode !== "tailscale") {
-    // SMB cannot sit behind the gateway's sign-in, and publishing 445 puts a
-    // file share on the open network. On a tailnet it needs neither.
-    field(
-      "components",
-      "the SMB share needs the tailnet mode, where nothing has to be published for it",
-    );
   } else if (has("desktop-selkies")) {
     // Selkies' page refuses to start outside a secure context: https, or
     // localhost. noVNC has no such rule, so this is the one place to say so.

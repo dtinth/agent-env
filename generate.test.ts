@@ -301,7 +301,7 @@ test("one desktop at most", () => {
   );
 });
 
-test("the SMB share is refused anywhere but a tailnet, and never published", () => {
+test("the SMB share is allowed in every mode, and never published", () => {
   const ts: Answers = {
     ...BASIC,
     mode: "tailscale",
@@ -325,12 +325,10 @@ test("the SMB share is refused anywhere but a tailnet, and never published", () 
       components: ["smb"],
     },
   ] as Answers[]) {
-    const problems = validate(a);
-    assertEquals(
-      problems.map((p) => p.field),
-      ["components"],
-    );
-    assert(problems[0].message.includes("tailnet"), problems[0].message);
+    assertEquals(validate(a), []);
+    const out = generate(a, { randomSecret: fixed })["compose.yaml"];
+    assert(out.includes("smb"), `${a.mode} dropped smb`);
+    assert(!out.includes("445"), `${a.mode} published SMB`);
   }
 });
 
@@ -449,8 +447,8 @@ test("the page's choices become components", () => {
     "docker",
     "smb",
   ]);
-  // SMB is offered only on a tailnet, and left behind like that mode's answers.
-  assertEquals(toAnswers({ ...picked, mode: "local" }).components.includes("smb"), false);
+  // SMB is not tied to the tailnet: it stays on in another mode.
+  assertEquals(toAnswers({ ...picked, mode: "local" }).components.includes("smb"), true);
   // And back, for a deployment imported into the form.
   assertEquals(
     toAnswers({ ...DEFAULT_FIELDS, ...fieldsFromAnswers(toAnswers(picked)) }).components,
