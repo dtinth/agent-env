@@ -505,6 +505,44 @@ button.pb-add:hover {
   font-size: 0.9rem;
 }
 
+button.pb-back {
+  display: none;
+}
+
+/* On a phone, the list and the detail take turns. */
+@media (max-width: 700px) {
+  .pb {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 0;
+  }
+  .pb-list {
+    border-right: none;
+    border-top-right-radius: var(--radius-lg);
+  }
+  .pb.open .pb-list,
+  .pb:not(.open) .pb-detail {
+    display: none;
+  }
+  .pb-item {
+    padding: 0.65rem 0.7rem;
+  }
+  .pb-detail {
+    padding: 1rem 1.1rem 0;
+  }
+  button.pb-back {
+    display: inline-block;
+    margin: 0 0 0.9rem;
+    font-size: 0.85rem;
+  }
+  .pb-facts {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.15rem;
+  }
+  .pb-facts dd + dt {
+    margin-top: 0.5rem;
+  }
+}
+
 /* --------------------------------------------------------- C — composer */
 
 .pc-compose {

@@ -45,6 +45,7 @@ function Item(props: {
   on?: boolean;
   onToggle?: (on: boolean) => void;
   dim?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <li>
@@ -59,7 +60,14 @@ function Item(props: {
           <span class="pb-item-title">{props.title}</span>
           <span class="pb-item-sub">{props.sub}</span>
         </span>
-        {props.onToggle && <Switch on={!!props.on} onChange={props.onToggle} label={props.title} />}
+        {props.onToggle && (
+          <Switch
+            on={!!props.on}
+            onChange={props.onToggle}
+            label={props.title}
+            disabled={props.disabled}
+          />
+        )}
       </div>
     </li>
   );
@@ -84,6 +92,7 @@ function Head(props: {
   on?: boolean;
   onToggle?: (on: boolean) => void;
   kicker: string;
+  disabled?: boolean;
 }) {
   return (
     <header class="pb-head">
@@ -96,7 +105,7 @@ function Head(props: {
       {props.onToggle && (
         <label class="pb-head-switch">
           <span>{props.on ? "On" : "Off"}</span>
-          <Switch on={!!props.on} onChange={props.onToggle} label="On" />
+          <Switch on={!!props.on} onChange={props.onToggle} label="On" disabled={props.disabled} />
         </label>
       )}
     </header>
@@ -114,8 +123,17 @@ function BuiltinDetail({ c, id }: { c: Configurator; id: Component }) {
         badges={e.badges}
         on={isOn(c, id)}
         onToggle={(on) => setOn(c, id, on)}
+        disabled={!offered(c, id)}
       />
       <p class="pb-lede">{e.summary}</p>
+      {!offered(c, id) && (
+        <div class="pb-blocked">
+          <p>
+            <b>Needs a tailnet.</b> A file share cannot sit behind the sign-in, so it is only
+            offered when this deployment is on a tailnet, where the tailnet is the boundary.
+          </p>
+        </div>
+      )}
       <Facts
         rows={[
           ["Shows up at", <code>{id === "smb" ? "smb://<host>/workspace" : e.where}</code>],
@@ -254,7 +272,16 @@ function RepoDetail({ x, i }: { x: Extras; i: number }) {
 }
 
 function RunsB({ c, x }: { c: Configurator; x: Extras }) {
-  const [sel, setSel] = useState<Sel>("desktop");
+  const [sel, pick] = useState<Sel>("desktop");
+  // On a phone the list and the detail take turns: picking opens the detail.
+  const [open, setOpen] = useState(false);
+  const setSel = (s: Sel) => {
+    pick(s);
+    setOpen(true);
+    if (window.matchMedia("(max-width: 700px)").matches) {
+      document.querySelector(".c-form")?.scrollIntoView();
+    }
+  };
   const f = c.fields;
   const builtin = (id: Component, sub: string) => (
     <Item
@@ -265,6 +292,8 @@ function RunsB({ c, x }: { c: Configurator; x: Extras }) {
       sub={sub}
       on={isOn(c, id)}
       onToggle={(on) => setOn(c, id, on)}
+      dim={!offered(c, id)}
+      disabled={!offered(c, id)}
     />
   );
   const files = provisionFiles(x);
@@ -307,7 +336,7 @@ function RunsB({ c, x }: { c: Configurator; x: Extras }) {
   } else detail = <BuiltinDetail c={c} id={sel.slice(2) as Component} />;
 
   return (
-    <div class="pb">
+    <div class={`pb ${open ? "open" : ""}`}>
       <nav class="pb-list">
         <div class="pb-label">Built in</div>
         <ul>
@@ -336,7 +365,7 @@ function RunsB({ c, x }: { c: Configurator; x: Extras }) {
             dim={f.opencode}
           />
           {builtin("docker", "needs host flags")}
-          {offered(c, "smb") && builtin("smb", "tailnet only")}
+          {builtin("smb", offered(c, "smb") ? "smb://…/workspace" : "needs a tailnet")}
         </ul>
         <div class="pb-label">Yours</div>
         <ul>
@@ -396,6 +425,9 @@ function RunsB({ c, x }: { c: Configurator; x: Extras }) {
         </div>
       </nav>
       <section class="pb-detail">
+        <button type="button" class="pb-back" onClick={() => setOpen(false)}>
+          ← All components
+        </button>
         {detail}
         <ComponentsProblem c={c} />
       </section>
