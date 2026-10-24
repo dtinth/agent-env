@@ -5,17 +5,21 @@ intro; everything detailed about how the environment behaves is in [Reference](#
 
 ## What this repo is
 
-A Docker image that turns an agent (OpenCode v2 by default) into a hosted,
-Google-authenticated workstation. The moving parts:
+A Docker image that turns an agent workstation into a hosted,
+sign-in-protected service, with OpenCode v2 as one component among others. The
+moving parts:
 
 - `Dockerfile` — the image. Debian trixie, XFCE + noVNC, Chromium, mise, and
   four fetched static binaries (pitchfork, ttyd, oauth2-proxy, caddy).
-- `rootfs/opt/agent-env/presets/` — what the environment is *for*. A preset is a
-  directory (`preset.env`, `tools.toml`, and optionally `run`,
-  `login.sh`, `environment`, `commands/`); the entrypoint knows nothing about
-  OpenCode and just runs whatever the active `AGENT_ENV_PRESET` provides.
-  `vanilla` is the default and installs no agent; `opencode` installs OpenCode. Tools every preset gets
-  (agent-browser) are separate, in `rootfs/opt/agent-env/mise.d/`.
+- `rootfs/opt/agent-env/components/` — the built-in components: what the
+  environment runs. Each is a directory with an `agent-env-component.toml` and a
+  `pitchfork.toml`, and optionally `mise.toml`, `env.sh` and `run`;
+  `AGENT_ENV_COMPONENTS` picks which are on. The entrypoint knows nothing about
+  any one of them (OpenCode included): `rootfs/opt/agent-env/bin/agent-env-components`
+  turns the enabled set into routes, the index, environment and mise links.
+  Tools every environment gets (agent-browser) are separate, in
+  `rootfs/opt/agent-env/mise.d/`. [`docs/components.md`](docs/components.md) is
+  the user-facing guide, including writing your own.
 - `rootfs/` — everything baked into the image's filesystem. The entrypoint is
   `rootfs/usr/local/bin/entrypoint.sh`; it validates configuration, renders the
   Caddyfile and the pitchfork daemon definitions, then execs pitchfork as PID 1.
@@ -40,8 +44,8 @@ Google-authenticated workstation. The moving parts:
 ## Running the smoke test
 
 It tests a live container, so it needs the image built and running first. CI
-runs it twice, and both are worth reproducing — the second covers a
-configuration the first cannot reach:
+runs it three times, and all are worth reproducing — each covers a
+configuration the others cannot reach:
 
 ```bash
 docker build -t agent-env:smoke .
@@ -51,7 +55,7 @@ docker run -d --name agent-env --shm-size=2g \
   -p 8080:8080 -p 2222:22 \
   -e AUTH_MODE=basic -e "GATEWAY_PASSWORD=${password}" \
   -e PUBLIC_URL=http://localhost:8080 \
-  -e AGENT_ENV_PRESET=opencode \
+  -e AGENT_ENV_COMPONENTS=opencode,desktop,terminal,files \
   agent-env:smoke
 
 # Wait for the image's own HEALTHCHECK before testing anything. Give up on
@@ -72,17 +76,24 @@ done
 CONTAINER=agent-env ./scripts/smoke-test.sh http://localhost:8080 "dev:${password}"
 ```
 
-The second run is the same without it (vanilla is the default) on a different port
-and container name, and a third adds a supplied command (`-e 'PRIMARY_COMMAND=python3
--m http.server "$PORT" --bind 127.0.0.1' -e 'SMOKE_PRIMARY_EXPECT=Directory listing'`) —
-see the `Smoke test, vanilla preset` steps in `.github/workflows/docker.yml`.
+The second run leaves `AGENT_ENV_COMPONENTS` unset (the default
+`desktop,terminal,files`) on a different port and container name, and gives it a
+startup script and an oversized `*_FILE`:
+`-v "$PWD/scripts/smoke-provision.sh:/etc/agent-env/provision.d/10-smoke:ro"
+-e SMOKE_OVERSIZE_FILE=/etc/ssl/certs/ca-certificates.crt`. The third is the
+defaults plus a supplied command (`-e 'PRIMARY_COMMAND=python3 -m http.server
+"$PORT" --bind 127.0.0.1' -e 'SMOKE_PRIMARY_EXPECT=Directory listing'`). See the
+`Smoke test, opencode component` and `Smoke test, default components` steps in
+`.github/workflows/docker.yml`. The suite reads the desktop backend from the
+enabled components; `SMOKE_DESKTOP_BACKEND` still overrides it.
 
-A clean run reports 78 passed (opencode preset) and 80 (vanilla), 0 failed,
-and one skip each — the oversized `*_FILE` guard when the container was not
-given one, and the credential-isolation check when there is no primary service
-to inspect. Skips are counted and printed rather than dropped, so a total that
-moves means a check appeared or vanished; `passed + skipped` is what stays
-constant across auth modes. A full build from cold cache takes ~10 minutes; the
+A clean opencode run reports 98 passed, 0 failed, 2 skipped — the oversized
+`*_FILE` guard and the startup-script checks, since it is given neither. The
+default-components run reports 100 passed, 0 failed, 1 skipped — the
+credential-isolation check, since nothing is supervised at `/` to inspect.
+Skips are counted and printed rather than dropped, so a total that moves means a
+check appeared or vanished; `passed + skipped` is what stays constant across
+auth modes. A full build from cold cache takes ~10 minutes; the
 container reaches healthy in well under a minute.
 
 ---
@@ -180,7 +191,7 @@ If you meet the old error on an older image, that is the cause. The bound is
 
 ### 4. The container needs the CA too
 
-OpenCode and agent-browser are no longer baked into the image: the entrypoint
+OpenCode and agent-browser are not baked into the image: the entrypoint
 installs them with mise at first start. In the cloud sandbox that fetch goes
 through the same intercepting proxy, so run the smoke containers with the CA
 mounted and the two variables set, or the install fails and OpenCode never
@@ -239,8 +250,13 @@ wrong. It also does the things that are tedious by hand and easy to forget:
   a terminal, and blank keeps the one `.env` has.
 - **Refuses** to write a public-domain deployment with `AUTH_MODE=none`, or an
   OAuth one with no allow list. Everything in this container is root-capable.
-- Emits all four rootless-Docker host flags together, or none — three out of
-  four leaves the daemon down.
+- Writes `AGENT_ENV_COMPONENTS` every time, even when it is the default, so a
+  later image's default never changes what a deployment runs. It refuses
+  `desktop` with `desktop-selkies`, `smb` outside the tailnet mode (a file share
+  cannot sit behind the gateway's sign-in, so it must not be published), and
+  `desktop-selkies` on plain HTTP to anything but localhost.
+- Emits all five host flags the `docker` component needs together, or none —
+  four out of five leaves the daemon down.
 - Reads `PUID`/`PGID` off a host directory you mount, so files stay yours.
 - Publishes `:80` alongside the HTTPS port in domain mode, because ACME only
   ever validates on 80 or 443, and the HTTPS port may be neither.
@@ -365,10 +381,14 @@ does, so whatever answers at `/` owns its entire path space:
 |---|---|
 | `/~env/` | index of what this environment is running |
 | `/~env/healthz` | health probe, never behind auth |
-| `/~env/terminal` | a login shell, over ttyd |
-| `/~env/desktop` | XFCE over noVNC, or Selkies with `DESKTOP_BACKEND=selkies` |
-| `/~env/files` | the workspace file manager |
+| `/~env/terminal` | a login shell, over ttyd (the `terminal` component) |
+| `/~env/desktop` | XFCE over noVNC (`desktop`), or over Selkies (`desktop-selkies`) |
+| `/~env/files` | the workspace file manager (`files`) |
+| `/~env/<name>` | a component of your own, by default |
 | `/~env/daemons` | redirects to `/pitchfork` (see below) |
+
+A component's path exists only while that component is on; with it off, the
+path is one of the unknown ones below.
 
 An unknown path under the prefix is answered with a 404 by the gateway rather
 than being passed through, so a request addressed to the environment never
@@ -393,67 +413,131 @@ generates it — which is the whole reason for choosing it. The prefix is fixed
 rather than configurable: it is a documented contract, and a knob would only
 make this table wrong.
 
-### Presets, and what lives at `/`
+### Components, and what lives at `/`
 
-`AGENT_ENV_PRESET` decides what the environment is for. A preset is a directory
-under [`rootfs/opt/agent-env/presets`](rootfs/opt/agent-env/presets): the mise
-tools it installs, the primary service it supervises (if any), and any extra
-`agent-env` commands. The entrypoint itself knows nothing about OpenCode; it runs
-whatever the active preset provides, and the gateway treats every primary service
-the same way: as a plain service on `PRIMARY_PORT`.
+What the environment runs is a set of **components**. A component is a directory
+with an `agent-env-component.toml` (its name, title, optional web route, links
+and `[env]`) and usually a `pitchfork.toml` (its daemons), plus optionally a
+`mise.toml` (tools), an `env.sh` (sourced by login shells), `bin/` (commands) and
+a `run` script. The entrypoint knows nothing about any particular one, OpenCode
+included. [`docs/components.md`](docs/components.md) is the user-facing guide to
+choosing them and writing your own; this section is how they are wired.
 
-| Preset | Installs | `/` |
+The built-in ones are in
+[`rootfs/opt/agent-env/components`](rootfs/opt/agent-env/components), and
+`AGENT_ENV_COMPONENTS` picks them:
+
+| Component | What | Where |
 |---|---|---|
-| `vanilla` (default) | nothing of its own | whatever answers on `PRIMARY_PORT` — yours, or `PRIMARY_COMMAND` |
-| `opencode` | OpenCode | OpenCode's web UI, supervised on `PRIMARY_PORT`, behind a small proxy that adds its login |
+| `desktop` | XFCE on a virtual display, over noVNC | `/~env/desktop` |
+| `desktop-selkies` | the same desktop over Selkies (prototype); conflicts with `desktop`, since both serve `/~env/desktop` | `/~env/desktop` |
+| `terminal` | a login shell, over ttyd | `/~env/terminal` |
+| `files` | dufs, over the workspace | `/~env/files` |
+| `opencode` | OpenCode's web UI and API | `/` |
+| `docker` | a rootless Docker engine of your own; see [Docker inside the container](#docker-inside-the-container) | — |
+| `smb` | the workspace over SMB, as `dev`, on port 445; see [The SMB share](#the-smb-share) | `smb://<host>/workspace` |
 
-Both keep the same desktop, terminal (a login shell), file manager, SSH and
-agent-browser. Under `opencode`, `agent-env tui` attaches the OpenCode TUI and `agent-env password`
-prints the server's password; those commands belong to the preset and do not
-exist elsewhere.
+Unset, `AGENT_ENV_COMPONENTS` is `desktop,terminal,files`. Set, it *replaces*
+that list rather than adding to it — so OpenCode with the defaults is
+`opencode,desktop,terminal,files` — and set but empty means none at all. An
+unknown name, or two components claiming the same path, refuses to start.
+SSH, sign-in, the `/~env/` index and `/pitchfork` are not components; they are
+always there.
 
-With `vanilla`, `/` proxies to `PRIMARY_PORT` (default `3000`). Either start
-something there yourself, or have the container run it for you:
+The user's own components are links in `~/.agent-env/components/<name>`, made by
+`agent-env component install`. They are on for as long as they are there, and
+are not listed in `AGENT_ENV_COMPONENTS`. A broken one is skipped with a warning
+rather than stopping the container; a broken built-in, which the operator asked
+for by name, is fatal.
+
+The settings this replaced are refused, not ignored: `AGENT_ENV_PRESET`,
+`DESKTOP_ENABLE`, `DESKTOP_BACKEND`, `TTYD_ENABLE`, `DUFS_ENABLE` and
+`DOCKER_ROOTLESS_ENABLE` each stop the container at startup, printing the
+`AGENT_ENV_COMPONENTS` value that means the same thing. Silently dropping one
+would turn off something the operator asked for — OpenCode, say — with no sign
+of why. The services' ports and paths are no longer settings either
+(`DUFS_PATH`, `TTYD_PORT` and the like): each is fixed in its component's files.
+
+#### One record, every reader
+
+`rootfs/opt/agent-env/bin/agent-env-components` (standard-library Python, since
+it runs before mise has installed anything) is the reconciler. The entrypoint
+runs `reconcile --boot` as root before anything starts, and
+`agent-env component install` and `uninstall` run the same code under sudo
+later. From the enabled set it writes:
+
+| File | For |
+|---|---|
+| `/run/agent-env/components.json` | what is enabled and what serves `/`, for the healthcheck, `agent-env urls` and the smoke test |
+| `/run/agent-env/caddy/{routes,root,errors}.caddy` | imported by the Caddyfile |
+| `/opt/agent-env/web/index.html` | the `/~env/` index |
+| `/etc/environment`, `/etc/profile.d/98-agent-env-components.sh` | each component's `[env]`, and its `env.sh` |
+| `~/.config/mise/conf.d/agent-env-<name>.toml` | links to each component's `mise.toml` |
+| `~/.agent-env/bin/<command>` | links to each component's `bin/` entries |
+
+So the index, `agent-env urls` and the routes cannot disagree about what is
+running: they are rendered from the same record. Installing a component at
+runtime rewrites the imports, validates the Caddyfile (putting the old imports
+back if it is rejected) and reloads Caddy through its admin socket — no restart.
+
+#### What lives at `/`
+
+Exactly one of these, in this order:
+
+1. **A component whose `[http] path = "/"`** — `opencode` is the built-in one.
+   Only one component may claim it.
+2. **`PRIMARY_COMMAND`**, run under a login shell in the workspace as the dev
+   user, in their own supervisor as the `primary` daemon, with the port
+   (`PRIMARY_PORT`, default `3000`) in `$PORT`. It is restarted if it exits, and
+   `agent-env logs primary` follows it. Together with the `opencode` component it
+   is refused at startup: both would want `/`.
+3. **Whatever you run on `PRIMARY_PORT` yourself.**
 
 ```
-AGENT_ENV_PRESET=vanilla
 PRIMARY_PORT=3000
 PRIMARY_COMMAND=npm run dev -- --port $PORT
 ```
 
-`PRIMARY_COMMAND` runs under a login shell in the workspace as the dev user, in
-the dev user's own supervisor as the `primary` daemon, with the port in `$PORT`.
-It is restarted if it exits, and `agent-env logs primary` follows it. Only
-`vanilla` takes one: every other preset already has a primary service of its own.
-
-With nothing listening on the port, `/` serves the `/~env/` index instead of a
-bare 502, so an empty workstation explains itself. The status code stays `502` —
-the page renders, but nothing is pretending there is an application when there
-isn't, so an ingress health check pointed at `/` still reports the truth. Start
-your dev server and it takes over `/` and everything below it immediately; no
-gateway restart, and the reserved prefix is untouched. That fallback only exists
-while the container supervises nothing: a `primary` that is down surfaces as a
-real 502.
+In the third case only, with nothing listening on the port, `/` serves the
+`/~env/` index instead of a bare 502, so an empty workstation explains itself.
+The status code stays `502` — the page renders, but nothing is pretending there
+is an application when there isn't, so an ingress health check pointed at `/`
+still reports the truth. Start your dev server and it takes over `/` and
+everything below it immediately; no gateway restart, and the reserved prefix is
+untouched. When the container supervises `/` (the first two cases) there is no
+fallback: a server that is down surfaces as a real 502.
 
 Caddy falls back only for errors *it* generates — a refused connection. An app
 that is up and answering its own 502 shows its own error, which is what you want
 while debugging it. A genuinely broken `/~env/` service is likewise never
 papered over.
 
-**A preset's credential never reaches anything else, because the gateway never
-holds one.** If a preset's server has a login of its own, the preset puts a small
-proxy in front of that server and adds the login there; to the gateway, the
-healthcheck and everything else it is just a service on `PRIMARY_PORT`. So
-`PRIMARY_COMMAND`, and anything you run on the port yourself, can never be handed
-it, and the smoke suite asserts the gateway config adds no `Authorization` header
-at all. The container's `HEALTHCHECK` always probes the gateway, and probes
-`PRIMARY_PORT` only when the container is supervising something there.
+**A component's credential never reaches anything else, because the gateway
+never holds one.** If a component's server has a login of its own, the component
+puts a small proxy in front of that server and adds the login there; to the
+gateway, the healthcheck and everything else it is just a service that needs
+none. So `PRIMARY_COMMAND`, and anything you run on the port yourself, can never
+be handed it, and the smoke suite asserts the gateway config adds no
+`Authorization` header at all.
+
+#### Environment and commands
+
+A component's `[env]` reaches login shells (through the profile snippet),
+`ssh box some-command` (through `/etc/environment`, which pam_env reads for every
+session), and daemons (the entrypoint copies it into the system supervisor's
+`[env]` at boot, which the user's supervisor inherits — so a component installed
+later reaches daemons from the next container start). `env.sh` is for values
+that have to be computed, and only login shells source it. A component may not
+set the environment's own plumbing (`PATH`, `HOME`, `DISPLAY`, the `MISE_*` and
+`PITCHFORK_*` directories and so on). `~/.agent-env/bin`, where the components'
+commands are linked, is first on `PATH` everywhere.
 
 ### How the OpenCode server itself is protected
 
-The `opencode` preset runs two things as one supervised service, the `primary`
-daemon: `opencode serve --service` on `127.0.0.1:4096`, and a Caddy on
-`PRIMARY_PORT` in front of it. `--service` registers the server as OpenCode's
+The `opencode` component runs two things as one daemon,
+`agent-env-opencode/server` in the user's supervisor: `opencode serve --service`
+on `127.0.0.1:4096`, and a small Caddy on `127.0.0.1:4097` in front of it. The
+gateway routes `/` to 4097. `--service` registers the server as OpenCode's
 shared service, so the `opencode` CLI's default discovery finds it instead of
 spawning a second one. The server has its own HTTP basic auth (user `opencode`)
 with a password it generates itself and records in
@@ -461,17 +545,33 @@ with a password it generates itself and records in
 to every request. Users authenticate once at the gateway and never see it. The
 password belongs to one server process, so if either half dies the daemon does too
 and pitchfork starts both again with a fresh one; and the Caddy only starts
-listening once the server is up, so `PRIMARY_PORT` answering means the whole thing
-is ready. Port 4096 is the
-server's, so `PRIMARY_PORT=4096` is refused.
+listening once the server is up, so 4097 answering means the whole thing is
+ready. `PRIMARY_PORT` plays no part in it.
 
-Inside a login shell, `OPENCODE_SERVER` points the CLI at the server itself
-(4096) with its password in `OPENCODE_SERVER_PASSWORD`, and `agent-env password`
-prints it. Setting `OPENCODE_SERVER_PASSWORD` yourself has no effect.
+The component's `[env]` sets `OPENCODE_SERVER=http://127.0.0.1:4096` (the server
+itself, not the proxy) and `OPENCODE_DISABLE_AUTOUPDATE=1`, and its `env.sh`
+reads the password into `OPENCODE_SERVER_PASSWORD` in every login shell. So
+`opencode` in the browser terminal or over SSH attaches to the shared server,
+`opencode run` uses it too, and `$OPENCODE_SERVER_PASSWORD` is the password
+should you need it. Setting `OPENCODE_SERVER_PASSWORD` yourself has no effect.
 
-Only ports **8080** and **22** listen on external interfaces.
-The OpenCode server, VNC, websockify, ttyd and oauth2-proxy are all bound to
-loopback.
+Only ports **8080** and **22** listen on external interfaces, plus **445** with
+the `smb` component. The OpenCode server and its proxy, VNC, websockify, Selkies,
+ttyd, dufs and oauth2-proxy are all bound to loopback.
+
+### The SMB share
+
+The `smb` component runs Samba as `dev`, sharing the workspace as `workspace` on
+port 445 — no capability needed, since Docker lets unprivileged processes bind
+low ports inside a container. Samba cannot sit behind the gateway's sign-in, so
+it is meant for a tailnet, where the Tailscale sidecar shares the container's
+network namespace and the tailnet is the boundary; the configurator offers it
+only there. Sign in as `dev`, with `SMB_PASSWORD` if it is set, or else a
+password generated on first start and kept in
+`~/.local/state/agent-env/smb-password`, so a device that saved it keeps working.
+The address and the password are on `/~env/` and in `agent-env urls`. Samba's
+own state, its password database included, is under
+`~/.local/state/agent-env/smb`.
 
 ### SSH host keys
 
@@ -501,12 +601,13 @@ and drop privileges for everything else. It drops them aggressively:
 
 | Runs as | Processes |
 |---|---|
-| `root` | pitchfork (PID 1), sshd, the log forwarder, and the wrapper that starts the system D-Bus (`dbus-daemon` itself drops to `messagebus`) |
+| `root` | pitchfork (PID 1), sshd, the log forwarder, and, when a desktop component is on, the wrapper that starts the system D-Bus (`dbus-daemon` itself drops to `messagebus`) |
 | `gateway` (system account, no shell, **no sudo**) | Caddy and oauth2-proxy |
-| `dev` (uid 1000, passwordless sudo) | everything you actually work in — the OpenCode server, Xvfb, the whole XFCE desktop, x11vnc, websockify, ttyd, agent-browser and Chromium, plus your own pitchfork supervisor |
+| `dev` (uid 1000, passwordless sudo) | your own pitchfork supervisor, and so every component's daemons — the OpenCode server and its proxy, Xvfb, the whole XFCE desktop, x11vnc, websockify, Selkies, ttyd, dufs, the rootless Docker engine, smbd — plus agent-browser and Chromium, `PRIMARY_COMMAND`, and the startup scripts |
 
 So **the desktop and everything in it runs as `dev`**, never root — open a
-terminal on the noVNC desktop and you are `dev`, same as over SSH.
+terminal on the noVNC desktop and you are `dev`, same as over SSH. That holds
+for a component of your own too: it cannot ask to run as root.
 
 The two network-facing proxies get their own throwaway account precisely
 *because* `dev` has passwordless sudo: a hole in the edge shouldn't hand over
@@ -555,21 +656,21 @@ See [`.env.example`](.env.example) for the annotated list. The essentials:
 | `GITHUB_USERS` / `GITHUB_ORG` / `GITHUB_TEAM` | — | The `github` allow list; at least one, or an `ALLOWED_EMAIL*` |
 | `ALLOWED_EMAILS`, `ALLOWED_EMAIL_DOMAINS` | — | Who may sign in |
 | `OAUTH2_PROXY_COOKIE_SECRET` | generated | Set it to survive restarts cleanly |
-| `AGENT_ENV_PRESET` | `vanilla` | What the environment is for: `vanilla` or `opencode` (see [Presets](#presets-and-what-lives-at-)) |
-| `PRIMARY_COMMAND` | — | `vanilla` only: a command to run and supervise at `/`, with the port in `$PORT` |
+| `AGENT_ENV_COMPONENTS` | `desktop,terminal,files` | The built-in components to run; setting it replaces the list (see [Components](#components-and-what-lives-at-)) |
+| `PRIMARY_COMMAND` | — | A command to run and supervise at `/`, with the port in `$PORT`; not with `opencode` |
 | `WORKSPACE_DIR` | `/workspace` | Where the agent, terminals and file manager start |
-| `PRIMARY_PORT` | `3000` | The port `/` proxies to. The `opencode` preset's server listens here |
+| `PRIMARY_PORT` | `3000` | The port `/` proxies to when no component serves it |
 | `SSH_AUTHORIZED_KEYS` | — | Newline- or `;`-separated public keys |
 | `SSH_PASSWORD` | — | Enables password auth (prefer keys) |
-| `DESKTOP_ENABLE` | `true` | XFCE + noVNC |
-| `DESKTOP_BACKEND` | `novnc` | `novnc` or `selkies` (prototype; see [Selkies backend](#selkies-backend-prototype)) |
 | `DESKTOP_RESOLUTION` | `1920x1080x24` | Virtual display geometry, `WxH` or `WxHxD` |
 | `DESKTOP_DPI` | `96` | Text and window scale (`192` is 200%, for a 4K screen); sets Xvfb's DPI, XFCE's `Xft/DPI` and `Xft.dpi` |
-| `TTYD_ENABLE` | `true` | Browser terminal (a login shell) at `/~env/terminal` |
+| `TTYD_WRITABLE` | `true` | Whether the browser terminal accepts input |
 | `MISE_TOOLS` | — | Extra global tools, e.g. `python@3.13 go@latest` |
-| `USER_SUPERVISOR_ENABLE` | `true` | Run the dev user's own pitchfork at boot |
+| `USER_SUPERVISOR_ENABLE` | `true` | Run the dev user's own pitchfork at boot — and with it every component |
 | `USER_WEB_ENABLE`, `USER_WEB_PATH` | `true`, `pitchfork` | pitchfork's web dashboard |
-| `DUFS_ENABLE`, `DUFS_PATH`, `DUFS_ROOT` | `true`, `~env/files`, `/workspace` | the file manager |
+| `DUFS_ROOT`, `DUFS_ARGS` | `/workspace`, — | What the file manager serves, and extra dufs flags |
+| `SMB_PASSWORD` | generated | The `smb` component's password for `dev` |
+| `PROVISION_TIMEOUT` | `900` | Seconds each [startup script](#startup-scripts) may take |
 | `AGENT_ENV_STATE_DIR` | `/var/lib/agent-env` | Where the SSH host keys are kept |
 | `X_TCP_ENABLE` | `false` | Let the display accept TCP (still cookie-gated) |
 | `TZ`, `PUID`, `PGID` | `UTC`, `1000`, `1000` | Timezone and uid/gid remapping |
@@ -615,8 +716,8 @@ and checks oauth2-proxy actually starts.
 ### Provider credentials for OpenCode
 
 Either pass API keys as environment variables (`ANTHROPIC_API_KEY`,
-`OPENAI_API_KEY`, …), or sign in interactively with `/connect` in the TUI — that
-is persisted in the `opencode-state` volume and survives restarts.
+`OPENAI_API_KEY`, …), or sign in interactively with `/connect` in the web UI or
+the TUI — that is persisted in the home volume and survives restarts.
 
 You can also drop a config in without rebuilding:
 
@@ -632,14 +733,19 @@ You can also drop a config in without rebuilding:
 ```bash
 docker exec -it agent-env agent-env status      # state of every service
 docker exec -it agent-env agent-env urls        # what this container serves
-docker exec -it agent-env agent-env password    # the OpenCode server password
 docker exec -it agent-env agent-env logs caddy  # follow one service
+docker exec -it agent-env agent-env logs provision  # what the startup scripts did
 docker exec -it agent-env agent-env top         # pitchfork's interactive dashboard
 docker exec -it agent-env agent-env config      # the rendered gateway config
 docker exec -it agent-env agent-env daemons     # the rendered daemon definitions
-docker exec -it agent-env agent-env restart primary
-docker exec -it agent-env agent-env tui         # attach the OpenCode TUI from a shell
+docker exec -it agent-env agent-env restart primary  # PRIMARY_COMMAND
+docker exec -it agent-env agent-env component list  # components, and whether they run
 ```
+
+`agent-env component install|uninstall|list|check` manages components; see
+[`docs/components.md`](docs/components.md). With the `opencode` component,
+`opencode` in a login shell (the browser terminal, or SSH) attaches the TUI to
+the shared server, and `$OPENCODE_SERVER_PASSWORD` is its password.
 
 ### Supervision
 
@@ -647,7 +753,15 @@ docker exec -it agent-env agent-env tui         # attach the OpenCode TUI from a
 zombies are reaped and `docker stop` shuts every daemon down in order — a clean
 exit takes a few seconds, well inside Docker's grace period.
 
-Daemons declare what they need rather than guessing at timing:
+There are two supervisors. The system one (PID 1, root) runs only the plumbing:
+`sshd`, `dbus` (only when a desktop component is on — the system bus has to be
+root's), `oauth2-proxy` (OAuth modes), `caddy`, `user-supervisor` and
+`zz-log-forward`. Everything else — every component's daemons and
+`PRIMARY_COMMAND` — runs in the dev user's own supervisor, described
+[below](#your-own-daemons--including-the-components).
+
+Daemons declare what they need rather than guessing at timing, as in the
+`desktop` component's `pitchfork.toml`:
 
 ```toml
 [daemons.x11vnc]
@@ -664,9 +778,20 @@ directories and sudos into it for you. A bare `pitchfork` resolves to the
 fails on permissions. Use `agent-env status` there.
 
 pitchfork captures each daemon's output into its own log store, which is what
-`agent-env logs` reads. A small `zz-log-forward` daemon also streams everything to
-PID 1's stdout, so `docker logs -f agent-env` and your log driver still see the lot,
-prefixed with `[global/<daemon>]`.
+`agent-env logs` and `pitchfork logs` read. A small `zz-log-forward` daemon also
+streams both supervisors' output to PID 1's stdout, so `docker logs -f agent-env`
+and your log driver still see the lot, prefixed with `[global/<daemon>]` for the
+system's and `[agent-env-<component>/<daemon>]` for the components'. The user's
+set of daemons grows after boot (components start once the supervisor is up, and
+can be installed at any time), so the forwarder notices new ones and follows them
+too.
+
+The container's `HEALTHCHECK` (`/opt/agent-env/bin/healthcheck`) probes the
+gateway; whatever serves `/`, when the container supervises it (a component, or
+`PRIMARY_COMMAND`); and the web port of every enabled *built-in* component, so
+"healthy" means the desktop, terminal and file manager are actually up rather
+than merely routed. Your own components never affect it: one that never comes up
+is yours to fix, and must not make an orchestrator restart the container.
 
 Logs are rotated so they cannot fill the disk. pitchfork prunes both supervisors'
 stores hourly, keeping the last `LOG_RETENTION_LINES` lines (default `10000`) per
@@ -682,28 +807,39 @@ Run `scripts/smoke-test.sh` against a live container to check the whole thing:
 ./scripts/smoke-test.sh http://localhost:8080 dev:changeme
 ```
 
-### Your own daemons — including the primary service
+### Your own daemons — including the components'
 
 The system supervisor is root's and stays that way. You get a **second,
 unprivileged pitchfork supervisor of your own** — its own state, socket and
 logs — so `pitchfork` as `dev` means *your* daemons and can't touch the
 container's.
 
-**The primary service runs there** — the OpenCode server under the `opencode`
-preset, or your `PRIMARY_COMMAND` — not in the root supervisor. It is the thing
-you are here to use rather than part of the plumbing, so you can restart it,
-read its logs and watch its memory without sudo — from the terminal, or from
-pitchfork's web UI at `<PUBLIC_URL>/pitchfork`:
+**Every component's daemons run there**, as `dev`, each under its component's
+namespace: `agent-env-desktop/xvfb`, `agent-env-desktop/session`,
+`agent-env-desktop/x11vnc`, `agent-env-desktop/novnc`, `agent-env-terminal/ttyd`,
+`agent-env-files/dufs`, `agent-env-opencode/server`, `agent-env-docker/dockerd`,
+`agent-env-smb/smbd`, and yours alongside. So does `PRIMARY_COMMAND`, as
+`primary`. They are the things you are here to use rather than the plumbing, so
+you can restart them, read their logs and watch their memory without sudo — from
+the terminal, or from pitchfork's web UI at `<PUBLIC_URL>/pitchfork`:
 
 ```bash
-pitchfork restart opencode      # no sudo
-pitchfork logs -f opencode
+pitchfork restart agent-env-opencode/server      # no sudo
+pitchfork logs -f agent-env-opencode/server
 ```
 
-Its definition lives in a managed block at the end of
-`~/.config/pitchfork/config.toml`, rewritten on every start so an existing
-config volume picks up changes. Anything you put above that block is yours and
-is left alone.
+The supervisor's config, `~/.config/pitchfork/config.toml`, ends in a managed
+block rewritten on every start, so an existing config volume picks up changes.
+It holds `primary`, when `PRIMARY_COMMAND` is set, and a boot daemon,
+`components`, that runs `agent-env-components start-all` once the supervisor is
+up: it starts each component's daemons from that component's own
+`pitchfork.toml`, one at a time with dependencies first, and then exits. Anything
+you put above that block is yours and is left alone.
+
+Before the supervisor starts, `run-user-supervisor` runs the
+[startup scripts](#startup-scripts), so a component one of them installs is in
+place by the time `components` runs. The system supervisor waits up to 900 s for
+it to come up, to leave them room.
 
 Add your own alongside it:
 
@@ -718,8 +854,9 @@ retry = true
 
 $ pitchfork start api
 $ pitchfork list
-global/api       running
-global/opencode  running
+global/api                  running
+agent-env-terminal/ttyd     running
+agent-env-files/dufs        running
 $ pitchfork logs -f api
 $ pitchfork tui                # the same dashboard, in the terminal
 ```
@@ -740,13 +877,13 @@ Project daemons are usually better off in a `pitchfork.toml` next to your code �
 system services sudo into root for you; `agent-env mine` lists just yours.
 
 Set `USER_SUPERVISOR_ENABLE=false` if you don't want the user supervisor running
-at boot — you can still start one on demand.
+at boot — you can still start one on demand. Nothing then starts the components'
+daemons or `PRIMARY_COMMAND`, and the entrypoint says so.
 
 Because the two supervisors cannot see each other, nothing in the system set
-`depends` on the primary service any more. Caddy is a proxy and does not need
-its upstream at startup, and when the container supervises a primary service its
-health check tests that port as well as the gateway, so "healthy" still means the
-service is actually up.
+`depends` on anything a component runs. Caddy is a proxy and does not need its
+upstreams at startup, and the health check tests them as well as the gateway, so
+"healthy" still means they are actually up.
 
 Two details worth knowing if you go poking at this:
 
@@ -773,17 +910,31 @@ started under it warns about `setlocale` before doing anything else. The image
 removes Debian's own `AcceptEnv` line for the same reason. `TERM`, `COLORTERM`
 and `NO_COLOR` still come across.
 
+### Startup scripts
+
+Executables in `/etc/agent-env/provision.d/` — supplied through compose
+`configs:` — run on every start, before the user's supervisor and so before any
+component's daemons: `run-user-supervisor` runs `/opt/agent-env/bin/provision`
+first. They run as `dev` in a login shell, in the workspace, one at a time in
+name order, each through `bash` so a config mounted without its executable bit
+still runs. Each gets `PROVISION_TIMEOUT` seconds (default 900); a failure or a
+timeout is logged and the next one runs, because a flaky network must never keep
+the environment from starting. Their output goes to the user-supervisor's log and
+to `~/.local/state/agent-env/provision.log`, which `agent-env logs provision`
+prints. [`docs/components.md`](docs/components.md#setting-things-up-when-the-container-starts)
+has the compose snippet and how to write them.
+
 ### Docker inside the container
 
-Off by default. Set `DOCKER_ROOTLESS_ENABLE=true` and the dev user gets their
-own **rootless Docker engine**, supervised alongside their other daemons — so
-an agent can bring up Postgres, Redis or anything else in a container without
-being handed the host's docker socket:
+Off by default. Add the `docker` component (`AGENT_ENV_COMPONENTS=desktop,terminal,files,docker`)
+and the dev user gets their own **rootless Docker engine**, supervised alongside
+their other daemons — so an agent can bring up Postgres, Redis or anything else
+in a container without being handed the host's docker socket:
 
 ```bash
 docker compose up -d          # the plugin is in the image
 docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=secret postgres:17
-pitchfork logs -f dockerd     # it is your daemon; no sudo
+pitchfork logs -f agent-env-docker/dockerd     # it is your daemon; no sudo
 ```
 
 `DOCKER_HOST` is set for you, images land on the home volume so they survive a
@@ -803,8 +954,8 @@ needs five things a stock container does not get, and all five are required:
 | `--device /dev/net/tun` | slirp4netns builds a tap device to give the daemon its network namespace. |
 
 The entrypoint checks for all five at startup. If any is missing it names it,
-leaves the daemon down and carries on, rather than crash-looping something that
-cannot work.
+drops `docker` from the enabled components with a warning and carries on, rather
+than crash-looping something that cannot work.
 
 ```bash
 docker run -d --name agent-env --shm-size=2g \
@@ -813,7 +964,7 @@ docker run -d --name agent-env --shm-size=2g \
   --security-opt apparmor=unconfined \
   --security-opt systempaths=unconfined \
   --device /dev/net/tun \
-  -e DOCKER_ROOTLESS_ENABLE=true \
+  -e AGENT_ENV_COMPONENTS=desktop,terminal,files,docker \
   ...
 ```
 
@@ -887,32 +1038,36 @@ image's tools, and the volume keeps yours.
 
 #### The agent tools
 
-The agent tools are not in the image. They move faster than it does, so on every
-start the entrypoint copies two kinds of file to `~/.config/mise/conf.d/`,
-installs what they declare, and runs `mise upgrade` on each tool:
+The agent tools are not in the image. They move faster than it does, so the
+reconcile links two kinds of file into `~/.config/mise/conf.d/`, and on every
+start the entrypoint installs what they declare and runs `mise upgrade` on each
+tool:
 
-- **Every preset:** each file in
+- **Every environment:** each file in
   [`rootfs/opt/agent-env/mise.d`](rootfs/opt/agent-env/mise.d), as
-  `00-agent-env-<name>.toml`. Today that is `agent-browser`, so a browser works
-  the same way whichever preset you chose.
-- **The active preset:** its own `tools.toml`, as `00-agent-env-preset.toml` — for
-  `opencode`, `"npm:@opencode/cli" = { version = "latest", allow_builds = [...] }`.
-  A preset with nothing of its own, like `vanilla`, has no such file.
+  `agent-env--<name>.toml`. Today that is `agent-browser`, so a browser works
+  the same way whichever components you chose.
+- **Each enabled component:** its own `mise.toml`, as `agent-env-<name>.toml` —
+  for `opencode`, `"npm:@opencode/cli" = { version = "latest", allow_builds = [...] }`.
+  A component of your own gets the same treatment, and its tools are installed
+  when you install it.
 
-The old copies are removed first, which is how switching preset switches which
-tools are declared and kept current. It does not uninstall what the old preset
-already put in the volume (`mise uninstall npm:@opencode/cli` does). These files are the image's and are rewritten each start. (An earlier
-release seeded a file of your own, `conf.d/agent-env.toml`, with the same two
-tools. It is removed if you never changed it; if you edited it, it is left alone
-and its tools stay declared under any preset, so delete it when you want them
-gone.) To pin a version, declare the tool yourself in `~/.config/mise/config.toml`
-(`"npm:@opencode/cli" = "2.0.32"`), which takes precedence and stops the upgrades
-for that tool.
+They are links, not copies, and every `agent-env-*` file in that directory
+belongs to the reconcile: the ones no longer wanted are removed (and so are the
+`00-agent-env-*.toml` copies earlier releases wrote), which is how turning a
+component off stops its tools being declared and kept current. It does not
+uninstall what it already put in the volume (`mise uninstall npm:@opencode/cli`
+does). Files of your own in `conf.d` are left alone — including
+`conf.d/agent-env.toml`, if an earlier release seeded you one; delete it when you
+no longer want its tools declared. To pin a version, declare the tool yourself in
+`~/.config/mise/config.toml` (`"npm:@opencode/cli" = "2.0.32"`), which takes
+precedence and stops the upgrades for that tool.
 
 The first start on a new volume downloads them, which takes a minute or so, and
 needs the npm registry. If a later start cannot reach it, the tools already in
 the volume are used and the entrypoint logs a warning. If a *first* start cannot,
-OpenCode has nothing to run; `agent-env logs primary` says so, and it retries.
+OpenCode has nothing to run; `pitchfork logs agent-env-opencode/server` says so,
+and it retries.
 
 The image's own tools are declared in [`mise/config.toml`](mise/config.toml) and
 pinned in [`mise/mise.lock`](mise/mise.lock), which records an exact version and
@@ -1027,14 +1182,17 @@ the session rather than kicking each other off. `scripts/smoke-test.sh` asserts
 this by opening four concurrent RFB connections.
 
 Resolution is fixed for the life of the display: Xvfb has no dynamic RandR
-resizing, so noVNC's client-side scaling is what adapts to your window. Change
-`DESKTOP_RESOLUTION` and `agent-env restart xvfb` (then `desktop`, `x11vnc`; under Selkies, `selkies`) for a
-different geometry. Set `VNC_PASSWORD` for a second factor in front of the
-desktop specifically, and `VNC_VIEW_ONLY=true` for a read-only session.
+resizing, so noVNC's client-side scaling is what adapts to your window. For a
+different geometry, change `DESKTOP_RESOLUTION` and recreate the container. The
+display's daemons are yours, so restarting it needs no sudo:
+`pitchfork restart agent-env-desktop/xvfb`, then `agent-env-desktop/session` and
+`agent-env-desktop/x11vnc` (under Selkies, the same names under
+`agent-env-desktop-selkies/`, and `selkies`). Set `VNC_PASSWORD` for a second factor in front of the desktop specifically, and
+`VNC_VIEW_ONLY=true` for a read-only session.
 
 ### Selkies backend (prototype)
 
-`DESKTOP_BACKEND=selkies` swaps x11vnc + websockify for [Selkies](https://selkies.io),
+The `desktop-selkies` component, in place of `desktop`, swaps x11vnc + websockify for [Selkies](https://selkies.io),
 installed from PyPI into `/opt/selkies` (see the Dockerfile). It attaches to the same
 `:1` display, so XFCE and headed agent-browser show up as before. A `pulseaudio` daemon
 with a null sink `output` provides audio. Caddy passes `/~env/desktop/*` through
@@ -1043,7 +1201,8 @@ loopback only, so the gateway is the only way in. Differences from noVNC to know
 the page needs HTTPS or `localhost` (plain HTTP on another host fails with "requires a
 secure connection"); the first page is the one read-write client and later ones join
 view-only with `#shared`; resizing is off because Xvfb is fixed at `DESKTOP_RESOLUTION`.
-Run the smoke test with `SMOKE_DESKTOP_BACKEND=selkies`. The default stays `novnc`.
+The smoke test reads the backend from the enabled components (`SMOKE_DESKTOP_BACKEND`
+overrides it). The defaults stay on noVNC.
 
 ### Files
 
@@ -1053,9 +1212,10 @@ archive, search, rename, delete. Useful when the thing you need to move is not
 worth an `scp` invocation, and when you are working from a tablet or a machine
 without your keys.
 
-It is a daemon of *your* supervisor, not the system's: it runs as `dev`, writes
-files as `dev`, shows up in `/pitchfork` beside the OpenCode server, and
-`pitchfork restart dufs` needs no sudo. It binds loopback, so the gateway's
+It is the `files` component, so a daemon of *your* supervisor, not the system's:
+it runs as `dev`, writes files as `dev`, shows up in `/pitchfork` as
+`agent-env-files/dufs`, and `pitchfork restart agent-env-files/dufs` needs no
+sudo. It binds loopback, so the gateway's
 authentication is what stands in front of it.
 
 It runs with `--allow-all` (upload, delete, search, archive and symlinks) and
@@ -1065,11 +1225,12 @@ symlink reaches nothing `dev` couldn't already read. Add anything else dufs
 takes with `DUFS_ARGS`:
 
 ```bash
-DUFS_ENABLE=false        # turn it off
 DUFS_ROOT=/srv/shared    # serve something other than /workspace
-DUFS_PATH=~env/files     # the path it lives under
 DUFS_ARGS='--hidden .git'
 ```
+
+It always lives at `/~env/files`; leave `files` out of `AGENT_ENV_COMPONENTS` to
+turn it off.
 
 dufs is installed by mise from `mise/config.toml`, so it is pinned and
 checksum-verified in the lockfile like everything else.
@@ -1148,11 +1309,11 @@ Chromium needs a large `/dev/shm`: keep `--shm-size=2g` (compose already sets it
   `@opencode/cli` through mise into the home volume and is upgraded at every
   start (see [The agent tools](#the-agent-tools)); pin a version in
   `~/.config/mise/config.toml` to stop that.
-  `OPENCODE_DISABLE_AUTOUPDATE=1` is set so OpenCode never self-updates in
-  between.
+  The component's `[env]` sets `OPENCODE_DISABLE_AUTOUPDATE=1` so OpenCode never
+  self-updates in between.
 - **Image size is ~3 GB.** Most of it is XFCE, Chromium and a compiler toolchain.
-  Drop `DESKTOP_ENABLE`-related packages from the
-  Dockerfile if you don't need the desktop.
+  A deployment without a desktop just leaves `desktop` out of
+  `AGENT_ENV_COMPONENTS`; the packages stay in the image.
 - **pitchfork's container mode is marked experimental** by its own docs. It has
   behaved correctly here — PID 1, reaping, ordered graceful shutdown — but that
   is the one component whose stability is self-declared as not guaranteed. The
@@ -1183,26 +1344,32 @@ base image or the pinned tools have broken.
 ## How it fits together
 
 ```
-                    ┌─── container (pitchfork = PID 1) ──────────────┐
-   browser ──8080──►│ Caddy ──forward_auth──► oauth2-proxy ──► IdP   │
-                    │   │                                            │
-                    │   ├─ /            ──► opencode serve   :3000   │
-                    │   ├─ /pitchfork   ──► pitchfork web    :4747   │
-                    │   ├─ /~env/files    ──► dufs           :5000   │
-                    │   ├─ /~env/terminal ──► ttyd :7681 ──► shell   │
-                    │   ├─ /~env/desktop  ──► websockify :6080       │
+                    ┌─── container (pitchfork = PID 1) ──────────────────────┐
+   browser ──8080──►│ Caddy ──forward_auth──► oauth2-proxy ──► IdP           │
+                    │   │                                                    │
+                    │   ├─ /              ──► proxy :4097 ──► opencode :4096 │
+                    │   ├─ /pitchfork     ──► pitchfork web  :4747           │
+                    │   ├─ /~env/files    ──► dufs           :5000           │
+                    │   ├─ /~env/terminal ──► ttyd :7681 ──► shell           │
+                    │   ├─ /~env/desktop  ──► websockify :6080               │
                     │   │                     └─ x11vnc :5900 ──► Xvfb :1 ──► XFCE
-                    │   ├─ /~env/         ──► index                  │
-                    │   └─ /~env/healthz                             │
-                    │                                                │
-   ssh    ────22───►│ sshd ──► dev                                   │
-                    └────────────────────────────────────────────────┘
+                    │   ├─ /~env/         ──► index                          │
+                    │   └─ /~env/healthz                                     │
+                    │                                                        │
+   ssh    ────22───►│ sshd ──► dev                                           │
+                    └────────────────────────────────────────────────────────┘
 ```
 
-With `DESKTOP_BACKEND=selkies`, `selkies` on :6081 replaces websockify and x11vnc and captures `Xvfb :1` directly.
+That is `opencode,desktop,terminal,files`. Every service Caddy proxies to runs
+as `dev`, in dev's own supervisor; Caddy and oauth2-proxy run as `gateway`, sshd
+as root. Without a component at `/`, `/` goes to `PRIMARY_PORT` (default
+3000) instead: `PRIMARY_COMMAND`, or whatever you run there. With
+`desktop-selkies` in place of `desktop`, `selkies` on :6081 replaces websockify
+and x11vnc and captures `Xvfb :1` directly. With `smb`, smbd listens on :445 for
+SMB clients directly, not through Caddy.
 
 `Xvfb :1` also backs headed Chromium, which is why agent-browser sessions show
-up on the desktop (noVNC, or Selkies with `DESKTOP_BACKEND=selkies`).
+up on the desktop (over noVNC, or Selkies).
 
 ## Layout
 
@@ -1210,14 +1377,27 @@ up on the desktop (noVNC, or Selkies with `DESKTOP_BACKEND=selkies`).
 Dockerfile                          image definition
 docker-compose.yml                  ports, volumes, health check
 .env.example                        every setting, annotated
+docs/components.md                  the user-facing guide to components
 rootfs/usr/local/bin/entrypoint.sh  validates config, renders the Caddyfile and
-                                    the pitchfork daemons, then exec's PID 1
-rootfs/usr/local/bin/agent-env         operator helper
-rootfs/opt/agent-env/bin/run-*         one launcher per service, including the
+                                    the system daemons, then exec's PID 1
+rootfs/usr/local/bin/agent-env      operator helper
+rootfs/opt/agent-env/components/    the built-in components, one directory each
+rootfs/opt/agent-env/mise.d/        tools every environment gets
+rootfs/opt/agent-env/bin/agent-env-components
+                                    the reconciler: enabled set -> routes, index,
+                                    environment, links; also `agent-env component`
+rootfs/opt/agent-env/bin/provision  runs the startup scripts
+rootfs/opt/agent-env/bin/healthcheck, log-forward
+                                    the HEALTHCHECK, and the forwarder behind
+                                    `docker logs`
+rootfs/opt/agent-env/bin/run-*      one launcher per service, including the
                                     dev user's own nested supervisor
 scripts/smoke-test.sh               end-to-end check of a running container
+scripts/smoke-provision.sh          the startup script the smoke test is given
 ```
 
-Services are enabled or omitted by the entrypoint when it renders
-`/etc/pitchfork/config.toml`, so disabling one means it never starts rather than
-starting and idling.
+A component that is off is simply not in the enabled set: none of its daemons is
+started, its route is not rendered, and the index does not list it, so disabling
+one means it never starts rather than starting and idling. The system daemons the
+entrypoint renders into `/opt/agent-env/pitchfork/config.toml` follow the same
+rule — `dbus` only with a desktop, `oauth2-proxy` only in an OAuth mode.

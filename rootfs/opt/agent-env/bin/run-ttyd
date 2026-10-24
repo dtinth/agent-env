@@ -2,7 +2,7 @@
 # A login shell in the workspace, served over a websocket terminal.
 set -euo pipefail
 args=(
-  --port "${TTYD_PORT:-7681}"
+  --port 7681
   --interface 127.0.0.1
   --base-path "/${TTYD_PATH:-~env/terminal}"
   --client-option "titleFixed=Terminal"

@@ -12,7 +12,7 @@ mkdir -p "${root}"
 args=(
   "${root}"
   --bind 127.0.0.1
-  --port "${DUFS_PORT:-5000}"
+  --port 5000
   --path-prefix "/${DUFS_PATH:-~env/files}"
   # Everything, symlinks included: a symlink in the workspace to somewhere else
   # on the box should work. dufs runs as the user, so it reaches nothing they
