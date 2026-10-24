@@ -61,6 +61,7 @@ import {
   publicUrlFor,
   refusal,
   sortComponents,
+  startupScriptBody,
   validate,
   VERSION,
   type Workspace,
@@ -641,6 +642,18 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
     prev.cpus,
     CHECKS.cpus,
   );
+  // Too long to type at a prompt: kept from last time, or taken from an answers
+  // file, and written with the configurator otherwise.
+  const given = "startupScript" in preset ? preset.startupScript : prev.startupScript;
+  if (given !== undefined && typeof given !== "string") {
+    bad("startupScript", "the startup script is text");
+  }
+  const startupScript =
+    startupScriptBody({ startupScript: given as string | undefined }) || undefined;
+  if (startupScript) {
+    const lines = startupScript.split("\n").length;
+    note(`Keeping the startup script (${lines} line${lines === 1 ? "" : "s"}).`);
+  }
 
   const sshKeys = await ask(
     "sshKeys",
@@ -800,6 +813,7 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
     memoryGiB,
     swapGiB,
     cpus,
+    startupScript,
     sshKeys,
     sshPort,
     workspace,

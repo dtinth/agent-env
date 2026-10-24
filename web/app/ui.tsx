@@ -422,54 +422,6 @@ function Who({ c }: { c: Configurator }) {
   );
 }
 
-/** Where `/` goes when OpenCode is not there: a port, and optionally a command run on it. */
-export function PrimaryFields({ c }: { c: Configurator }) {
-  return (
-    <div class="row">
-      <Text
-        c={c}
-        name="primaryPort"
-        label={
-          <>
-            Port <code>/</code> proxies to
-          </>
-        }
-        class="narrow"
-      />
-      <Text
-        c={c}
-        name="primaryCommand"
-        label="A command to run there"
-        hint={
-          <>
-            (optional; <code>$PORT</code> is the port)
-          </>
-        }
-        placeholder="npm run dev -- --port $PORT"
-        class="grow"
-        mono
-      />
-    </div>
-  );
-}
-
-export const DESKTOP_OPTIONS: Option[] = [
-  {
-    value: "desktop",
-    title: "noVNC",
-    desc: "Works everywhere; several people can drive it at once.",
-  },
-  {
-    value: "desktop-selkies",
-    title: "Selkies (prototype)",
-    desc: "Audio and smoother video; needs https or localhost; one person drives.",
-  },
-  {
-    value: "none",
-    title: "No desktop",
-  },
-];
-
 /** Screen size and text scale, for whichever desktop is on. */
 export function DesktopGeometry({ c }: { c: Configurator }) {
   const { fields: f } = c;
@@ -522,46 +474,6 @@ export function LimitFields({ c }: { c: Configurator }) {
       />
       <Text c={c} name="cpus" label="CPUs" placeholder="2" class="narrow" />
     </div>
-  );
-}
-
-function Runs({ c }: { c: Configurator }) {
-  const { fields: f } = c;
-  return (
-    <>
-      <h3>At /</h3>
-      <Check c={c} name="opencode">
-        OpenCode <small> — installed for you; its web UI is at /</small>
-      </Check>
-      {!f.opencode && <PrimaryFields c={c} />}
-      <h3>Desktop</h3>
-      <Choices c={c} name="desktop" cols={3} options={DESKTOP_OPTIONS} />
-      {f.desktop !== "none" && <DesktopGeometry c={c} />}
-      <h3>Also</h3>
-      <Check c={c} name="terminal">
-        A terminal in the browser
-      </Check>
-      <Check c={c} name="fileManager">
-        A file manager in the browser
-      </Check>
-      <Check c={c} name="docker">
-        Let the agent run its own containers (rootless Docker)
-        <small> — adds host flags that widen the sandbox</small>
-      </Check>
-      <Check c={c} name="smb">
-        Share the workspace over SMB
-        <small>
-          {" "}
-          — for the Files app or Finder; the password is on the /~env/ page
-          {f.mode !== "tailscale" && "; port 445 is not published, so forward it yourself"}
-        </small>
-      </Check>
-      {c.errorFor("components") && <p class="callout danger">{c.errorFor("components")}</p>}
-      <h3>
-        Limits <small>(optional; blank means none)</small>
-      </h3>
-      <LimitFields c={c} />
-    </>
   );
 }
 
@@ -655,10 +567,9 @@ export function SectionBody({ c, id }: { c: Configurator; id: SectionId }) {
       return <Where c={c} />;
     case "who":
       return <Who c={c} />;
-    case "runs":
-      return <Runs c={c} />;
     case "storage":
       return <Storage c={c} />;
+    case "runs": // runs.tsx, which the shell renders itself
     case "files":
       return null;
   }

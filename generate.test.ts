@@ -493,3 +493,42 @@ test("a quoted placeholder still needs the secret", () => {
   );
   assert(steps[0].includes("GOOGLE_CLIENT_SECRET"));
 });
+
+test("the startup script is mounted into provision.d, with every $ literal", () => {
+  const startupScript = 'echo "$HOME" ${USER}\n\n[ -d ~/src/x ] || git clone https://x ~/src/x';
+  const compose = generate({ ...BASIC, startupScript }, { randomSecret: fixed })["compose.yaml"];
+  assert(compose.includes("      - source: startup-script"), compose);
+  assert(compose.includes("        target: /etc/agent-env/provision.d/10-startup"), compose);
+  const block = compose.slice(compose.indexOf("  startup-script:\n"));
+  assert(
+    block.startsWith(
+      '  startup-script:\n    content: |\n      echo "$$HOME" $${USER}\n\n      [ -d ~/src/x ]',
+    ),
+    block,
+  );
+  assertEquals(answersFromCompose(compose)?.startupScript, startupScript);
+
+  const none = generate({ ...BASIC, startupScript: " \n" }, { randomSecret: fixed });
+  assert(!none["compose.yaml"].includes("startup-script"), none["compose.yaml"]);
+  assert(!generate(BASIC, { randomSecret: fixed })["compose.yaml"].includes("startup-script"));
+});
+
+test("a startup script that starts indented still reads back as written", () => {
+  const compose = generate(
+    { ...BASIC, startupScript: "\r\n  \r\n  indented\r\nnot\r\n\r\n" },
+    { randomSecret: fixed },
+  )["compose.yaml"];
+  // YAML would take the block's indentation from "  indented" and end it at "not".
+  const block = compose.slice(compose.indexOf("  startup-script:\n"));
+  assert(
+    block.startsWith("  startup-script:\n    content: |2\n        indented\n      not\n"),
+    block,
+  );
+});
+
+test("the page's startup script is an answer, and blank is none", () => {
+  const f: Fields = { ...DEFAULT_FIELDS, startupScript: "mise use -g ripgrep\n" };
+  assertEquals(toAnswers(f).startupScript, "mise use -g ripgrep");
+  assertEquals(fieldsFromAnswers(toAnswers(f)).startupScript, "mise use -g ripgrep");
+  assertEquals(toAnswers({ ...DEFAULT_FIELDS, startupScript: "\n  \n" }).startupScript, undefined);
+});

@@ -277,9 +277,15 @@ wrong. It also does the things that are tedious by hand and easy to forget:
   (no cgroup controllers delegated, as under some rootless setups) ignores them
   with a warning. Disk is not limited: Compose has no way to cap a volume, so
   that has to come from the filesystem the volumes or host directories live on.
+- Takes a startup script, which it mounts at
+  `/etc/agent-env/provision.d/10-startup` (see [Components](docs/components.md)).
+  It is how components of your own get installed: a clone and an
+  `agent-env component install`. The browser has a box for it; `setup.ts` keeps
+  the one from last time, or takes `startupScript` from an `--answers` file,
+  since a prompt is no place to type a script.
 
-The output is just those two files: the Caddy and Tailscale sidecar configs are
-inlined in `compose.yaml` as `configs:` content (Docker Compose 2.23.1 or newer).
+The output is just those two files: the Caddy and Tailscale sidecar configs, and
+the startup script, are inlined in `compose.yaml` as `configs:` content (Docker Compose 2.23.1 or newer).
 So the pair can be pasted into Dockge, Dokploy, or anything else that takes a
 compose stack and an env file. The generation logic is `generate.ts`, a pure,
 dependency-free module (`generate(answers, { existingEnv })` returns the files)

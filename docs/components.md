@@ -228,8 +228,12 @@ You can give the container scripts to run every time it starts, before your
 components start. Use them to fetch your own components, install dotfiles, or
 anything else a fresh environment should have.
 
-Supply them through your compose file's `configs` (Docker Compose 2.23.1 or
-newer), into `/etc/agent-env/provision.d/`:
+The configurator has a box for one: write it under **What runs → Startup
+script**, and it goes into your `compose.yaml` for you. Change it there rather than in
+the file, because running the configurator again writes it from your answers.
+
+By hand, supply them through your compose file's `configs` (Docker Compose 2.23.1
+or newer), into `/etc/agent-env/provision.d/`:
 
 ```yaml
 services:

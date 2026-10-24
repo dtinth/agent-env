@@ -17,6 +17,7 @@ import {
   desktopOf,
   migrateAnswers,
   sortComponents,
+  startupScriptBody,
   needsClientSecret,
   DEFAULT_NAME,
   DESKTOP_SIZES,
@@ -67,6 +68,7 @@ export const DEFAULT_FIELDS = {
   memoryGiB: "",
   swapGiB: "",
   cpus: "",
+  startupScript: "",
   sshKeys: "",
   sshPort: "2222",
   workspaceKind: "volume",
@@ -145,6 +147,7 @@ export function toAnswers(f: Fields): Answers {
     memoryGiB: num(f.memoryGiB),
     swapGiB: num(f.swapGiB),
     cpus: num(f.cpus),
+    startupScript: startupScriptBody(f) || undefined,
     sshKeys: f.sshKeys.trim(),
     sshPort: mode === "tailscale" || mode === "none" ? undefined : num(f.sshPort),
     workspace:
@@ -261,6 +264,7 @@ export const SECTIONS: Section[] = [
       "memoryGiB",
       "swapGiB",
       "cpus",
+      "startupScript",
     ],
     summary: (a) =>
       [
@@ -274,6 +278,7 @@ export const SECTIONS: Section[] = [
         a.components.includes("smb") ? "SMB" : "",
         a.memoryGiB !== undefined ? `${a.memoryGiB} GiB` : "",
         a.cpus !== undefined ? plural(a.cpus, "CPU") : "",
+        a.startupScript ? "Startup script" : "",
       ]
         .filter(Boolean)
         .join(" · "),
@@ -410,6 +415,7 @@ export function fieldsFromAnswers(a: Partial<Answers>): Partial<Fields> {
   put("memoryGiB", str(a.memoryGiB));
   put("swapGiB", str(a.swapGiB));
   put("cpus", str(a.cpus));
+  put("startupScript", a.startupScript);
   put("sshKeys", a.sshKeys);
   put("sshPort", str(a.sshPort));
   put("timezone", a.timezone);
