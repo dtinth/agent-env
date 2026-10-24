@@ -27,7 +27,7 @@ try() {
   docker rm -f "${NAME}" >/dev/null 2>&1
   docker run -d --name "${NAME}" --shm-size=1g \
     -e PUBLIC_URL=https://example.invalid \
-    -e DESKTOP_ENABLE=false -e DUFS_ENABLE=false \
+    -e AGENT_ENV_COMPONENTS= \
     "$@" "${IMAGE}" >/dev/null 2>&1
 
   local ready=0 i
@@ -91,7 +91,7 @@ args_for() {
   docker rm -f "${NAME}" >/dev/null 2>&1
   docker run -d --name "${NAME}" --shm-size=1g \
     -e PUBLIC_URL=https://example.invalid \
-    -e DESKTOP_ENABLE=false -e DUFS_ENABLE=false \
+    -e AGENT_ENV_COMPONENTS= \
     -e AUTH_MODE=github -e GITHUB_CLIENT_ID=Iv1.a -e GITHUB_CLIENT_SECRET=ghs-a \
     "$@" "${IMAGE}" >/dev/null 2>&1
   local i
