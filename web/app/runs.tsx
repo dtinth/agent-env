@@ -235,17 +235,28 @@ function ComponentDetail({ c, id }: { c: Configurator; id: Component }) {
         </p>
       )}
       {id === "docker" && (
-        <div class="callout">
+        <>
+          <h3>What it means for you</h3>
           <p>
-            <b>Turning Docker on adds five flags to compose.yaml.</b> A rootless engine needs them:{" "}
-            <code>cap_add: SYS_ADMIN</code>, unconfined seccomp, AppArmor and systempaths, and{" "}
-            <code>/dev/net/tun</code>. The configurator writes them for you.
+            Running containers needs the sandbox around this container loosened a little. On its own
+            that changes nothing you would notice, and nothing new can reach the host. The one risk:
+            if the Linux kernel has an unpatched bug, code in the container has a better chance of
+            exploiting it. Even then the rootless engine keeps the fallout inside this container's
+            own unprivileged user, not the host. Leave it off unless the agent needs to run
+            containers.
           </p>
-          <p>
-            They widen what code in the container can do, though still well short of{" "}
-            <code>--privileged</code>.
-          </p>
-        </div>
+          <div class="callout">
+            <p>
+              <b>Turning Docker on adds five flags to compose.yaml.</b> A rootless engine needs
+              them: <code>cap_add: SYS_ADMIN</code>, unconfined seccomp, AppArmor and systempaths,
+              and <code>/dev/net/tun</code>. The configurator writes them for you.
+            </p>
+            <p>
+              They widen what code in the container can do, though still well short of{" "}
+              <code>--privileged</code>.
+            </p>
+          </div>
+        </>
       )}
     </>
   );
