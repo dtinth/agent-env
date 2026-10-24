@@ -48,7 +48,7 @@ export const OkIcon = () => (
 // Fields
 // ---------------------------------------------------------------------------
 
-interface Option {
+export interface Option {
   value: string;
   title: string;
   desc?: ComponentChildren;
@@ -134,7 +134,7 @@ export function Check(props: { c: Configurator; name: BoolField; children: Compo
   );
 }
 
-function Select(props: {
+export function Select(props: {
   c: Configurator;
   name: StringField;
   label: string;
@@ -304,7 +304,7 @@ function GoogleSteps({ c }: { c: Configurator }) {
   );
 }
 
-function CopyButton({ text }: { text: string }) {
+export function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <button
@@ -422,6 +422,109 @@ function Who({ c }: { c: Configurator }) {
   );
 }
 
+/** Where `/` goes when OpenCode is not there: a port, and optionally a command run on it. */
+export function PrimaryFields({ c }: { c: Configurator }) {
+  return (
+    <div class="row">
+      <Text
+        c={c}
+        name="primaryPort"
+        label={
+          <>
+            Port <code>/</code> proxies to
+          </>
+        }
+        class="narrow"
+      />
+      <Text
+        c={c}
+        name="primaryCommand"
+        label="A command to run there"
+        hint={
+          <>
+            (optional; <code>$PORT</code> is the port)
+          </>
+        }
+        placeholder="npm run dev -- --port $PORT"
+        class="grow"
+        mono
+      />
+    </div>
+  );
+}
+
+export const DESKTOP_OPTIONS: Option[] = [
+  {
+    value: "desktop",
+    title: "noVNC",
+    desc: "Works everywhere; several people can drive it at once.",
+  },
+  {
+    value: "desktop-selkies",
+    title: "Selkies (prototype)",
+    desc: "Audio and smoother video; needs https or localhost; one person drives.",
+  },
+  {
+    value: "none",
+    title: "No desktop",
+  },
+];
+
+/** Screen size and text scale, for whichever desktop is on. */
+export function DesktopGeometry({ c }: { c: Configurator }) {
+  const { fields: f } = c;
+  return (
+    <div class="row">
+      <Select
+        c={c}
+        name="desktopSizePick"
+        label="Screen size"
+        class="grow"
+        options={[...DESKTOP_SIZES, { value: "custom", label: "Something else…" }]}
+      />
+      {f.desktopSizePick === "custom" && (
+        <Text
+          c={c}
+          name="desktopSizeCustom"
+          label="Width × height"
+          placeholder="2200x1300"
+          error="desktopSize"
+          class="grow"
+        />
+      )}
+      <Select
+        c={c}
+        name="desktopScale"
+        label="Text and window size"
+        class="grow"
+        error="desktopScale"
+        options={DESKTOP_SCALES.map((s) => ({
+          value: String(s),
+          label: s === 100 ? "100% (normal)" : s === 200 ? "200% (HiDPI)" : `${s}%`,
+        }))}
+      />
+    </div>
+  );
+}
+
+/** Memory, swap and CPUs, without their heading. */
+export function LimitFields({ c }: { c: Configurator }) {
+  const { fields: f } = c;
+  return (
+    <div class="row">
+      <Text c={c} name="memoryGiB" label="Memory" hint="(GiB)" placeholder="8" class="narrow" />
+      <Text
+        c={c}
+        name="swapGiB"
+        label="Swap on top"
+        hint="(GiB; 0 for none)"
+        placeholder={f.memoryGiB.trim() ? `${f.memoryGiB.trim()} (Docker's default)` : "—"}
+      />
+      <Text c={c} name="cpus" label="CPUs" placeholder="2" class="narrow" />
+    </div>
+  );
+}
+
 function Runs({ c }: { c: Configurator }) {
   const { fields: f } = c;
   return (
@@ -430,87 +533,10 @@ function Runs({ c }: { c: Configurator }) {
       <Check c={c} name="opencode">
         OpenCode <small> — installed for you; its web UI is at /</small>
       </Check>
-      {!f.opencode && (
-        <div class="row">
-          <Text
-            c={c}
-            name="primaryPort"
-            label={
-              <>
-                Port <code>/</code> proxies to
-              </>
-            }
-            class="narrow"
-          />
-          <Text
-            c={c}
-            name="primaryCommand"
-            label="A command to run there"
-            hint={
-              <>
-                (optional; <code>$PORT</code> is the port)
-              </>
-            }
-            placeholder="npm run dev -- --port $PORT"
-            class="grow"
-            mono
-          />
-        </div>
-      )}
+      {!f.opencode && <PrimaryFields c={c} />}
       <h3>Desktop</h3>
-      <Choices
-        c={c}
-        name="desktop"
-        cols={3}
-        options={[
-          {
-            value: "desktop",
-            title: "noVNC",
-            desc: "Works everywhere; several people can drive it at once.",
-          },
-          {
-            value: "desktop-selkies",
-            title: "Selkies (prototype)",
-            desc: "Audio and smoother video; needs https or localhost; one person drives.",
-          },
-          {
-            value: "none",
-            title: "No desktop",
-          },
-        ]}
-      />
-      {f.desktop !== "none" && (
-        <div class="row">
-          <Select
-            c={c}
-            name="desktopSizePick"
-            label="Screen size"
-            class="grow"
-            options={[...DESKTOP_SIZES, { value: "custom", label: "Something else…" }]}
-          />
-          {f.desktopSizePick === "custom" && (
-            <Text
-              c={c}
-              name="desktopSizeCustom"
-              label="Width × height"
-              placeholder="2200x1300"
-              error="desktopSize"
-              class="grow"
-            />
-          )}
-          <Select
-            c={c}
-            name="desktopScale"
-            label="Text and window size"
-            class="grow"
-            error="desktopScale"
-            options={DESKTOP_SCALES.map((s) => ({
-              value: String(s),
-              label: s === 100 ? "100% (normal)" : s === 200 ? "200% (HiDPI)" : `${s}%`,
-            }))}
-          />
-        </div>
-      )}
+      <Choices c={c} name="desktop" cols={3} options={DESKTOP_OPTIONS} />
+      {f.desktop !== "none" && <DesktopGeometry c={c} />}
       <h3>Also</h3>
       <Check c={c} name="terminal">
         A terminal in the browser
@@ -532,17 +558,7 @@ function Runs({ c }: { c: Configurator }) {
       <h3>
         Limits <small>(optional; blank means none)</small>
       </h3>
-      <div class="row">
-        <Text c={c} name="memoryGiB" label="Memory" hint="(GiB)" placeholder="8" class="narrow" />
-        <Text
-          c={c}
-          name="swapGiB"
-          label="Swap on top"
-          hint="(GiB; 0 for none)"
-          placeholder={f.memoryGiB.trim() ? `${f.memoryGiB.trim()} (Docker's default)` : "—"}
-        />
-        <Text c={c} name="cpus" label="CPUs" placeholder="2" class="narrow" />
-      </div>
+      <LimitFields c={c} />
     </>
   );
 }
