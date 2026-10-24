@@ -237,25 +237,38 @@ function ComponentDetail({ c, id }: { c: Configurator; id: Component }) {
       {id === "docker" && (
         <>
           <h3>What it means for you</h3>
-          <p>
-            Running containers needs the sandbox around this container loosened a little. On its own
-            that changes nothing you would notice, and nothing new can reach the host. The one risk:
-            if the Linux kernel has an unpatched bug, code in the container has a better chance of
-            exploiting it. Even then the rootless engine keeps the fallout inside this container's
-            own unprivileged user, not the host. Leave it off unless the agent needs to run
-            containers.
+          <ul class="r-points">
+            <li class="ok">
+              Nothing happens until the agent runs a container, and nothing new can reach the host.
+            </li>
+            <li class="ok">
+              The engine is rootless: even a break-out is trapped as this container's own
+              unprivileged user.
+            </li>
+            <li class="warn">
+              One risk: an unpatched Linux kernel bug gets a little easier to exploit from inside.
+            </li>
+          </ul>
+          <p class="r-verdict">Leave it off unless the agent needs to run containers.</p>
+          <h3>The five flags, in plain words</h3>
+          <p class="hint">
+            The configurator writes these into <code>compose.yaml</code> for you. They loosen the
+            sandbox the rootless engine runs in — still well short of <code>--privileged</code>.
           </p>
-          <div class="callout">
-            <p>
-              <b>Turning Docker on adds five flags to compose.yaml.</b> A rootless engine needs
-              them: <code>cap_add: SYS_ADMIN</code>, unconfined seccomp, AppArmor and systempaths,
-              and <code>/dev/net/tun</code>. The configurator writes them for you.
-            </p>
-            <p>
-              They widen what code in the container can do, though still well short of{" "}
-              <code>--privileged</code>.
-            </p>
-          </div>
+          <dl class="r-flags">
+            <dt>
+              <code>cap_add: SYS_ADMIN</code>
+            </dt>
+            <dd>broad control of mounts and namespaces, which the inner engine needs</dd>
+            <dt>
+              unconfined <code>seccomp</code> · <code>AppArmor</code> · <code>systempaths</code>
+            </dt>
+            <dd>relax the kernel sandbox so the engine and its containers can start</dd>
+            <dt>
+              <code>/dev/net/tun</code>
+            </dt>
+            <dd>gives the inner engine its own network</dd>
+          </dl>
         </>
       )}
     </>

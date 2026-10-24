@@ -225,6 +225,67 @@ button.r-item.here {
   margin-top: 1.3rem;
 }
 
+.r-points {
+  list-style: none;
+  margin: 0.6rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+.r-points li {
+  position: relative;
+  padding-left: 1.6rem;
+  font-size: 0.92rem;
+  line-height: 1.4;
+}
+.r-points li::before {
+  position: absolute;
+  left: 0;
+  top: 0;
+  font-weight: 700;
+}
+.r-points li.ok::before {
+  content: "✓";
+  color: var(--ok);
+}
+.r-points li.warn::before {
+  content: "⚠";
+  color: var(--warn);
+}
+.r-verdict {
+  position: relative;
+  margin: 0.8rem 0 0;
+  padding-left: 1.6rem;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+.r-verdict::before {
+  content: "→";
+  position: absolute;
+  left: 0;
+  font-weight: 700;
+  color: var(--accent-sky);
+}
+.r-flags {
+  margin: 0.7rem 0 0;
+  padding: 0.8rem 1rem;
+  background: var(--bg-deep);
+  border: 1px solid var(--border-weak);
+  border-radius: var(--radius-md);
+}
+.r-flags dt {
+  margin-top: 0.7rem;
+  font-size: 0.85rem;
+}
+.r-flags dt:first-child {
+  margin-top: 0;
+}
+.r-flags dd {
+  margin: 0.15rem 0 0;
+  font-size: 0.86rem;
+  color: var(--fg-muted);
+}
+
 button.r-back {
   display: none;
 }
