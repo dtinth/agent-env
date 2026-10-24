@@ -266,37 +266,42 @@ button.r-item.here {
   font-weight: 700;
   color: var(--accent-sky);
 }
-.r-flags {
-  margin: 0.8rem 0 0;
+.r-flaglist {
+  list-style: none;
+  margin: 0.6rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
 }
-.r-flags .flag {
-  margin-top: 1rem;
-  padding-left: 0.9rem;
-  border-left: 2px solid var(--border-weak);
+.r-flaglist li {
+  font-size: 0.86rem;
 }
-.r-flags .flag:first-child {
-  margin-top: 0;
+.r-caps {
+  list-style: none;
+  margin: 0.6rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
 }
-.r-flags dt {
-  margin-bottom: 0.3rem;
-  font-size: 0.85rem;
-}
-.r-flags dd {
-  margin: 0.2rem 0 0;
-  font-size: 0.88rem;
+.r-caps li {
+  position: relative;
+  padding-left: 1.6rem;
+  font-size: 0.9rem;
   line-height: 1.4;
 }
-.r-flags dd b {
+.r-caps li::before {
+  position: absolute;
+  left: 0;
+  top: 0;
   font-weight: 700;
 }
-.r-flags dd.grants b {
+.r-caps li.yes::before {
+  content: "✓";
   color: var(--ok);
 }
-.r-flags dd.denies {
-  color: var(--fg-muted);
-}
-.r-flags dd.denies b {
-  color: var(--fg-primary);
+.r-caps li.no::before {
+  content: "✗";
+  color: var(--danger);
 }
 
 button.r-back {
