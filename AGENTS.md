@@ -438,7 +438,7 @@ The built-in ones are in
 | Component | What | Where |
 |---|---|---|
 | `desktop` | XFCE on a virtual display, over noVNC | `/~env/desktop` |
-| `desktop-selkies` | the same desktop over Selkies (prototype); conflicts with `desktop`, since both serve `/~env/desktop` | `/~env/desktop` |
+| `desktop-selkies` | the same desktop over Selkies; conflicts with `desktop`, since both serve `/~env/desktop` | `/~env/desktop` |
 | `terminal` | a login shell, over ttyd | `/~env/terminal` |
 | `files` | dufs, over the workspace | `/~env/files` |
 | `opencode` | OpenCode's web UI and API | `/` |
@@ -1204,7 +1204,7 @@ display's daemons are yours, so restarting it needs no sudo:
 `agent-env-desktop-selkies/`, and `selkies`). Set `VNC_PASSWORD` for a second factor in front of the desktop specifically, and
 `VNC_VIEW_ONLY=true` for a read-only session.
 
-### Selkies backend (prototype)
+### Selkies backend
 
 The `desktop-selkies` component, in place of `desktop`, swaps x11vnc + websockify for [Selkies](https://selkies.io),
 installed from PyPI into `/opt/selkies` (see the Dockerfile). It attaches to the same
@@ -1215,6 +1215,10 @@ loopback only, so the gateway is the only way in. Differences from noVNC to know
 the page needs HTTPS or `localhost` (plain HTTP on another host fails with "requires a
 secure connection"); the first page is the one read-write client and later ones join
 view-only with `#shared`; resizing is off because Xvfb is fixed at `DESKTOP_RESOLUTION`.
+The client UI scaling is pinned with `--scaling-dpi` (`SELKIES_SCALING_DPI`, default `96`
+= 100%): a single value locks it, so the client cannot change it and Selkies no longer
+auto-picks a device-pixel-ratio scale — which on a phone lands on 300% and breaks its
+own layout. The desktop's own `DESKTOP_DPI` still scales XFCE inside the display.
 The smoke test reads the backend from the enabled components (`SMOKE_DESKTOP_BACKEND`
 overrides it). The defaults stay on noVNC.
 
