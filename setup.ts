@@ -272,7 +272,7 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
       {
         value: "caddy",
         label: "A public domain, with TLS handled here",
-        hint: "Adds a Caddy sidecar that gets a certificate from Let's Encrypt.",
+        hint: "The gateway gets a Let's Encrypt certificate and serves HTTPS itself — no extra container.",
       },
       {
         value: "tailscale",

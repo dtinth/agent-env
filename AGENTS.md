@@ -233,7 +233,7 @@ same code, so they agree. The first question decides the rest:
 | Where it runs | What you get |
 |---|---|
 | **This machine only** | Ports bound to `127.0.0.1`. Put your own proxy in front if you want it reachable. |
-| **A public domain** | A Caddy sidecar that gets a certificate from Let's Encrypt, on 443 unless you pick another port. The "domain" can be the host's IPv4 address: Let's Encrypt certifies one only on its six-day `shortlived` profile, which the Caddyfile then asks for. Google sign-in refuses an IP in its redirect URI, so that is refused too; a name like `203-0-113-7.sslip.io` gets round it with an ordinary certificate. |
+| **A public domain** | The gateway Caddy terminates TLS itself and gets a certificate from Let's Encrypt, on 443 unless you pick another port — no separate proxy. The certificate is kept on the state volume (`/var/lib/agent-env`), so it survives a recreate. The "domain" can be the host's IPv4 address: Let's Encrypt certifies one only on its six-day `shortlived` profile, which the gateway then asks for. Google sign-in refuses an IP in its redirect URI, so that is refused too; a name like `203-0-113-7.sslip.io` gets round it with an ordinary certificate. |
 | **A tailnet** | A Tailscale sidecar. The tailnet is the boundary, and SSH and mosh work with nothing published. |
 | **None** | For Dokploy, Coolify and other platforms that route to the container themselves. No ports are published; `expose:` lists 8080 and 22 for the platform's benefit, and you give the URL it serves. SSH and mosh are only reachable if the platform forwards them. |
 
@@ -284,8 +284,8 @@ wrong. It also does the things that are tedious by hand and easy to forget:
   the one from last time, or takes `startupScript` from an `--answers` file,
   since a prompt is no place to type a script.
 
-The output is just those two files: the Caddy and Tailscale sidecar configs, and
-the startup script, are inlined in `compose.yaml` as `configs:` content (Docker Compose 2.23.1 or newer).
+The output is just those two files: the Tailscale sidecar config and the startup
+script are inlined in `compose.yaml` as `configs:` content (Docker Compose 2.23.1 or newer).
 So the pair can be pasted into Dockge, Dokploy, or anything else that takes a
 compose stack and an env file. The generation logic is `generate.ts`, a pure,
 dependency-free module (`generate(answers, { existingEnv })` returns the files)

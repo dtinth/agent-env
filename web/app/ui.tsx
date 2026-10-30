@@ -185,7 +185,7 @@ function Where({ c }: { c: Configurator }) {
           {
             value: "caddy",
             title: "A public domain",
-            desc: "A Caddy sidecar gets a certificate from Let's Encrypt.",
+            desc: "The gateway gets a Let's Encrypt certificate and serves HTTPS itself.",
           },
           {
             value: "tailscale",

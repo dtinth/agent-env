@@ -424,12 +424,12 @@ test("mode decides the network shape", () => {
     assertMatch(line, /127\.0\.0\.1:/, `local mode published ${line.trim()} on all interfaces`);
   }
 
-  // ACME only ever validates on 80 or 443, so a site on 8443 still needs 80.
+  // The gateway terminates TLS itself now: 80 for the ACME challenge and the
+  // redirect, and the chosen host port mapped to 443 inside the container.
   const c = readText(`${caddy}/compose.yaml`);
   assertStringIncludes(c, '- "80:80"');
-  assertStringIncludes(c, '- "8443:8443"');
-  // Caddy cannot proxy raw TCP here, so SSH has to be published directly or
-  // there is no way in but the browser.
+  assertStringIncludes(c, '- "8443:443"');
+  // SSH is raw TCP, so it is published directly alongside the web ports.
   assertStringIncludes(c, ':22"');
 
   // Sharing the sidecar's namespace means this service cannot declare ports.
@@ -693,15 +693,22 @@ test("a crafted ACME email cannot write Caddy directives", () => {
   assert(!existsSync(`${dir}/compose.yaml`));
 });
 
-test("caddy mode inlines the Caddyfile in compose.yaml", () => {
+test("caddy mode has no sidecar: the gateway terminates TLS itself", () => {
   const dir = tmp();
   assertEquals(run(CADDY, dir).code, 0);
   assert(!existsSync(`${dir}/Caddyfile`), "wrote a separate Caddyfile");
   const compose = readText(`${dir}/compose.yaml`);
-  assertStringIncludes(compose, "        target: /etc/caddy/Caddyfile");
-  assertStringIncludes(compose, "  caddyfile:\n    content: |\n");
-  assertStringIncludes(compose, "      agent.example.com:");
-  assertStringIncludes(compose, "\treverse_proxy agent-env:8080");
+  // No caddy sidecar, no inlined Caddyfile config, no cert volumes for one.
+  assert(!/^ {2}caddy:/m.test(compose), "a caddy sidecar was added");
+  assert(!compose.includes("caddyfile:"), "a Caddyfile was inlined as a config");
+  assert(!/caddy_data|caddy_config/.test(compose), "sidecar cert volumes remain");
+  // The container itself is told which name to certify, so its own Caddy owns
+  // ACME; the host ports are published straight from it.
+  const s = settingsOf(dir);
+  assertEquals(s.GATEWAY_TLS_DOMAIN, "agent.example.com");
+  assertEquals(s.ACME_EMAIL, "me@example.com");
+  assertStringIncludes(compose, '- "80:80"');
+  assertStringIncludes(compose, '- "8443:443"');
 });
 
 test("memory, swap and CPU limits are optional, and say what they mean", () => {
@@ -748,20 +755,21 @@ test("on a platform nothing is published, only exposed", () => {
   assertEquals(run({ ...PLATFORM, publicUrl: "" }, missing).code, 2);
 });
 
-test("an IP address gets a six-day certificate, and no Google sign-in", () => {
-  // Let's Encrypt issues IP certificates only on its shortlived profile, so
-  // Caddy has to ask for it, or every attempt is refused.
+test("an IP address is carried as the TLS name, and gets no Google sign-in", () => {
+  // The name to certify is handed to the container as GATEWAY_TLS_DOMAIN; the
+  // gateway's own Caddy asks Let's Encrypt for the IP-only shortlived profile
+  // when it is an address. (That rendering is the entrypoint's, and is checked
+  // against `caddy validate` there.)
   const ip = { ...CADDY, domain: "203.0.113.7", authMode: "basic", gatewayUser: "dev" };
   const dir = tmp();
   assertEquals(run(ip, dir).code, 0);
-  const caddyfile = inlineConfig(readText(`${dir}/compose.yaml`), "caddyfile");
-  assertStringIncludes(caddyfile, "203.0.113.7:8443 {");
-  assertStringIncludes(caddyfile, "\t\tissuer acme {\n\t\t\tprofile shortlived\n\t\t}");
+  assertEquals(settingsOf(dir).GATEWAY_TLS_DOMAIN, "203.0.113.7");
 
-  // A name keeps the ordinary 90-day certificate.
+  // A name is carried the same way, and the entrypoint keeps it on the
+  // ordinary 90-day certificate.
   const named = tmp();
   run(CADDY, named);
-  assert(!inlineConfig(readText(`${named}/compose.yaml`), "caddyfile").includes("shortlived"));
+  assertEquals(settingsOf(named).GATEWAY_TLS_DOMAIN, "agent.example.com");
 
   // Google's redirect URI rules: "Hosts cannot be raw IP addresses."
   const google = tmp();

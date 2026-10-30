@@ -1003,6 +1003,15 @@ render_caddyfile() {
   [[ -n "${GATEWAY_BIND}" ]] && BIND_DIRECTIVE="	bind ${GATEWAY_BIND}
 "
 
+  # When GATEWAY_TLS_DOMAIN is set, the gateway Caddy terminates TLS itself —
+  # there is no proxy in front — and keeps the certificate on the state volume,
+  # so it survives a recreate rather than being re-issued every time. The
+  # directory is the gateway's to write; the rest of the state volume is not.
+  local TLS_DOMAIN="${GATEWAY_TLS_DOMAIN:-}"
+  if [[ -n "${TLS_DOMAIN}" ]]; then
+    install -d -o "${GATEWAY_USER_NAME}" -g "${GATEWAY_GROUP}" /var/lib/agent-env/caddy
+  fi
+
   # Emits the authentication gate for one site block. $1 is the origin that
   # unauthenticated visitors are sent back to after signing in.
   emit_auth_gate() {
@@ -1048,10 +1057,19 @@ EOF
   }
 
   {
+    echo "{"
+    echo "	admin unix//var/lib/caddy/admin.sock|0600"
+    if [[ -n "${TLS_DOMAIN}" ]]; then
+      # Automatic HTTPS stays on so Caddy provisions and renews the certificate;
+      # the ACME account email and the persistent store go alongside it.
+      [[ -n "${ACME_EMAIL:-}" ]] && printf '\temail %s\n' "${ACME_EMAIL}"
+      printf '\tstorage file_system {\n\t\troot /var/lib/agent-env/caddy\n\t}\n'
+    else
+      # A proxy in front terminates TLS, or there is none; either way the
+      # listener is plain HTTP, so keep Caddy from trying to certify it.
+      echo "	auto_https off"
+    fi
     cat <<EOF
-{
-	admin unix//var/lib/caddy/admin.sock|0600
-	auto_https off
 	log {
 		output stderr
 		format console
@@ -1060,16 +1078,16 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Main entrance.
-#
-# Everything this image serves for itself is under /${ENV_PREFIX}/, so the
-# handler at / owns its whole path space and can be given away to whatever the
-# workspace is running. Two things sit outside the prefix, both deliberately:
-# /oauth2/* (see below) and /${USER_WEB_PATH}* (pitchfork validates its web path
-# as a single path segment, so it cannot be nested).
+# The gateway itself, written once as a snippet and imported by whichever site
+# blocks are live below. Everything this image serves for itself is under
+# /${ENV_PREFIX}/, so the handler at / owns its whole path space and can be
+# given away to whatever the workspace is running. Two things sit outside the
+# prefix, both deliberately: /oauth2/* (see below) and /${USER_WEB_PATH}*
+# (pitchfork validates its web path as a single path segment, so it cannot be
+# nested).
 # ---------------------------------------------------------------------------
-:${GATEWAY_PORT} {
-${BIND_DIRECTIVE}	route {
+(gateway) {
+	route {
 		handle /${HEALTH_PATH} {
 			respond "ok" 200
 		}
@@ -1151,6 +1169,40 @@ EOF
 	import ${RUN_DIR}/caddy/errors.caddy
 }
 EOF
+
+    # The live site blocks, each importing the gateway snippet above. In TLS
+    # mode the public name serves 443 (and 80, for the ACME challenge and the
+    # http->https redirect), while a loopback listener on ${GATEWAY_PORT}
+    # answers the container's own health probe and anything else inside the
+    # container. Otherwise one listener on ${GATEWAY_PORT}, bound as
+    # GATEWAY_BIND asks, is the whole of it.
+    if [[ -n "${TLS_DOMAIN}" ]]; then
+      echo
+      echo "${TLS_DOMAIN} {"
+      if [[ "${TLS_DOMAIN}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        cat <<EOF
+	# Let's Encrypt certifies an IP address only on its six-day profile;
+	# Caddy renews it well before then.
+	tls {
+		issuer acme {
+			profile shortlived
+		}
+	}
+EOF
+      fi
+      echo "	import gateway"
+      echo "}"
+      echo
+      echo "http://127.0.0.1:${GATEWAY_PORT} {"
+      echo "	import gateway"
+      echo "}"
+    else
+      echo
+      echo ":${GATEWAY_PORT} {"
+      printf '%s' "${BIND_DIRECTIVE}"
+      echo "	import gateway"
+      echo "}"
+    fi
   } > "${f}"
 
   chmod 640 "${f}"
