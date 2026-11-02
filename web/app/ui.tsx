@@ -9,6 +9,7 @@ import {
   DESKTOP_SIZES,
   GOOGLE_CLIENT_CREATE_URL,
   needsClientSecret,
+  type Problem,
 } from "../../generate.ts";
 import {
   type Configurator,
@@ -175,82 +176,90 @@ function Where({ c }: { c: Configurator }) {
       />
       <Choices
         c={c}
-        name="mode"
+        name="boundary"
         options={[
           {
-            value: "local",
-            title: "This machine only",
-            desc: "Ports bound to 127.0.0.1. Put your own proxy in front to expose it.",
-          },
-          {
-            value: "caddy",
-            title: "A public domain",
-            desc: "The gateway gets a Let's Encrypt certificate and serves HTTPS itself.",
+            value: "host",
+            title: "This machine",
+            desc: "The container owns the network. You pick how the web and SSH are exposed below.",
           },
           {
             value: "tailscale",
             title: "A tailnet",
-            desc: "Via Tailscale. The tailnet is the boundary; SSH and mosh just work.",
+            desc: "A Tailscale sidecar is the boundary; tailscale serve terminates TLS. SSH and mosh just work.",
           },
           {
             value: "wireguard",
             title: "A WireGuard tunnel",
-            desc: "For a public-IP host off your tailnet. The tunnel is the boundary; client configs are made for you.",
-          },
-          {
-            value: "none",
-            title: "None",
-            desc: "Dokploy, Coolify and the like route to it. No ports are published.",
+            desc: "A WireGuard sidecar, for a public-IP host off your tailnet. Client configs are made for you.",
           },
         ]}
       />
-      {f.mode === "none" && (
-        <Text
-          c={c}
-          name="publicUrl"
-          label="The URL the platform serves this at"
-          hint="(route it to port 8080)"
-          placeholder="https://agent.example.com"
-        />
-      )}
-      {f.mode === "local" && (
+      {f.boundary === "host" && (
         <>
-          <Check c={c} name="behindProxy">
-            Something else terminates TLS in front of this{" "}
-            <small>(nginx, an ingress, a tunnel)</small>
-          </Check>
-          {f.behindProxy && (
+          <Choices
+            c={c}
+            name="webIngress"
+            options={[
+              {
+                value: "loopback",
+                title: "Loopback",
+                desc: "Bound to 127.0.0.1. Reach it locally, or put your own TLS proxy in front.",
+              },
+              {
+                value: "public",
+                title: "Public domain",
+                desc: "The gateway gets a Let's Encrypt certificate and serves HTTPS straight to the internet.",
+              },
+              {
+                value: "expose",
+                title: "Behind a platform",
+                desc: "Dokploy, Coolify and the like route to the container. Nothing is published.",
+              },
+            ]}
+          />
+          {f.webIngress === "loopback" && (
             <Text
               c={c}
               name="publicUrl"
-              label="The URL people will actually type"
+              label="Public URL"
+              hint="(optional — the address of a proxy in front; blank for a local-only run)"
+              placeholder="https://agent.example.com"
+            />
+          )}
+          {f.webIngress === "public" && (
+            <div class="row">
+              <Text
+                c={c}
+                name="domain"
+                label="Domain name"
+                hint="(or the host's IPv4 address)"
+                placeholder="agent.example.com"
+                class="grow"
+              />
+              <Text c={c} name="httpsPort" label="HTTPS port" class="narrow" />
+              <Text
+                c={c}
+                name="acmeEmail"
+                label="Let's Encrypt email"
+                hint="(optional)"
+                placeholder="you@example.com"
+                class="grow"
+              />
+            </div>
+          )}
+          {f.webIngress === "expose" && (
+            <Text
+              c={c}
+              name="publicUrl"
+              label="The URL the platform serves this at"
+              hint="(route it to port 8080)"
               placeholder="https://agent.example.com"
             />
           )}
         </>
       )}
-      {f.mode === "caddy" && (
-        <div class="row">
-          <Text
-            c={c}
-            name="domain"
-            label="Domain name"
-            hint="(or the host's IPv4 address)"
-            placeholder="agent.example.com"
-            class="grow"
-          />
-          <Text c={c} name="httpsPort" label="HTTPS port" class="narrow" />
-          <Text
-            c={c}
-            name="acmeEmail"
-            label="Let's Encrypt email"
-            hint="(optional)"
-            placeholder="you@example.com"
-            class="grow"
-          />
-        </div>
-      )}
-      {f.mode === "tailscale" && (
+      {f.boundary === "tailscale" && (
         <Text
           c={c}
           name="tsHostname"
@@ -258,7 +267,7 @@ function Where({ c }: { c: Configurator }) {
           placeholder="work.tail1234.ts.net"
         />
       )}
-      {f.mode === "wireguard" && (
+      {f.boundary === "wireguard" && (
         <>
           {!c.wgSupported && (
             <p class="note warn">
@@ -316,6 +325,47 @@ function Where({ c }: { c: Configurator }) {
           </div>
         </>
       )}
+      <div
+        class="ssh-box"
+        style={{
+          borderTop: "1px solid var(--line, rgba(128,128,128,0.3))",
+          paddingTop: "1rem",
+          marginTop: "0.5rem",
+          display: "grid",
+          gap: "0.75rem",
+        }}
+      >
+        <span class="label">SSH &amp; mosh</span>
+        <Choices
+          c={c}
+          name="ssh"
+          cols={3}
+          options={[
+            {
+              value: "host-port",
+              title: "Host port",
+              desc:
+                f.boundary === "host"
+                  ? "Published on a host port — public, or loopback when the web is."
+                  : "Published on the sidecar's host port, beside the tunnel.",
+            },
+            {
+              value: "tunnel",
+              title: f.boundary === "host" ? "Exposed only" : "Over the tunnel",
+              desc:
+                f.boundary === "host"
+                  ? "Exposed for a platform to route (expose: 22); nothing published."
+                  : f.boundary === "tailscale"
+                    ? "Reached over the tailnet; nothing published."
+                    : "Reached over the WireGuard tunnel; nothing published.",
+            },
+            { value: "off", title: "Off", desc: "No SSH, and no mosh." },
+          ]}
+        />
+        {f.ssh === "host-port" && (
+          <Text c={c} name="sshPort" label="SSH host port" class="narrow" />
+        )}
+      </div>
     </>
   );
 }
@@ -478,8 +528,11 @@ function Who({ c }: { c: Configurator }) {
         </>
       )}
       {f.authMode === "basic" && <Text c={c} name="gatewayUser" label="Username" class="narrow" />}
-      {f.authMode === "none" && f.mode !== "caddy" && (
-        <p class="callout">Anyone who can reach this gets a root-capable shell in the container.</p>
+      {f.authMode === "none" && (
+        <p class="callout">
+          {c.warningFor("authMode") ??
+            "Anyone who can reach this gets a root-capable shell in the container."}
+        </p>
       )}
     </>
   );
@@ -555,9 +608,6 @@ function Storage({ c }: { c: Configurator }) {
           mono
           class="grow"
         />
-        {f.mode !== "tailscale" && f.mode !== "wireguard" && f.mode !== "none" && (
-          <Text c={c} name="sshPort" label="SSH host port" class="narrow" />
-        )}
       </div>
       <h3>
         <code>/workspace</code>
@@ -822,11 +872,20 @@ export function FilesPanel({ c, class: cls }: { c: Configurator; class?: string 
   );
 }
 
-export function ProblemList({ c, onGo }: { c: Configurator; onGo?: (id: SectionId) => void }) {
-  if (!c.problems.length) return null;
+export function ProblemList({
+  c,
+  onGo,
+  items,
+}: {
+  c: Configurator;
+  onGo?: (id: SectionId) => void;
+  items?: Problem[];
+}) {
+  const list = items ?? c.problems;
+  if (!list.length) return null;
   return (
     <ul class="problems">
-      {c.problems.map((p) => {
+      {list.map((p) => {
         const id = sectionOf(p);
         const label = p.field && !p.detail ? FIELD_LABELS[p.field] : undefined;
         return (
