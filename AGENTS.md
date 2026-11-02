@@ -1013,9 +1013,10 @@ needs five things a stock container does not get, and all five are required:
 | `--security-opt systempaths=unconfined` | `dockerd-rootless.sh` sets `net.ipv4.ip_forward` inside its own network namespace, and `/proc/sys` is read-only in a stock container. |
 | `--device /dev/net/tun` | slirp4netns builds a tap device to give the daemon its network namespace. |
 
-The entrypoint checks for all five at startup. If any is missing it names it,
-drops `docker` from the enabled components with a warning and carries on, rather
-than crash-looping something that cannot work.
+The entrypoint checks for all five — and for the host kernel restriction below —
+at startup. If any is missing it names it, drops `docker` from the enabled
+components with a warning and carries on, rather than crash-looping something
+that cannot work.
 
 ```bash
 docker run -d --name agent-env --shm-size=2g \
@@ -1027,6 +1028,28 @@ docker run -d --name agent-env --shm-size=2g \
   -e AGENT_ENV_COMPONENTS=desktop,terminal,files,docker \
   ...
 ```
+
+One host prerequisite is not a `docker run` flag. A kernel that restricts
+unprivileged user namespaces — `kernel.apparmor_restrict_unprivileged_userns=1`,
+the default on Debian 13 and Ubuntu 23.10+ — denies rootlesskit the namespace it
+has to create, so the daemon dies before it starts with `[rootlesskit:parent]
+error: failed to start the child: fork/exec /proc/self/exe: permission denied`.
+`apparmor=unconfined` does not lift it: on a restricted kernel an unconfined task
+is exactly what the restriction targets, and the `dockerd-rootless` process runs
+as the dev uid with no `CAP_SYS_ADMIN` to exempt it. Fix it on the host, not in
+the container:
+
+```bash
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/99-userns.conf
+```
+
+Setting it to `0` is the pre-23.10 default and what most distributions still
+ship; the cost is re-widening the unprivileged-userns attack surface host-wide,
+which matters only where untrusted users can get a shell on the host. The
+entrypoint reads this value — it is the host's, visible from the container — and
+if it is `1` it names it and drops `docker` with the same warning rather than
+crash-loop.
 
 Weigh that against the isolation the rest of this image is built on: it is a
 real widening of what code in the container can do, and this is a container

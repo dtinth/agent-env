@@ -432,13 +432,37 @@ docker_rootless_preflight() {
   # /proc/sys is read-only in a stock container, so that write fails.
   [[ -w /proc/sys/net/ipv4/ip_forward ]] || missing+=("--security-opt systempaths=unconfined")
 
-  if (( ${#missing[@]} )); then
-    warn "The docker component is listed, but this container was not started with:"
-    local flag
-    for flag in "${missing[@]}"; do warn "    ${flag}"; done
-    warn "The docker component is off. Add those to your docker run / compose"
-    warn "service and recreate the container. See 'Docker inside the container'"
-    warn "in AGENTS.md for what each one is for."
+  # Even with every flag above present, a host kernel that restricts
+  # unprivileged user namespaces refuses the one rootlesskit must create.
+  # Debian 13 and Ubuntu 23.10+ ship
+  # kernel.apparmor_restrict_unprivileged_userns=1, which denies a userns to any
+  # task that is unconfined and lacks CAP_SYS_ADMIN -- and dockerd-rootless is
+  # both: it runs as the dev uid (no effective caps) and the container is
+  # apparmor=unconfined. rootlesskit then dies before the daemon starts, with
+  #   [rootlesskit:parent] error: failed to start the child:
+  #   fork/exec /proc/self/exe: permission denied
+  # This one is not a docker run flag -- apparmor=unconfined cannot grant a
+  # permission a restricted kernel withholds -- so it has to be fixed on the
+  # host. /proc/sys/kernel is the host's, and readable here even unprivileged.
+  local userns_restricted=false
+  [[ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" == 1 ]] \
+    && userns_restricted=true
+
+  if (( ${#missing[@]} )) || [[ "${userns_restricted}" == true ]]; then
+    if (( ${#missing[@]} )); then
+      warn "The docker component is listed, but this container was not started with:"
+      local flag
+      for flag in "${missing[@]}"; do warn "    ${flag}"; done
+      warn "Add those to your docker run / compose service and recreate the container."
+    fi
+    if [[ "${userns_restricted}" == true ]]; then
+      warn "The docker component is listed, but the host kernel restricts unprivileged"
+      warn "user namespaces (apparmor_restrict_unprivileged_userns=1), which rootlesskit"
+      warn "needs. This is a host setting, not a container flag; on the host, run:"
+      warn "    sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0"
+      warn "and persist it in /etc/sysctl.d/ (e.g. 99-userns.conf), then recreate."
+    fi
+    warn "The docker component is off. See 'Docker inside the container' in AGENTS.md."
     return 1
   fi
   return 0
