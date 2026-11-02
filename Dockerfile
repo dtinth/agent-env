@@ -335,5 +335,13 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=240s --retries=3 \
 
 # entrypoint.sh renders configuration and then exec's the CMD, so pitchfork
 # ends up as PID 1 with its own zombie reaper and signal forwarding.
+#
+# --force so the supervisor always takes over on start. Its state lives in
+# /var/lib/pitchfork, which is the writable layer: a graceful stop clears it,
+# but an ungraceful end (SIGKILL, OOM, a host crash or reboot) leaves a record
+# naming the old supervisor's PID 1 behind. On the next `docker start` PID 1 is
+# of course alive again, so without --force pitchfork decides a supervisor is
+# "already running with pid 1", bails, and nothing — sshd included — comes up.
+# The dev user's own supervisor already passes --force for the same reason.
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["pitchfork", "supervisor", "run", "--container", "--boot"]
+CMD ["pitchfork", "supervisor", "run", "--container", "--boot", "--force"]
