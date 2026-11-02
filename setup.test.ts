@@ -848,6 +848,32 @@ test("wireguard mode: a sidecar owns the netns and client configs are generated"
   assertEquals(readText(`${dir}/.env`), before, "the server key changed on a re-run");
 });
 
+test("wireguard mode: a public domain adds TLS on the sidecar beside the tunnel", () => {
+  const dir = tmp();
+  const WG_DOMAIN = {
+    ...WG,
+    domain: "box.example.com",
+    acmeEmail: "me@example.com",
+    authMode: "google",
+    googleClientId: "1234-abc.apps.googleusercontent.com",
+    allowedEmails: "me@example.com",
+  };
+  assertEquals(run(WG_DOMAIN, dir).code, 0);
+  const compose = readText(`${dir}/compose.yaml`);
+  // The web address is the public domain over TLS, and the gateway certifies it.
+  assertEquals(settingsOf(dir).PUBLIC_URL, "https://box.example.com");
+  assertEquals(settingsOf(dir).GATEWAY_TLS_DOMAIN, "box.example.com");
+  // The sidecar publishes 80 and 443 beside its UDP port; agent-env still none.
+  const sidecar = compose.slice(compose.indexOf("wireguard:"));
+  assertStringIncludes(sidecar, '- "80:80"');
+  assertStringIncludes(sidecar, '- "443:443"');
+  const agentBlock = compose.slice(compose.indexOf("agent-env:"), compose.indexOf("wireguard:"));
+  assert(!/^\s+ports:/m.test(agentBlock), "agent-env published ports under wireguard");
+  // Still a tunnel: the UDP port is published and the server key is minted.
+  assertStringIncludes(compose, '- "51820:51820/udp"');
+  assertMatch(envOf(dir).WG_PRIVATE_KEY, /^[A-Za-z0-9+/]{43}=$/);
+});
+
 test("a malformed domain is rejected", () => {
   for (const d of ["-a.example.com", "a..example.com", "example", "a.example.com-"]) {
     const dir = tmp();

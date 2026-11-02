@@ -475,14 +475,43 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
 
     wireguard = { endpoint, listenPort, address, serverPublicKey: serverPub, peers };
     wgKeyOptions = { serverPrivateKey: serverPriv, clientPrivateKeys };
-    publicUrl = publicUrlFor({ mode, wireguard, publicUrl });
+
+    // Optional: a public domain alongside the tunnel. With one, the gateway
+    // terminates TLS on a public 443 — so https:// works, with a real
+    // certificate and the secure context Selkies and the clipboard need —
+    // while ssh and mosh stay on the tunnel. Blank keeps the tunnel the only
+    // way in, the gateway plain HTTP over it.
+    domain = await ask(
+      "domain",
+      "Public domain for https (optional) — blank keeps the tunnel the only way in",
+      prev.domain ?? "",
+      { optional: true, validate: CHECKS.domain },
+    );
+    if (domain) {
+      httpsPort = Number(
+        await ask("httpsPort", "HTTPS port to serve on", String(prev.httpsPort ?? 443), {
+          validate: CHECKS.port,
+        }),
+      );
+      acmeEmail = await ask(
+        "acmeEmail",
+        "Email for Let's Encrypt (expiry notices)",
+        prev.acmeEmail ?? "",
+        { optional: true, validate: CHECKS.acmeEmail },
+      );
+    }
+    publicUrl = publicUrlFor({ mode, domain, httpsPort, wireguard, publicUrl });
   }
 
   // 2. Who gets in. The mode decides what is reasonable here, which is the
   //    single best reason for this script to exist.
   const authDefault: AuthMode =
     prev.authMode ??
-    (mode === "tailscale" ? "none" : mode === "caddy" || mode === "none" ? "google" : "basic");
+    (mode === "tailscale"
+      ? "none"
+      : mode === "caddy" || mode === "none" || (mode === "wireguard" && domain)
+        ? "google"
+        : "basic");
 
   if (mode === "tailscale" && authDefault === "none") {
     note();
@@ -901,6 +930,7 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
     behindProxy,
     publicUrl,
     sshPort,
+    domain,
   });
   if (clash) fail(clash);
 
@@ -1193,7 +1223,11 @@ async function main() {
     step(`Register this redirect URI: ${answers.publicUrl}/oauth2/callback`);
   }
   // An address needs no record; it is already where it points.
-  if (answers.mode === "caddy" && !isIPv4(answers.domain ?? "")) {
+  if (
+    (answers.mode === "caddy" || answers.mode === "wireguard") &&
+    answers.domain &&
+    !isIPv4(answers.domain)
+  ) {
     step(`Point an A record for ${answers.domain} at this host, before first start.`);
   }
   if (answers.mode === "tailscale") {
@@ -1201,6 +1235,9 @@ async function main() {
   }
   if (answers.mode === "wireguard") {
     step(`Open UDP port ${answers.wireguard?.listenPort} to this host.`);
+    if (answers.domain) {
+      step("Open TCP 80 and 443 too, for the public domain and its certificate.");
+    }
     const confs = Object.keys(files).filter((f) => f.startsWith("wireguard/"));
     if (confs.length) {
       step(`Install each client config on its device: ${confs.join(", ")}`);
