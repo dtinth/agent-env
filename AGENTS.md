@@ -805,6 +805,14 @@ the shared server, and `$OPENCODE_SERVER_PASSWORD` is its password.
 zombies are reaped and `docker stop` shuts every daemon down in order — a clean
 exit takes a few seconds, well inside Docker's grace period.
 
+It is started with `--force`, so it always takes over on boot. Its state lives
+in `/var/lib/pitchfork` on the writable layer; a graceful stop clears it, but an
+ungraceful end (SIGKILL, OOM, a host crash or reboot) leaves a record naming the
+old PID 1. Since PID 1 is alive again on the next `docker start`, without
+`--force` pitchfork would decide a supervisor is "already running with pid 1"
+and refuse to start — taking `sshd` and everything else down with it. The dev
+user's supervisor passes `--force` for the same reason.
+
 There are two supervisors. The system one (PID 1, root) runs only the plumbing:
 `sshd`, `dbus` (only when a desktop component is on — the system bus has to be
 root's), `oauth2-proxy` (OAuth modes), `caddy`, `user-supervisor` and
