@@ -963,6 +963,13 @@ started under it warns about `setlocale` before doing anything else. The image
 removes Debian's own `AcceptEnv` line for the same reason. `TERM`, `COLORTERM`
 and `NO_COLOR` still come across.
 
+mosh needs the same treatment and does not get it from `sshd`: mosh-client
+forwards the client's locale to mosh-server as `-l NAME=VALUE` pairs over its
+own channel, which never pass through `AcceptEnv`. A small `mosh-server`
+wrapper (`rootfs/usr/local/bin/mosh-server`, ahead of the real one on `PATH`)
+drops those `LANG`/`LC_*` pairs and pins the session to `C.UTF-8`, so a mosh
+session is as quiet as an SSH one.
+
 ### Startup scripts
 
 Executables in `/etc/agent-env/provision.d/` — supplied through compose
