@@ -310,6 +310,11 @@ ENV TZ=UTC \
     # image's own node and dufs — is read as a shared, read-only install dir.
     MISE_DATA_DIR=/home/dev/.local/share/mise \
     MISE_SHARED_INSTALL_DIRS=/opt/mise/installs \
+    # Per-user, writable, and on the home volume — not the read-only /opt/mise
+    # the build stage used. Left at /opt/mise they are unwritable once PUID
+    # remaps the dev user off uid 1000, which spews mise cache-write warnings.
+    MISE_STATE_DIR=/home/dev/.local/state/mise \
+    MISE_CACHE_DIR=/home/dev/.cache/mise \
     PATH=/home/dev/.agent-env/bin:/home/dev/.local/share/mise/shims:/opt/mise/shims:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin \
     DISPLAY=:1 \
     CHROME_BIN=/usr/bin/chromium \
