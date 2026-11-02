@@ -532,7 +532,7 @@ function Storage({ c }: { c: Configurator }) {
           mono
           class="grow"
         />
-        {f.mode !== "tailscale" && f.mode !== "none" && (
+        {f.mode !== "tailscale" && f.mode !== "wireguard" && f.mode !== "none" && (
           <Text c={c} name="sshPort" label="SSH host port" class="narrow" />
         )}
       </div>
