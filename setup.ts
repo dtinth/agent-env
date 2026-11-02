@@ -31,6 +31,8 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { generateKeyPairSync, createPrivateKey, createPublicKey } from "node:crypto";
+import { dirname, basename } from "node:path";
 import process from "node:process";
 import { createInterface, type Interface } from "node:readline";
 import {
@@ -47,6 +49,7 @@ import {
   isIPv4,
   needsClientSecret,
   LEGACY_ANSWERS_FILE,
+  parseEnvFile,
   type Mode,
   type Component,
   COMPONENTS,
@@ -64,6 +67,7 @@ import {
   startupScriptBody,
   validate,
   VERSION,
+  type Wireguard,
   type Workspace,
 } from "./generate.ts";
 
@@ -88,6 +92,12 @@ let outDir = ".";
  * which compose.yaml carries; it is for .env only.
  */
 let clientSecret: string | undefined;
+/**
+ * WireGuard private keys, set while collecting a wireguard deployment: the
+ * server's (for .env) and the ones generated this run (for each new peer's
+ * client config). Kept apart from the answers, which compose.yaml carries.
+ */
+let wgKeyOptions: { serverPrivateKey?: string; clientPrivateKeys?: Record<string, string> };
 
 const args = process.argv.slice(2);
 
@@ -239,6 +249,39 @@ async function yesNo(key: string, question: string, fallback: boolean): Promise<
 }
 
 // ---------------------------------------------------------------------------
+// WireGuard keys
+//
+// WireGuard uses X25519, so a raw 32-byte key in standard base64 is exactly
+// what a wg config wants. node:crypto makes them; generate.ts never touches
+// crypto, so it stays a pure, synchronous function. The browser configurator
+// does the same with Web Crypto.
+// ---------------------------------------------------------------------------
+
+/** A fresh keypair, both halves base64. */
+function wgKeypair(): { priv: string; pub: string } {
+  const { publicKey, privateKey } = generateKeyPairSync("x25519");
+  // The raw 32 bytes are the tail of the DER encoding either way.
+  const priv = privateKey.export({ type: "pkcs8", format: "der" }).subarray(-32);
+  const pub = publicKey.export({ type: "spki", format: "der" }).subarray(-32);
+  return { priv: priv.toString("base64"), pub: pub.toString("base64") };
+}
+
+/** The public key for a base64 private key, so a kept server key keeps its
+ *  identity across a re-run. Null if the stored value is not a usable key. */
+function wgPublicFor(privBase64: string): string | null {
+  try {
+    const der = Buffer.concat([
+      Buffer.from("302e020100300506032b656e04220420", "hex"),
+      Buffer.from(privBase64, "base64"),
+    ]);
+    const key = createPublicKey(createPrivateKey({ key: der, format: "der", type: "pkcs8" }));
+    return key.export({ type: "spki", format: "der" }).subarray(-32).toString("base64");
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Questions
 // ---------------------------------------------------------------------------
 
@@ -280,6 +323,11 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
         hint: "Adds a Tailscale sidecar. The tailnet is the boundary; SSH and mosh just work.",
       },
       {
+        value: "wireguard",
+        label: "A WireGuard tunnel, dialed into this host",
+        hint: "Adds a WireGuard sidecar for a public-IP host that is not on a tailnet. The tunnel is the boundary; client configs are generated for you.",
+      },
+      {
         value: "none",
         label: "None: a platform routes to it",
         hint: "For Dokploy, Coolify and the like. Publishes no ports; the platform's proxy reaches port 8080.",
@@ -294,6 +342,7 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
   let httpsPort: number | undefined;
   let acmeEmail: string | undefined;
   let tsHostname: string | undefined;
+  let wireguard: Wireguard | undefined;
 
   if (mode === "local") {
     behindProxy = await yesNo(
@@ -358,6 +407,75 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
       { validate: CHECKS.tsHostname },
     );
     publicUrl = publicUrlFor({ mode, tsHostname, publicUrl });
+  }
+
+  if (mode === "wireguard") {
+    const endpoint = await ask(
+      "wgEndpoint",
+      "What peers dial — this host's public address and the WireGuard port",
+      prev.wireguard?.endpoint ?? "203.0.113.7:51820",
+      { validate: CHECKS.wgEndpoint },
+    );
+    const listenPort = Number(endpoint.slice(endpoint.lastIndexOf(":") + 1));
+    const address = await ask(
+      "wgAddress",
+      "The server's own address inside the tunnel",
+      prev.wireguard?.address ?? "10.8.0.1/24",
+      { validate: CHECKS.wgAddress },
+    );
+
+    // The server keypair: kept across a re-run so existing client configs stay
+    // valid. Its private half is in .env; derive the public half from it. With
+    // no usable stored key, mint a fresh pair and warn that clients reissue.
+    const envText = readIfExists(`${outDir.replace(/\/$/, "")}/.env`) ?? "";
+    let serverPriv = parseEnvFile(envText).WG_PRIVATE_KEY?.value ?? "";
+    let serverPub = serverPriv ? (wgPublicFor(serverPriv) ?? "") : "";
+    if (!serverPub) {
+      if (serverPriv) warn("The stored WG_PRIVATE_KEY is not a usable key; generating a new one.");
+      const kp = wgKeypair();
+      serverPriv = kp.priv;
+      serverPub = kp.pub;
+    }
+
+    // Peers by label. A known label keeps its key and address, so the config
+    // already on that device still works; a new one gets a fresh keypair, the
+    // next free address, and a client config written out this run.
+    const prevPeers = prev.wireguard?.peers ?? [];
+    const peersRaw = await ask(
+      "wgPeers",
+      "Peer devices, comma-separated (e.g. laptop, phone) — or leave blank to add later",
+      prevPeers.map((p) => p.name).join(", "),
+      {
+        optional: true,
+        validate: (v: string) => {
+          const seen = new Set<string>();
+          for (const t of v.split(/[\s,]+/).filter(Boolean)) {
+            const why = CHECKS.wgPeerName(t);
+            if (why) return `${t}: ${why}`;
+            if (seen.has(t.toLowerCase())) return `${t}: listed twice`;
+            seen.add(t.toLowerCase());
+          }
+          return null;
+        },
+      },
+    );
+    const names = peersRaw.split(/[\s,]+/).filter(Boolean);
+    const serverHost = address.split("/")[0];
+    const base = Number(serverHost.split(".")[3] || "1");
+    const clientPrivateKeys: Record<string, string> = {};
+    const peers = names.map((name, i) => {
+      const was = prevPeers.find((p) => p.name === name);
+      if (was) return was;
+      const kp = wgKeypair();
+      clientPrivateKeys[name] = kp.priv;
+      const octets = serverHost.split(".");
+      octets[3] = String(base + i + 1);
+      return { name, publicKey: kp.pub, address: octets.join(".") };
+    });
+
+    wireguard = { endpoint, listenPort, address, serverPublicKey: serverPub, peers };
+    wgKeyOptions = { serverPrivateKey: serverPriv, clientPrivateKeys };
+    publicUrl = publicUrlFor({ mode, wireguard, publicUrl });
   }
 
   // 2. Who gets in. The mode decides what is reasonable here, which is the
@@ -669,7 +787,7 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
   // and a platform publishes nothing at all, so neither needs asking. Everywhere
   // else it is a host port, and 2222 is often already taken.
   let sshPort: number | undefined;
-  if (mode !== "tailscale" && mode !== "none") {
+  if (mode !== "tailscale" && mode !== "wireguard" && mode !== "none") {
     sshPort = Number(
       await ask("sshPort", "Host port for SSH", String(prev.sshPort ?? 2222), {
         validate: CHECKS.port,
@@ -796,6 +914,7 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
     httpsPort,
     acmeEmail,
     tsHostname,
+    wireguard,
     authMode,
     googleClientId,
     githubClientId,
@@ -923,15 +1042,16 @@ async function chooseComponents(
     note(
       C.dim("  Adds five host flags that widen the sandbox. See AGENTS.md before shipping this."),
     );
-    if (mode === "tailscale") {
-      warn("Rootless Docker inside the Tailscale network namespace is UNTESTED.");
-      warn("Inner published ports land in the tailnet namespace and need serve config.");
+    if (mode === "tailscale" || mode === "wireguard") {
+      const net = mode === "tailscale" ? "Tailscale" : "WireGuard";
+      warn(`Rootless Docker inside the ${net} network namespace is UNTESTED.`);
+      warn("Inner published ports land in the tunnel namespace and need extra config.");
     }
   }
   await choose("smb", "Share the workspace over SMB, for the Files app or Finder?");
   if (on.has("smb")) {
     note(C.dim("  Sign in as dev; the password is on the /~env/ page."));
-    if (mode !== "tailscale") {
+    if (mode !== "tailscale" && mode !== "wireguard") {
       note(C.dim("  Port 445 is not published: forward it yourself, on a network you trust."));
     }
   }
@@ -988,6 +1108,7 @@ async function main() {
   const files = generate(answers, {
     existingEnv: readIfExists(p(".env")) ?? "",
     clientSecret,
+    wireguard: answers.mode === "wireguard" ? wgKeyOptions : undefined,
   });
 
   note();
@@ -1017,10 +1138,16 @@ async function main() {
   const staged: [string, string][] = [];
   try {
     for (const [name, body] of Object.entries(files)) {
-      const tmp = p(`.${name}.tmp`);
+      const final = p(name);
+      // A client config lands in wireguard/, so its directory may not exist
+      // yet; the staged temp file sits beside it with a dotted name.
+      const dir = dirname(final);
+      mkdirSync(dir, { recursive: true });
+      const tmp = `${dir}/.${basename(final)}.tmp`;
       writeFileSync(tmp, body);
-      if (name === ".env") chmodSync(tmp, 0o600);
-      staged.push([tmp, p(name)]);
+      // .env and every client config hold a private key: owner-only.
+      if (name === ".env" || name.startsWith("wireguard/")) chmodSync(tmp, 0o600);
+      staged.push([tmp, final]);
     }
   } catch (e) {
     for (const [tmp] of staged) {
@@ -1071,6 +1198,15 @@ async function main() {
   }
   if (answers.mode === "tailscale") {
     step("Put a tagged, reusable auth key in .env (TS_AUTHKEY).");
+  }
+  if (answers.mode === "wireguard") {
+    step(`Open UDP port ${answers.wireguard?.listenPort} to this host.`);
+    const confs = Object.keys(files).filter((f) => f.startsWith("wireguard/"));
+    if (confs.length) {
+      step(`Install each client config on its device: ${confs.join(", ")}`);
+    } else {
+      step("Re-run to add peer devices; a client config is written for each new one.");
+    }
   }
   if (answers.mode === "none") {
     step(`Have the platform route ${answers.publicUrl} to port 8080 of the agent-env service.`);
