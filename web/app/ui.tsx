@@ -193,6 +193,11 @@ function Where({ c }: { c: Configurator }) {
             desc: "Via Tailscale. The tailnet is the boundary; SSH and mosh just work.",
           },
           {
+            value: "wireguard",
+            title: "A WireGuard tunnel",
+            desc: "For a public-IP host off your tailnet. The tunnel is the boundary; client configs are made for you.",
+          },
+          {
             value: "none",
             title: "None",
             desc: "Dokploy, Coolify and the like route to it. No ports are published.",
@@ -252,6 +257,41 @@ function Where({ c }: { c: Configurator }) {
           label="Full MagicDNS name of this machine"
           placeholder="work.tail1234.ts.net"
         />
+      )}
+      {f.mode === "wireguard" && (
+        <>
+          {!c.wgSupported && (
+            <p class="note warn">
+              This browser cannot generate WireGuard keys (no Web Crypto X25519). Use the{" "}
+              <code>node setup.ts</code> wizard instead, which does the same on the command line.
+            </p>
+          )}
+          <div class="row">
+            <Text
+              c={c}
+              name="wgEndpoint"
+              label="What peers dial"
+              hint="(this host's public address and the WireGuard port)"
+              placeholder="203.0.113.7:51820"
+              class="grow"
+            />
+            <Text
+              c={c}
+              name="wgAddress"
+              label="Server tunnel address"
+              placeholder="10.8.0.1/24"
+              class="narrow"
+            />
+          </div>
+          <Text
+            c={c}
+            name="wgPeers"
+            label="Peer devices"
+            hint="(one label per line, e.g. laptop — a client config is generated for each)"
+            placeholder={"laptop\nphone"}
+            multiline
+          />
+        </>
       )}
     </>
   );
@@ -701,13 +741,18 @@ function download(name: string, body: string): void {
 export function FilesPanel({ c, class: cls }: { c: Configurator; class?: string }) {
   const [current, setCurrent] = useState("compose.yaml");
   const [copied, setCopied] = useState(false);
-  const body = c.files?.[current];
+  // The two always-present files, plus any wireguard/<peer>.conf the current
+  // answers produce. A stale tab (the mode changed under it) falls back to the
+  // first real one.
+  const names = c.files ? Object.keys(c.files) : FILE_NAMES;
+  const active = c.files && !(current in c.files) ? names[0] : current;
+  const body = c.files?.[active];
   return (
     <section class={`files card ${cls ?? ""}`}>
       <div class="files-head">
         <div class="filetabs" role="tablist">
-          {FILE_NAMES.map((n) => (
-            <button role="tab" aria-selected={n === current} onClick={() => setCurrent(n)}>
+          {names.map((n) => (
+            <button role="tab" aria-selected={n === active} onClick={() => setCurrent(n)}>
               {n}
             </button>
           ))}
@@ -724,7 +769,7 @@ export function FilesPanel({ c, class: cls }: { c: Configurator; class?: string 
           >
             {copied ? "Copied" : "Copy"}
           </button>
-          <button class="small" disabled={!body} onClick={() => download(current, body ?? "")}>
+          <button class="small" disabled={!body} onClick={() => download(active, body ?? "")}>
             Download
           </button>
           <button

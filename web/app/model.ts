@@ -48,7 +48,6 @@ export const DEFAULT_FIELDS = {
   // address, and the peer devices — one label per line. Keys are generated for
   // you; see useConfigurator.
   wgEndpoint: "",
-  wgListenPort: "51820",
   wgAddress: "10.8.0.1/24",
   wgPeers: "",
   authMode: "basic",
@@ -140,9 +139,13 @@ export function wgPeerAddress(serverAddress: string, n: number): string {
 /** The wireguard answers the fields describe, with the public keys left to the
  *  hook to fill in from its generated keystore. */
 function wireguardOf(f: Fields): Wireguard {
+  const endpoint = f.wgEndpoint.trim();
+  // The published UDP port is the endpoint's port — one source of truth, so the
+  // port peers dial and the port the sidecar listens on cannot drift apart.
+  const port = num(endpoint.slice(endpoint.lastIndexOf(":") + 1));
   return {
-    endpoint: f.wgEndpoint.trim(),
-    listenPort: num(f.wgListenPort) ?? 51820,
+    endpoint,
+    listenPort: port && !Number.isNaN(port) ? port : 51820,
     address: f.wgAddress.trim(),
     serverPublicKey: "",
     peers: wgPeerNames(f.wgPeers).map((name, i) => ({
@@ -283,9 +286,9 @@ export const SECTIONS: Section[] = [
       "acmeEmail",
       "tsHostname",
       "wgEndpoint",
-      "wgListenPort",
       "wgAddress",
       "wgPeers",
+      "wgServerPublicKey",
       "wireguard",
     ],
     summary: (a) =>
@@ -380,7 +383,6 @@ export const FIELD_LABELS: Record<string, string> = {
   acmeEmail: "Let's Encrypt email",
   tsHostname: "MagicDNS name",
   wgEndpoint: "WireGuard endpoint",
-  wgListenPort: "WireGuard port",
   wgAddress: "Server tunnel address",
   wgPeers: "Peers",
   wireguard: "WireGuard",
@@ -478,7 +480,6 @@ export function fieldsFromAnswers(a: Partial<Answers>): Partial<Fields> {
   put("tsHostname", a.tsHostname);
   if (a.wireguard) {
     put("wgEndpoint", a.wireguard.endpoint);
-    put("wgListenPort", str(a.wireguard.listenPort));
     put("wgAddress", a.wireguard.address);
     put("wgPeers", a.wireguard.peers.map((p) => p.name).join("\n"));
   }

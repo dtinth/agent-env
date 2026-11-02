@@ -456,6 +456,35 @@ test("the page's choices become components", () => {
   );
 });
 
+test("the web maps wireguard fields to peers with assigned addresses", () => {
+  const f: Fields = {
+    ...DEFAULT_FIELDS,
+    mode: "wireguard",
+    wgEndpoint: "198.51.100.9:51820",
+    wgAddress: "10.9.0.1/24",
+    wgPeers: "laptop\nphone",
+  };
+  const a = toAnswers(f);
+  assertEquals(a.mode, "wireguard");
+  // The gateway is reached over the tunnel on the server's address.
+  assertEquals(a.publicUrl, "http://10.9.0.1:8080");
+  // The listen port is the endpoint's, so the two cannot drift apart.
+  assertEquals(a.wireguard?.listenPort, 51820);
+  // Peers take sequential addresses after the server's.
+  assertEquals(
+    a.wireguard?.peers.map((p) => [p.name, p.address]),
+    [
+      ["laptop", "10.9.0.2"],
+      ["phone", "10.9.0.3"],
+    ],
+  );
+  // Keys are the hook's to generate and fold in; toAnswers leaves them blank.
+  assertEquals(a.wireguard?.serverPublicKey, "");
+  assertEquals(a.wireguard?.peers[0].publicKey, "");
+  // And the peers round-trip back into the form.
+  assertEquals(fieldsFromAnswers(a).wgPeers, "laptop\nphone");
+});
+
 // A pasted client secret is for .env alone: compose.yaml carries the answers,
 // and anyone who can read the compose file must not get the secret with it.
 test("a pasted client secret goes to .env and nowhere else", () => {
