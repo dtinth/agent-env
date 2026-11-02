@@ -718,8 +718,10 @@ export function validate(a: Answers): Problem[] {
       // well-formed and must not collide with the server or another peer.
       const seenNames = new Set<string>();
       const seenAddrs = new Set<string>([wgServerHost(wg)]);
+      // All peer problems point at the one field the forms edit them through:
+      // the wizard's comma list and the configurator's textarea.
+      const where = "wgPeers";
       for (const [i, p] of (wg.peers ?? []).entries()) {
-        const where = `wgPeers[${i}]`;
         field(where, CHECKS.wgPeerName(p.name ?? ""));
         if (!p.publicKey) field(where, `peer ${p.name || i} has no public key`);
         if (!isIPv4(p.address ?? "")) {
