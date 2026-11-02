@@ -302,6 +302,14 @@ mkdir -p "${WORKSPACE_DIR}" \
          "${USER_HOME}/.cache"
 chmod 700 "${USER_HOME}/.ssh"
 
+# mise's per-user state and cache. HOME is /home/dev for root too, so a root
+# process that runs mise (a login shell sourcing `mise activate`, say) resolves
+# the same paths the dev user does — and whoever runs mise first creates them,
+# owner and all. Pre-create them here, before anything runs mise, so the chown
+# below hands them to the dev user; otherwise a root-first run leaves them
+# root-owned and `mise install` as dev dies with "Permission denied".
+mkdir -p "${USER_HOME}/.local/state/mise" "${USER_HOME}/.cache/mise"
+
 # Reconciling ownership of a large mounted workspace can be slow, so it is
 # opt-out via CHOWN_WORKSPACE=false.
 chown "${PUID}:${PGID}" "${USER_HOME}" || true
@@ -311,6 +319,13 @@ done
 if is_true "${CHOWN_WORKSPACE:-true}"; then
   chown "${PUID}:${PGID}" "${WORKSPACE_DIR}" || true
 fi
+
+# The image's locked mise system config (/etc/mise) is owned by the build uid.
+# mise rewrites the lockfile beside it whenever it upgrades a tool (lockfile =
+# true in config.toml), which already happens at every start — so a PUID-remapped
+# dev user has to own it too, or that upgrade dies with EACCES on /etc/mise.
+# Reconcile it like the home dirs above; a rebuild resets it either way.
+chown -R "${PUID}:${PGID}" /etc/mise 2>/dev/null || true
 
 # Anything the agent installs into the home directory — a tool in ~/.local/bin,
 # a dotfile, a provider login — is only as durable as this directory.
