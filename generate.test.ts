@@ -485,6 +485,25 @@ test("the web maps wireguard fields to peers with assigned addresses", () => {
   assertEquals(fieldsFromAnswers(a).wgPeers, "laptop\nphone");
 });
 
+test("the web carries a public domain on wireguard only when it is filled in", () => {
+  const base: Fields = {
+    ...DEFAULT_FIELDS,
+    mode: "wireguard",
+    wgEndpoint: "198.51.100.9:51820",
+    wgAddress: "10.9.0.1/24",
+    wgPeers: "laptop",
+  };
+  // Blank domain: the tunnel is the only way in, plain http over it.
+  const tunnel = toAnswers({ ...base, domain: "" });
+  assertEquals(tunnel.domain, undefined);
+  assertEquals(tunnel.publicUrl, "http://10.9.0.1:8080");
+  // A domain: TLS on a public 443, and the web address is that domain.
+  const withDomain = toAnswers({ ...base, domain: "box.example.com", acmeEmail: "me@example.com" });
+  assertEquals(withDomain.domain, "box.example.com");
+  assertEquals(withDomain.acmeEmail, "me@example.com");
+  assertEquals(withDomain.publicUrl, "https://box.example.com");
+});
+
 // A pasted client secret is for .env alone: compose.yaml carries the answers,
 // and anyone who can read the compose file must not get the secret with it.
 test("a pasted client secret goes to .env and nowhere else", () => {
