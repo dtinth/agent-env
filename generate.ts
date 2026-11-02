@@ -19,9 +19,11 @@
 
 /**
  * The answers' shape. 2 replaced `preset`, `desktopBackend` and
- * `rootlessDocker` with `components`; `migrateAnswers` reads the old shape.
+ * `rootlessDocker` with `components`. 3 replaced the single `mode` (and its
+ * `behindProxy` flag) with three orthogonal axes — `boundary`, the web-ingress
+ * pair `tls`/`publish`, and `ssh`; `migrateAnswers` reads both older shapes.
  */
-export const VERSION = 2;
+export const VERSION = 3;
 
 /** The environment's name when none is given: the Compose project, and its hostname. */
 export const DEFAULT_NAME = "agent-env";
@@ -94,11 +96,15 @@ export const REMOVED_KEYS = [
   "DOCKER_ROOTLESS_ENABLE",
 ] as const;
 
-/** Answers as version 1 wrote them. Read by `migrateAnswers`, never written. */
+/** Answers as versions 1 and 2 wrote them. Read by `migrateAnswers`, never written. */
 export interface LegacyAnswers {
+  // Version 1: replaced by `components`.
   preset?: string;
   desktopBackend?: string;
   rootlessDocker?: boolean;
+  // Version 2: the flat reachability `mode`, replaced by the three axes.
+  mode?: "local" | "caddy" | "tailscale" | "wireguard" | "none";
+  behindProxy?: boolean;
 }
 
 /** How the image read a boolean setting; anything else was its default. */
@@ -112,11 +118,54 @@ const falsy = (v: string) => /^(0|false|no|off|disabled)$/i.test(v.trim());
  * has, since those are what the container was actually doing. With neither,
  * the answers come back as they were, and the defaults apply.
  */
+/**
+ * The three axes a version-2 `mode` (and its `behindProxy` flag) stands for.
+ * `behindProxy` dissolves into `publish: loopback` — both local variants bound
+ * the gateway to 127.0.0.1; the proxy case only differed in carrying a real
+ * `publicUrl`, which is kept as-is. A WireGuard deployment's `tls` follows its
+ * optional public domain, exactly as it did before.
+ */
+export function axesFromMode(
+  mode: NonNullable<LegacyAnswers["mode"]>,
+  _behindProxy: boolean | undefined,
+  domain: string | undefined,
+): { boundary: Boundary; tls: Tls; publish: Publish; ssh: Ssh } {
+  switch (mode) {
+    case "local":
+      return { boundary: "host", tls: "upstream", publish: "loopback", ssh: "host-port" };
+    case "caddy":
+      return { boundary: "host", tls: "gateway", publish: "public", ssh: "host-port" };
+    case "none":
+      return { boundary: "host", tls: "upstream", publish: "expose", ssh: "tunnel" };
+    case "tailscale":
+      // `tailscale serve` terminates TLS, not the in-container gateway, so this
+      // is `upstream`; publish is moot under a shared namespace, held canonical.
+      return { boundary: "tailscale", tls: "upstream", publish: "loopback", ssh: "tunnel" };
+    case "wireguard":
+      return {
+        boundary: "wireguard",
+        tls: domain ? "gateway" : "upstream",
+        publish: "loopback",
+        ssh: "tunnel",
+      };
+  }
+}
+
 export function migrateAnswers(
   prev: Partial<Answers> & LegacyAnswers,
   existingEnv = "",
 ): Partial<Answers> {
-  const { preset, desktopBackend, rootlessDocker, ...rest } = prev;
+  const { preset, desktopBackend, rootlessDocker, mode, behindProxy, ...rest } = prev;
+  // Version 2's flat `mode` (+ behindProxy) becomes the three axes. Only when
+  // the answers do not already carry a `boundary`, so a v3 object is untouched
+  // and a re-migration is a no-op.
+  if (mode !== undefined && rest.boundary === undefined) {
+    const axes = axesFromMode(mode, behindProxy, rest.domain);
+    rest.boundary = axes.boundary;
+    rest.tls = axes.tls;
+    rest.publish = axes.publish;
+    rest.ssh = axes.ssh;
+  }
   const env = parseEnvFile(existingEnv);
   const legacyEnv = REMOVED_KEYS.some((k) => k in env);
   const legacyAnswers =
@@ -192,10 +241,36 @@ export function startupScriptBody(a: Pick<Answers, "startupScript">): string {
 export const LEGACY_ANSWERS_FILE = "agent-env.setup.json";
 
 /**
- * Where it runs. "none" publishes nothing: a platform such as Dokploy or
- * Coolify routes to the container itself, so ports would only get in its way.
+ * How the environment is reached, decomposed into three orthogonal axes.
+ *
+ * `boundary` is the network-namespace owner: the agent-env container itself
+ * (`host`), or a tunnel sidecar whose namespace it shares (`tailscale` /
+ * `wireguard`), in which case agent-env has no ports of its own and the sidecar
+ * carries the tunnel.
+ *
+ * `tls` × `publish` is the web ingress, meaningful mainly when `boundary` is
+ * `host`. `tls` says who terminates TLS: `gateway` is the in-container Caddy
+ * with its own Let's Encrypt certificate (it sets `GATEWAY_TLS_DOMAIN`);
+ * `upstream` is plain HTTP for a proxy, a platform, a tunnel — or nothing — in
+ * front. `publish` is how the gateway's port is bound: `loopback` (127.0.0.1,
+ * for a proxy on the same host or a local-only run), `public` (0.0.0.0, the
+ * gateway's own cert straight to the internet), or `expose` (compose `expose:`
+ * only, for a platform like Dokploy that routes to the container itself).
+ *
+ * `ssh` is independent of the web: `host-port` publishes SSH (and mosh) on a
+ * host port — on the sidecar when a tunnel owns the namespace, so SSH can be
+ * forwarded alongside it; `tunnel` reaches SSH only over the boundary (a
+ * tailnet, a WireGuard tunnel, or a platform's own routing), nothing published;
+ * `off` is no SSH at all. mosh follows SSH.
  */
-export type Mode = "local" | "caddy" | "tailscale" | "wireguard" | "none";
+export type Boundary = "host" | "tailscale" | "wireguard";
+export type Tls = "gateway" | "upstream";
+export type Publish = "loopback" | "public" | "expose";
+export type Ssh = "host-port" | "tunnel" | "off";
+export const BOUNDARIES: readonly Boundary[] = ["host", "tailscale", "wireguard"];
+export const TLS_MODES: readonly Tls[] = ["gateway", "upstream"];
+export const PUBLISH_MODES: readonly Publish[] = ["loopback", "public", "expose"];
+export const SSH_MODES: readonly Ssh[] = ["host-port", "tunnel", "off"];
 export type AuthMode = "google" | "github" | "basic" | "none";
 
 export interface Workspace {
@@ -247,8 +322,14 @@ export interface Answers {
    * to Compose, so the second would take over the first.
    */
   name?: string;
-  mode: Mode;
-  behindProxy?: boolean;
+  /** The network-namespace owner; see the Boundary/Tls/Publish/Ssh types. */
+  boundary: Boundary;
+  /** Who terminates TLS for the web: the in-container gateway, or something upstream. */
+  tls: Tls;
+  /** How the gateway's web port is bound, when `boundary` is host. */
+  publish: Publish;
+  /** How SSH (and mosh) are reached; independent of the web. */
+  ssh: Ssh;
   publicUrl: string;
   domain?: string;
   httpsPort?: number;
@@ -381,6 +462,12 @@ export interface Problem {
   message: string;
   /** Why it matters, and what to do instead. */
   detail?: string[];
+  /**
+   * How much it matters. "error" (the default when absent) blocks generation;
+   * "warn" is a strong caution the front ends show prominently but still
+   * generate past — for a choice that is dangerous rather than invalid.
+   */
+  severity?: "warn" | "error";
 }
 
 const PORT = (v: string): string | null =>
@@ -529,32 +616,46 @@ export function hostPathFor(path: string): string {
   return path.startsWith("/") || path.startsWith(".") ? path : `./${path}`;
 }
 
+/**
+ * The in-container gateway Caddy terminates TLS with its own Let's Encrypt
+ * certificate — a public domain on the host, or a WireGuard public domain whose
+ * sidecar publishes 443. (Tailscale's `serve` does its own TLS, so its `tls` is
+ * `upstream`.) This is exactly when `GATEWAY_TLS_DOMAIN` is set.
+ */
+export function gatewayTls(a: Pick<Answers, "tls">): boolean {
+  return a.tls === "gateway";
+}
+
+/**
+ * A gateway reachable straight from the internet, fronting a root-capable
+ * container — so `AUTH_MODE=none` is dangerous here. A public host binding, or a
+ * WireGuard public domain on 443. (`expose` is a platform's to route behind its
+ * own auth; a tunnel is itself the boundary; loopback is local.)
+ */
+export function worldReachable(a: Pick<Answers, "boundary" | "publish" | "tls">): boolean {
+  return (a.boundary === "host" && a.publish === "public") || gatewayTls(a);
+}
+
 /** The URL people type, derived from the answers that decide it. */
 export function publicUrlFor(
   a: Pick<
     Answers,
-    "mode" | "behindProxy" | "publicUrl" | "domain" | "httpsPort" | "tsHostname" | "wireguard"
+    "boundary" | "tls" | "publicUrl" | "domain" | "httpsPort" | "tsHostname" | "wireguard"
   >,
 ): string {
-  if (a.mode === "caddy") {
+  // The gateway's own certificate on a public port: host caddy, or a WireGuard
+  // public domain beside the tunnel.
+  if (gatewayTls(a)) {
     const port = a.httpsPort ?? 443;
     return `https://${a.domain}${port === 443 ? "" : `:${port}`}`;
   }
-  if (a.mode === "tailscale") return `https://${a.tsHostname}`;
-  // Without a public domain the tunnel is the boundary and carries the
-  // encryption, so the gateway is plain HTTP on its own port, reached at the
-  // server's address inside the tunnel — only the WireGuard UDP port is open.
-  // With one, the gateway terminates TLS on a public 443 (as in caddy mode)
-  // and that is the web address, while the tunnel still carries SSH and mosh.
-  if (a.mode === "wireguard") {
-    if (a.domain) {
-      const port = a.httpsPort ?? 443;
-      return `https://${a.domain}${port === 443 ? "" : `:${port}`}`;
-    }
-    return `http://${wgServerHost(a.wireguard)}:8080`;
-  }
-  if (a.mode === "none") return a.publicUrl;
-  return a.behindProxy ? a.publicUrl : "http://localhost:8080";
+  if (a.boundary === "tailscale") return `https://${a.tsHostname}`;
+  // WireGuard without a public domain: the tunnel carries the encryption, so the
+  // gateway is plain HTTP on its own port at the server's address inside the tunnel.
+  if (a.boundary === "wireguard") return `http://${wgServerHost(a.wireguard)}:8080`;
+  // host + upstream: a proxy or platform in front gives its own address; a
+  // local-only run with nothing in front is reached on loopback.
+  return a.publicUrl?.trim() ? a.publicUrl : "http://localhost:8080";
 }
 
 /** The server's tunnel address without its prefix, for the URL a peer uses. */
@@ -566,17 +667,19 @@ export function wgServerHost(wg: Wireguard | undefined): string {
  * The one thing worth refusing outright. Everything in the container is
  * root-capable, and a public domain with no auth hands that to the internet.
  */
-export function refusal(a: Pick<Answers, "mode" | "authMode" | "domain">): Problem | null {
-  // A public 443 reaches the gateway directly: caddy mode, or wireguard mode
-  // once a public domain is added alongside the tunnel.
-  const publicTls = a.mode === "caddy" || (a.mode === "wireguard" && !!a.domain);
-  if (a.authMode !== "none" || !publicTls) return null;
+export function refusal(
+  a: Pick<Answers, "boundary" | "tls" | "publish" | "authMode">,
+): Problem | null {
+  if (a.authMode !== "none" || !worldReachable(a)) return null;
+  // A strong caution rather than a refusal: the deployment is still written, so
+  // someone who means it (their own edge auth, a throwaway box) is not blocked.
   return {
     field: "authMode",
-    message: "Refusing to generate that.",
+    severity: "warn",
+    message: "A public endpoint with no sign-in is risky.",
     detail: [
-      "A public domain with AUTH_MODE=none puts a root-capable shell on the internet.",
-      "Pick Google or GitHub sign-in, or basic auth — the gateway is all that stands in front.",
+      "This puts a root-capable shell straight on the internet with nothing in front of it.",
+      "Strongly prefer Google or GitHub sign-in, or basic auth — the gateway is the only gate.",
     ],
   };
 }
@@ -630,22 +733,22 @@ export function allowListProblem(
  * bind at `up`. Nothing downstream catches it, so check it here.
  */
 export function portClashProblem(
-  a: Pick<Answers, "mode" | "behindProxy" | "publicUrl" | "sshPort" | "domain">,
+  a: Pick<Answers, "boundary" | "tls" | "publish" | "sshPort" | "ssh" | "httpsPort">,
 ): Problem | null {
   const claims: [number, string][] = [];
   const claim = (port: number | undefined, what: string) => {
     if (port !== undefined) claims.push([port, what]);
   };
-  const u = new URL(a.publicUrl);
-  const extPort = u.port ? Number(u.port) : u.protocol === "https:" ? 443 : 80;
-  if (a.mode === "local") {
-    claim(a.behindProxy ? 8080 : extPort, "the gateway");
-  }
-  if (a.mode === "caddy" || (a.mode === "wireguard" && a.domain)) {
+  // Only host-published TCP ports can collide. A shared namespace puts the
+  // gateway's own ports on the sidecar, but the numbers are the same, so the
+  // same claims hold. `expose` and a tunnel publish nothing to clash over.
+  if (gatewayTls(a)) {
     claim(80, "ACME validation");
-    claim(extPort, "the gateway over TLS");
+    claim(a.httpsPort ?? 443, "the gateway over TLS");
+  } else if (a.boundary === "host" && a.publish === "loopback") {
+    claim(8080, "the gateway");
   }
-  claim(a.sshPort, "SSH");
+  if (a.ssh === "host-port") claim(a.sshPort ?? 2222, "SSH");
   const seen = new Map<number, string>();
   for (const [port, what] of claims) {
     const already = seen.get(port);
@@ -681,13 +784,52 @@ export function validate(a: Answers): Problem[] {
     if (v !== undefined) field(key, PORT(String(v)));
   };
 
-  if (!["local", "caddy", "tailscale", "wireguard", "none"].includes(a.mode)) {
-    field("mode", "expected one of local, caddy, tailscale, wireguard, none");
-    return out;
+  // The axis values themselves first: everything downstream switches on them.
+  const axisChecks: [string, readonly string[], string][] = [
+    ["boundary", BOUNDARIES, a.boundary],
+    ["tls", TLS_MODES, a.tls],
+    ["publish", PUBLISH_MODES, a.publish],
+    ["ssh", SSH_MODES, a.ssh],
+  ];
+  let badAxis = false;
+  for (const [key, allowed, value] of axisChecks) {
+    if (!allowed.includes(value)) {
+      field(key, `expected one of ${allowed.join(", ")}`);
+      badAxis = true;
+    }
   }
+  if (badAxis) return out;
   if (!["google", "github", "basic", "none"].includes(a.authMode)) {
     field("authMode", "expected one of google, github, basic, none");
     return out;
+  }
+
+  // The axes compose, but not every cell is valid. The in-container gateway's
+  // own certificate (`tls: gateway`) only makes sense served publicly, so on the
+  // host it pairs with `publish: public` and nothing else. A shared namespace
+  // owns its own ingress: Tailscale's `serve` terminates TLS upstream, and
+  // WireGuard terminates at the gateway exactly when a public domain is added.
+  if (a.boundary === "host") {
+    if ((a.tls === "gateway") !== (a.publish === "public")) {
+      field(
+        "publish",
+        "the gateway's own certificate (tls: gateway) is served on a public port, so pair it with publish: public",
+      );
+    }
+  } else if (a.boundary === "tailscale") {
+    if (a.tls !== "upstream") {
+      field("tls", "Tailscale's serve terminates TLS, so tls is upstream here");
+    }
+  } else if (a.boundary === "wireguard") {
+    const wantsGateway = !!a.domain;
+    if ((a.tls === "gateway") !== wantsGateway) {
+      field(
+        "tls",
+        wantsGateway
+          ? "a WireGuard public domain is terminated at the gateway, so tls is gateway"
+          : "without a public domain the WireGuard tunnel carries plain HTTP, so tls is upstream",
+      );
+    }
   }
 
   if (a.name !== undefined) field("name", CHECKS.name(a.name));
@@ -699,21 +841,25 @@ export function validate(a: Answers): Problem[] {
     if (a.memoryGiB === undefined) field("swapGiB", "needs a memory limit to go with it");
   }
   if (a.cpus !== undefined) field("cpus", CHECKS.cpus(String(a.cpus)));
-  if ((a.mode === "local" && a.behindProxy) || a.mode === "none") {
-    required("publicUrl", a.publicUrl);
+  // A platform routes by the URL it serves (publish: expose), so that one is
+  // required; a loopback run may give its proxy's URL or leave it blank for
+  // localhost. Either way, check the format of anything typed.
+  if (a.boundary === "host" && a.tls === "upstream") {
+    if (a.publish === "expose") required("publicUrl", a.publicUrl);
     if (a.publicUrl) field("publicUrl", CHECKS.publicUrl(a.publicUrl));
   }
-  if (a.mode === "caddy") {
+  // The gateway's own public certificate (host, publish: public) needs a domain.
+  if (a.boundary === "host" && a.publish === "public") {
     required("domain", a.domain);
     if (a.domain) field("domain", CHECKS.domain(a.domain));
     port("httpsPort", a.httpsPort);
     if (a.acmeEmail) field("acmeEmail", CHECKS.acmeEmail(a.acmeEmail));
   }
-  if (a.mode === "tailscale") {
+  if (a.boundary === "tailscale") {
     required("tsHostname", a.tsHostname);
     if (a.tsHostname) field("tsHostname", CHECKS.tsHostname(a.tsHostname));
   }
-  if (a.mode === "wireguard") {
+  if (a.boundary === "wireguard") {
     const wg = a.wireguard;
     if (!wg) {
       field("wireguard", "required");
@@ -756,7 +902,7 @@ export function validate(a: Answers): Problem[] {
   }
   if (a.authMode === "google") {
     // Google's redirect URI rules: "Hosts cannot be raw IP addresses."
-    if ((a.mode === "caddy" || a.mode === "wireguard") && a.domain && isIPv4(a.domain)) {
+    if (gatewayTls(a) && a.domain && isIPv4(a.domain)) {
       field(
         "domain",
         `Google sign-in refuses an IP address in its redirect URI. Use a name for it, like ${a.domain.replace(/\./g, "-")}.sslip.io, or GitHub or password sign-in`,
@@ -1070,20 +1216,19 @@ export function renderEnv(
     set("PGID", String(owner.pgid ?? 1000));
   }
 
-  if (a.mode === "caddy" || (a.mode === "wireguard" && a.domain)) {
-    // The gateway Caddy owns TLS now; these tell it which name to certify and
-    // which ACME account to use. In caddy mode the container publishes 80 and
-    // 443; in wireguard mode they are set only when a public domain was asked
-    // for, and the sidecar publishes 80 and 443 for it.
+  if (gatewayTls(a)) {
+    // The gateway Caddy owns TLS; these tell it which name to certify and which
+    // ACME account to use. On the host it publishes 80 and 443 directly; with a
+    // WireGuard public domain the sidecar publishes 80 and 443 for it.
     set("GATEWAY_TLS_DOMAIN", a.domain ?? "");
     if (a.acmeEmail) set("ACME_EMAIL", a.acmeEmail);
   }
-  if (a.mode === "tailscale") {
+  if (a.boundary === "tailscale") {
     L.push("# Tag the key and make it reusable, or an unattended restart after it");
     L.push("# expires (90 days at most) will fail to come back.");
     requireSecret("TS_AUTHKEY");
   }
-  if (a.mode === "wireguard") {
+  if (a.boundary === "wireguard") {
     L.push("# The server's WireGuard private key. Its public key is in compose.yaml");
     L.push("# and in every client config; this half stays here and stays secret.");
     L.push("# Lose it and every client config has to be reissued, so keep a copy.");
@@ -1137,14 +1282,23 @@ function yamlString(v: string): string {
 
 export function renderCompose(a: Answers, env: RenderedEnv): string {
   const gp = 8080;
-  const pub = new URL(a.publicUrl);
-  const extPort = pub.port ? Number(pub.port) : pub.protocol === "https:" ? 443 : 80;
+  const sshPort = a.sshPort ?? 2222;
+  // SSH (and mosh) published on the sidecar: a tunnel boundary whose SSH is a
+  // host port, forwarded alongside the tunnel. Empty under any other choice.
+  const sidecarSshPorts =
+    a.boundary !== "host" && a.ssh === "host-port"
+      ? [`      - "${sshPort}:22"`, `      - "${MOSH_PORTS}"`]
+      : [];
   const L: string[] = [];
 
   L.push("# Generated by setup.ts. Re-run it to regenerate, or edit freely —");
   L.push("# a re-run offers your previous answers as the defaults.");
   L.push("#");
-  L.push(`# Mode: ${a.mode}.  Reachable at ${a.publicUrl}`);
+  const reach =
+    a.boundary === "host"
+      ? `host, ${a.publish} web${gatewayTls(a) ? " (gateway TLS)" : ""}`
+      : `${a.boundary} tunnel`;
+  L.push(`# Reachable at ${a.publicUrl} — ${reach}, ssh ${a.ssh}.`);
   L.push("");
   const name = a.name ?? DEFAULT_NAME;
   L.push("# The project name. Containers and volumes are named after it, so each");
@@ -1160,7 +1314,7 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
   L.push("    restart: unless-stopped");
   // Sharing a sidecar's network namespace (Tailscale or WireGuard) means taking
   // its hostname too; Docker refuses one of its own there.
-  const sharesNetns = a.mode === "tailscale" || a.mode === "wireguard";
+  const sharesNetns = a.boundary !== "host";
   if (!sharesNetns) L.push(`    hostname: ${yamlString(name)}`);
   L.push("    # Docker keeps every line of output forever unless told otherwise.");
   L.push("    logging:");
@@ -1192,62 +1346,58 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
   }
   L.push("");
 
-  if (a.mode === "tailscale") {
-    // Sharing the sidecar's network namespace means this service cannot declare
-    // ports of its own — tailscale serve is the only way in, and SSH is reached
-    // on the tailnet address directly.
-    L.push("    # Shares the Tailscale container's network namespace, so it has no");
-    L.push("    # ports of its own: `tailscale serve` is the way in, and SSH is");
-    L.push("    # reachable on the tailnet address with nothing published.");
-    L.push("    network_mode: service:tailscale");
-    L.push("    depends_on:");
-    L.push("      - tailscale");
-  } else if (a.mode === "wireguard") {
-    // Shares the WireGuard container's network namespace, so it has no ports of
-    // its own: a peer reaches the gateway at the server's tunnel address and
-    // SSHes there too, with only the UDP port (on the sidecar) published.
-    L.push("    # Shares the WireGuard container's network namespace: a peer reaches");
-    L.push("    # the gateway on the tunnel address with nothing published here, and");
-    L.push("    # SSH the same way. Only the WireGuard UDP port is open, on the sidecar.");
-    L.push("    network_mode: service:wireguard");
-    L.push("    depends_on:");
-    L.push("      - wireguard");
-  } else if (a.mode === "none") {
-    // A platform's proxy reaches the container on its own network. Published
-    // ports would bypass it, and on a shared host they would collide.
-    L.push("    # Nothing is published: the platform routes to the gateway on 8080.");
-    L.push("    # These say what listens, for its routing; Docker ignores them.");
-    L.push("    expose:");
-    L.push(`      - "${gp}"`);
-    L.push('      - "22"');
-  } else if (a.mode === "caddy") {
-    L.push("    # The gateway Caddy terminates TLS itself and fetches the Let's");
-    L.push("    # Encrypt certificate, so 80 (the ACME challenge and the http->https");
-    L.push("    # redirect) and 443 are published straight from this container — there");
-    L.push("    # is no separate proxy. SSH is raw TCP, published directly.");
-    L.push("    ports:");
-    L.push('      - "80:80"');
-    L.push(`      - "${a.httpsPort ?? 443}:443"`);
-    L.push(`      - "${a.sshPort ?? 2222}:22"`);
-    L.push("      # One UDP port per mosh session; ssh alone is not enough.");
-    L.push(`      - "${MOSH_PORTS}"`);
+  // The network section is three independent choices: who owns the namespace
+  // (boundary), how the web port is bound (publish, and whether the gateway owns
+  // TLS), and how SSH is reached. Under a shared namespace the agent-env service
+  // declares no ports — the sidecar below carries them — so only the host case
+  // binds anything here.
+  if (a.boundary === "host") {
+    const bind = a.publish === "loopback" ? "127.0.0.1:" : "";
+    const ports: string[] = [];
+    const expose: string[] = [];
+    if (a.publish === "public") {
+      L.push("    # The gateway Caddy terminates TLS itself and fetches the Let's");
+      L.push("    # Encrypt certificate, so 80 (the ACME challenge and the http->https");
+      L.push("    # redirect) and 443 are published straight from this container.");
+      ports.push('- "80:80"', `- "${a.httpsPort ?? 443}:443"`);
+    } else if (a.publish === "loopback") {
+      L.push("    # The gateway is bound to loopback: reach it locally, or put your own");
+      L.push("    # proxy in front to expose it — PUBLIC_URL is then that proxy's address.");
+      ports.push(`- "127.0.0.1:${gp}:${gp}"`);
+    } else {
+      L.push("    # Nothing web-facing is published: a platform routes to the gateway on");
+      L.push("    # 8080. `expose` says what listens, for its routing; Docker ignores it.");
+      expose.push(`- "${gp}"`);
+    }
+    if (a.ssh === "host-port") {
+      L.push(
+        bind
+          ? "    # SSH and mosh bound to loopback, for a local client or the proxy in front."
+          : "    # SSH is raw TCP published directly; mosh needs one UDP port per session.",
+      );
+      ports.push(`- "${bind}${sshPort}:22"`, `- "${bind}${MOSH_PORTS}"`);
+    } else if (a.ssh === "tunnel") {
+      expose.push('- "22"');
+    }
+    if (ports.length) {
+      L.push("    ports:");
+      for (const p of ports) L.push(`      ${p}`);
+    }
+    if (expose.length) {
+      L.push("    expose:");
+      for (const e of expose) L.push(`      ${e}`);
+    }
   } else {
-    // With a TLS terminator in front, PUBLIC_URL is the proxy's address and has
-    // nothing to do with what this container binds — taking its port would make
-    // the two fight over 443. Bind the gateway's own ports and let the proxy
-    // forward to them.
-    const hostPort = a.behindProxy ? gp : extPort;
-    L.push(
-      a.behindProxy
-        ? "    # Bound to loopback for the proxy in front to forward to."
-        : "    # Bound to loopback. Put your own proxy in front to expose it.",
-    );
-    L.push("    ports:");
-    L.push(`      - "127.0.0.1:${hostPort}:${gp}"`);
-    L.push(`      - "127.0.0.1:${a.sshPort ?? 2222}:22"`);
-    L.push("      # mosh picks one UDP port per session out of this range.");
-    L.push("      # Without it ssh connects and every mosh session times out.");
-    L.push(`      - "127.0.0.1:${MOSH_PORTS}"`);
+    // A tunnel sidecar owns the namespace; agent-env shares it and declares no
+    // ports. The sidecar below publishes the tunnel's own port, the web (for a
+    // WireGuard public domain) and the SSH host port when one is asked for.
+    const net = a.boundary === "tailscale" ? "tailscale" : "wireguard";
+    L.push(`    # Shares the ${net} container's network namespace, so it has no ports of`);
+    L.push("    # its own: the tunnel is the way in, and anything published is published");
+    L.push("    # on the sidecar below.");
+    L.push(`    network_mode: service:${net}`);
+    L.push("    depends_on:");
+    L.push(`      - ${net}`);
   }
   L.push("");
 
@@ -1321,7 +1471,7 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
   L.push("      - agent-env-state:/var/lib/agent-env");
   L.push("");
 
-  if (a.mode === "tailscale") {
+  if (a.boundary === "tailscale") {
     L.push("  tailscale:");
     L.push("    image: tailscale/tailscale:stable");
     L.push("    hostname: " + yamlString((a.tsHostname ?? DEFAULT_NAME).split(".")[0]));
@@ -1336,6 +1486,11 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
     L.push("      - TS_STATE_DIR=/var/lib/tailscale");
     L.push("      - TS_SERVE_CONFIG=/config/serve.json");
     L.push("      - TS_USERSPACE=false");
+    if (sidecarSshPorts.length) {
+      L.push("    # SSH (and mosh) forwarded on a host port, beside the tailnet.");
+      L.push("    ports:");
+      for (const p of sidecarSshPorts) L.push(p);
+    }
     L.push("    configs:");
     L.push("      - source: ts-serve");
     L.push("        target: /config/serve.json");
@@ -1349,7 +1504,7 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
     L.push("");
   }
 
-  if (a.mode === "wireguard") {
+  if (a.boundary === "wireguard") {
     const wg = a.wireguard;
     const port = wg?.listenPort ?? 51820;
     L.push("  wireguard:");
@@ -1360,8 +1515,8 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
     L.push("      options:");
     L.push('        max-size: "10m"');
     L.push('        max-file: "3"');
-    L.push("    # The UDP port peers dial. SSH and mosh are reached over the tunnel,");
-    L.push("    # so they are never published here.");
+    L.push("    # The UDP port peers dial. The gateway and SSH are reached over the");
+    L.push("    # tunnel unless a host port below says otherwise.");
     if (a.domain) {
       L.push("    # A public domain was asked for, so the gateway also terminates TLS:");
       L.push("    # 80 (the ACME challenge and the http->https redirect) and 443 are");
@@ -1372,6 +1527,10 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
     if (a.domain) {
       L.push('      - "80:80"');
       L.push(`      - "${a.httpsPort ?? 443}:443"`);
+    }
+    if (sidecarSshPorts.length) {
+      L.push("    # SSH (and mosh) forwarded on a host port, beside the tunnel.");
+      for (const p of sidecarSshPorts) L.push(p);
     }
     L.push("    cap_add:");
     L.push("      - NET_ADMIN");
@@ -1395,11 +1554,11 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
   // Dockge or Dokploy expects to be handed, and there is no second file to
   // fall out of step with it.
   const configs: { name: string; body: string; interpolate?: boolean }[] = [];
-  if (a.mode === "tailscale") configs.push({ name: "ts-serve", body: renderTsServe(a) });
+  if (a.boundary === "tailscale") configs.push({ name: "ts-serve", body: renderTsServe(a) });
   // The wg config is the one that *wants* Compose to interpolate — it carries
   // ${WG_PRIVATE_KEY} from .env — so its lines are passed through un-escaped. The
   // only $ in it is that reference; peer keys and addresses never contain one.
-  if (a.mode === "wireguard") {
+  if (a.boundary === "wireguard") {
     configs.push({ name: "wg-conf", body: renderWgConf(a), interpolate: true });
   }
   if (script) configs.push({ name: "startup-script", body: script });
@@ -1424,7 +1583,7 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
   if (a.workspace.kind !== "path") L.push("  workspace:");
   if (a.home?.kind !== "path") L.push("  home:");
   L.push("  agent-env-state:");
-  if (a.mode === "tailscale") L.push("  ts-state:");
+  if (a.boundary === "tailscale") L.push("  ts-state:");
   L.push("");
   L.push("# The answers this file was made from, so the next run can offer them");
   L.push("# again. Compose ignores x- keys. Keep it on one line.");
@@ -1571,8 +1730,10 @@ export interface GenerateOptions {
  * would refuse, or one that should not exist at all.
  */
 export function generate(answers: Answers, options: GenerateOptions = {}): Record<string, string> {
-  const problems = validate(answers);
-  if (problems.length) throw new InvalidAnswers(problems);
+  // Warnings (a dangerous but deliberate choice, like a public endpoint with no
+  // sign-in) are shown by the front ends but do not block generation.
+  const errors = validate(answers).filter((p) => p.severity !== "warn");
+  if (errors.length) throw new InvalidAnswers(errors);
   const keep = parseEnvFile(options.existingEnv ?? "");
   const key = clientSecretKey(answers.authMode);
   const pasted = options.clientSecret?.trim();
@@ -1580,7 +1741,7 @@ export function generate(answers: Answers, options: GenerateOptions = {}): Recor
   // The server's private key is a secret like any other: a freshly generated one
   // is written now, and on a re-run `existingEnv` already carries it.
   const serverKey = options.wireguard?.serverPrivateKey?.trim();
-  if (answers.mode === "wireguard" && serverKey) {
+  if (answers.boundary === "wireguard" && serverKey) {
     keep["WG_PRIVATE_KEY"] = { value: serverKey, raw: envValue(serverKey) };
   }
   const env = renderEnv(answers, keep, options.randomSecret ?? randomSecret);
@@ -1591,7 +1752,7 @@ export function generate(answers: Answers, options: GenerateOptions = {}): Recor
   // A client config per peer generated this run. It holds that peer's private
   // key, so it is an output to hand to the device, never part of the stack.
   const clientKeys = options.wireguard?.clientPrivateKeys;
-  if (answers.mode === "wireguard" && clientKeys) {
+  if (answers.boundary === "wireguard" && clientKeys) {
     for (const peer of answers.wireguard?.peers ?? []) {
       const pk = clientKeys[peer.name]?.trim();
       if (pk) files[`wireguard/${peer.name}.conf`] = renderWgClientConf(answers, peer, pk);

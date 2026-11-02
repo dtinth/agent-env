@@ -27,7 +27,10 @@ import {
 
 const BASIC: Answers = {
   version: VERSION,
-  mode: "local",
+  boundary: "host",
+  tls: "upstream",
+  publish: "loopback",
+  ssh: "host-port",
   publicUrl: "http://localhost:8080",
   authMode: "basic",
   gatewayUser: "dev",
@@ -87,53 +90,68 @@ test("an existing .env keeps its secrets", () => {
   assert(files[".env"].includes("MISE_TOOLS=node\n"));
 });
 
-test("only compose.yaml and .env are needed in every mode", () => {
-  for (const a of [
-    BASIC,
-    {
-      ...BASIC,
-      mode: "caddy",
-      domain: "agent.example.com",
-      httpsPort: 8443,
-      publicUrl: "https://agent.example.com:8443",
-    },
-    {
-      ...BASIC,
-      mode: "tailscale",
-      tsHostname: "work.tail1234.ts.net",
-      publicUrl: "https://work.tail1234.ts.net",
-      sshPort: undefined,
-    },
-  ] as Answers[]) {
+test("only compose.yaml and .env are needed in every reachability", () => {
+  for (const [label, a] of [
+    ["loopback", BASIC],
+    [
+      "public",
+      {
+        ...BASIC,
+        tls: "gateway",
+        publish: "public",
+        domain: "agent.example.com",
+        httpsPort: 8443,
+        publicUrl: "https://agent.example.com:8443",
+      },
+    ],
+    [
+      "tailscale",
+      {
+        ...BASIC,
+        boundary: "tailscale",
+        ssh: "tunnel",
+        tsHostname: "work.tail1234.ts.net",
+        publicUrl: "https://work.tail1234.ts.net",
+        sshPort: undefined,
+      },
+    ],
+  ] as [string, Answers][]) {
     const files = generate(a, { randomSecret: fixed });
     // Nothing in compose.yaml may point at a file beside it, or a stack UI
     // that takes only the compose text cannot deploy it.
     assert(
       !/^\s+- \.\//m.test(files["compose.yaml"]),
-      `${a.mode} mounts a file from beside compose.yaml`,
+      `${label} mounts a file from beside compose.yaml`,
     );
   }
 });
 
-test("invalid answers are reported per field and refused", () => {
+test("a public endpoint with no auth is a strong warning, not a hard refusal", () => {
   const bad: Answers = {
     ...BASIC,
-    mode: "caddy",
+    tls: "gateway",
+    publish: "public",
     authMode: "none",
     domain: "not a domain",
-    publicUrl: "https://x",
   };
+  // A broken domain is a hard error, reported on its field, and still throws.
   assertEquals(
-    validate(bad).map((p) => p.field),
+    validate(bad)
+      .filter((p) => p.severity !== "warn")
+      .map((p) => p.field),
     ["domain"],
   );
-  const refused = { ...bad, domain: "agent.example.com" };
+  assertThrows(() => generate(bad), InvalidAnswers);
+  // With a valid domain the only thing left is the no-auth caution — a warning,
+  // so generation succeeds rather than throwing.
+  const warned = { ...bad, domain: "agent.example.com" };
+  const problems = validate(warned);
   assertEquals(
-    validate(refused).map((p) => p.field),
+    problems.map((p) => p.field),
     ["authMode"],
   );
-  const e = assertThrows(() => generate(refused), InvalidAnswers);
-  assertEquals(e.problems[0].message, "Refusing to generate that.");
+  assertEquals(problems[0].severity, "warn");
+  assert(generate(warned)["compose.yaml"].includes("AUTH_MODE=none"));
 });
 
 test("owner IDs must be IDs the entrypoint can use", () => {
@@ -301,10 +319,11 @@ test("one desktop at most", () => {
   );
 });
 
-test("the SMB share is allowed in every mode, and never published", () => {
+test("the SMB share is allowed in every reachability, and never published", () => {
   const ts: Answers = {
     ...BASIC,
-    mode: "tailscale",
+    boundary: "tailscale",
+    ssh: "tunnel",
     tsHostname: "work.tail1234.ts.net",
     publicUrl: "https://work.tail1234.ts.net",
     sshPort: undefined,
@@ -314,21 +333,25 @@ test("the SMB share is allowed in every mode, and never published", () => {
   const compose = generate(ts, { randomSecret: fixed })["compose.yaml"];
   assert(compose.includes('"AGENT_ENV_COMPONENTS=files,smb"'));
   assert(!compose.includes("445"), "published SMB");
-  for (const a of [
-    { ...BASIC, components: ["smb"] },
-    {
-      ...BASIC,
-      mode: "caddy",
-      authMode: "basic",
-      domain: "agent.example.com",
-      publicUrl: "https://agent.example.com",
-      components: ["smb"],
-    },
-  ] as Answers[]) {
+  for (const [label, a] of [
+    ["loopback", { ...BASIC, components: ["smb"] }],
+    [
+      "public",
+      {
+        ...BASIC,
+        tls: "gateway",
+        publish: "public",
+        authMode: "basic",
+        domain: "agent.example.com",
+        publicUrl: "https://agent.example.com",
+        components: ["smb"],
+      },
+    ],
+  ] as [string, Answers][]) {
     assertEquals(validate(a), []);
     const out = generate(a, { randomSecret: fixed })["compose.yaml"];
-    assert(out.includes("smb"), `${a.mode} dropped smb`);
-    assert(!out.includes("445"), `${a.mode} published SMB`);
+    assert(out.includes("smb"), `${label} dropped smb`);
+    assert(!out.includes("445"), `${label} published SMB`);
   }
 });
 
@@ -364,7 +387,8 @@ test("the docker host flags come with the docker component, and only with it", (
 
 test("Selkies is refused on plain http away from localhost, and only then", () => {
   const selkies: Answers = { ...BASIC, components: ["desktop-selkies"] };
-  const proxied = { ...selkies, behindProxy: true };
+  // A host loopback deployment reached through a proxy carries that proxy's URL.
+  const proxied = selkies;
   const bad = validate({ ...proxied, publicUrl: "http://box.lan:8080" });
   assertEquals(
     bad.map((p) => p.field),
@@ -431,7 +455,7 @@ test("the page takes only plain decimals for a number", () => {
 
 test("the page's choices become components", () => {
   assertEquals(toAnswers(DEFAULT_FIELDS).components, ["desktop", "terminal", "files"]);
-  const ts = { ...DEFAULT_FIELDS, mode: "tailscale", tsHostname: "w.tail1.ts.net" };
+  const ts = { ...DEFAULT_FIELDS, boundary: "tailscale", tsHostname: "w.tail1.ts.net" };
   const picked: Fields = {
     ...ts,
     desktop: "desktop-selkies",
@@ -447,8 +471,8 @@ test("the page's choices become components", () => {
     "docker",
     "smb",
   ]);
-  // SMB is not tied to the tailnet: it stays on in another mode.
-  assertEquals(toAnswers({ ...picked, mode: "local" }).components.includes("smb"), true);
+  // SMB is not tied to the tailnet: it stays on under another boundary.
+  assertEquals(toAnswers({ ...picked, boundary: "host" }).components.includes("smb"), true);
   // And back, for a deployment imported into the form.
   assertEquals(
     toAnswers({ ...DEFAULT_FIELDS, ...fieldsFromAnswers(toAnswers(picked)) }).components,
@@ -459,13 +483,13 @@ test("the page's choices become components", () => {
 test("the web maps wireguard fields to peers with assigned addresses", () => {
   const f: Fields = {
     ...DEFAULT_FIELDS,
-    mode: "wireguard",
+    boundary: "wireguard",
     wgEndpoint: "198.51.100.9:51820",
     wgAddress: "10.9.0.1/24",
     wgPeers: "laptop\nphone",
   };
   const a = toAnswers(f);
-  assertEquals(a.mode, "wireguard");
+  assertEquals(a.boundary, "wireguard");
   // The gateway is reached over the tunnel on the server's address.
   assertEquals(a.publicUrl, "http://10.9.0.1:8080");
   // The listen port is the endpoint's, so the two cannot drift apart.
@@ -488,7 +512,7 @@ test("the web maps wireguard fields to peers with assigned addresses", () => {
 test("the web carries a public domain on wireguard only when it is filled in", () => {
   const base: Fields = {
     ...DEFAULT_FIELDS,
-    mode: "wireguard",
+    boundary: "wireguard",
     wgEndpoint: "198.51.100.9:51820",
     wgAddress: "10.9.0.1/24",
     wgPeers: "laptop",
@@ -530,7 +554,11 @@ test("a pasted client secret goes to .env and nowhere else", () => {
 
 const WG: Answers = {
   ...BASIC,
-  mode: "wireguard",
+  boundary: "wireguard",
+  tls: "upstream",
+  publish: "loopback",
+  ssh: "tunnel",
+  sshPort: undefined,
   publicUrl: "http://10.8.0.1:8080",
   authMode: "basic",
   wireguard: {
@@ -623,6 +651,7 @@ test("wireguard answers are validated like every other mode", () => {
 // public 443, like caddy mode, while the tunnel still carries ssh and mosh.
 const WG_DOMAIN: Answers = {
   ...WG,
+  tls: "gateway",
   publicUrl: "https://box.example.com",
   authMode: "google",
   googleClientId: "1234-abc.apps.googleusercontent.com",
@@ -649,15 +678,14 @@ test("a public domain on wireguard publishes TLS through the sidecar, ssh stays 
   assert(!compose.includes(':22"'), "ssh was published; it should stay on the tunnel");
 });
 
-test("a public domain on wireguard refuses AUTH_MODE=none, like caddy", () => {
-  assert(
-    validate({ ...WG_DOMAIN, authMode: "none" }).some((p) => p.field === "authMode"),
-    "a public domain with no auth was allowed",
-  );
-  // Without a domain the tunnel is the boundary, so no auth is fine.
+test("a public domain on wireguard warns about AUTH_MODE=none, like a public host", () => {
+  const warned = validate({ ...WG_DOMAIN, authMode: "none" }).find((p) => p.field === "authMode");
+  assert(warned, "a public domain with no auth drew no caution");
+  assertEquals(warned.severity, "warn");
+  // Without a domain the tunnel is the boundary, so no auth draws no caution.
   assert(
     !validate({ ...WG, authMode: "none" }).some((p) => p.field === "authMode"),
-    "the tunnel-only deployment was refused for having no auth",
+    "the tunnel-only deployment was flagged for having no auth",
   );
 });
 
@@ -684,7 +712,13 @@ test("a required secret bails compose rather than getting a placeholder", () => 
   assert(supplied["compose.yaml"].includes('- "GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:?'));
 
   // The tailscale sidecar's auth key is required the same way.
-  const ts = generate({ ...BASIC, mode: "tailscale", tsHostname: "work.tail1234.ts.net" });
+  const ts = generate({
+    ...BASIC,
+    boundary: "tailscale",
+    ssh: "tunnel",
+    sshPort: undefined,
+    tsHostname: "work.tail1234.ts.net",
+  });
   assert(!/^TS_AUTHKEY=/m.test(ts[".env"]));
   assert(ts["compose.yaml"].includes('- "TS_AUTHKEY=${TS_AUTHKEY:?'));
 });
@@ -742,4 +776,53 @@ test("the page's startup script is an answer, and blank is none", () => {
   assertEquals(toAnswers(f).startupScript, "mise use -g ripgrep");
   assertEquals(fieldsFromAnswers(toAnswers(f)).startupScript, "mise use -g ripgrep");
   assertEquals(toAnswers({ ...DEFAULT_FIELDS, startupScript: "\n  \n" }).startupScript, undefined);
+});
+
+// --- Axis migration & the SSH axis -----------------------------------------
+
+test("version-2 answers migrate onto the three axes", () => {
+  const caddy = migrateAnswers({ mode: "caddy", domain: "x.example.com" });
+  assertEquals(
+    [caddy.boundary, caddy.tls, caddy.publish, caddy.ssh],
+    ["host", "gateway", "public", "host-port"],
+  );
+  // behindProxy dissolves into host/upstream/loopback, like a bare local run.
+  const proxied = migrateAnswers({ mode: "local", behindProxy: true });
+  assertEquals(
+    [proxied.boundary, proxied.tls, proxied.publish, proxied.ssh],
+    ["host", "upstream", "loopback", "host-port"],
+  );
+  const none = migrateAnswers({ mode: "none" });
+  assertEquals(
+    [none.boundary, none.tls, none.publish, none.ssh],
+    ["host", "upstream", "expose", "tunnel"],
+  );
+  const ts = migrateAnswers({ mode: "tailscale" });
+  assertEquals([ts.boundary, ts.tls, ts.ssh], ["tailscale", "upstream", "tunnel"]);
+  const wg = migrateAnswers({ mode: "wireguard" });
+  assertEquals([wg.boundary, wg.tls, wg.ssh], ["wireguard", "upstream", "tunnel"]);
+  const wgDomain = migrateAnswers({ mode: "wireguard", domain: "box.example.com" });
+  assertEquals([wgDomain.boundary, wgDomain.tls], ["wireguard", "gateway"]);
+  // The old keys do not survive the migration.
+  assert(!("mode" in caddy) && !("behindProxy" in proxied));
+  // A v3 object already carrying a boundary is left untouched.
+  assertEquals(migrateAnswers({ boundary: "tailscale", tls: "upstream" }).boundary, "tailscale");
+});
+
+test("ssh is its own axis: a host port rides the sidecar under a tunnel, off publishes nothing", () => {
+  // A host SSH port alongside a WireGuard tunnel is published on the sidecar,
+  // which owns the namespace — not on the agent-env service.
+  const forwarded = generate({ ...WG, ssh: "host-port", sshPort: 2222 })["compose.yaml"];
+  const agentBlock = forwarded.slice(
+    forwarded.indexOf("agent-env:"),
+    forwarded.indexOf("wireguard:"),
+  );
+  assert(!/^\s+ports:/m.test(agentBlock), "agent-env published ssh itself");
+  const sidecar = forwarded.slice(forwarded.indexOf("wireguard:"));
+  assert(sidecar.includes('- "2222:22"'), "ssh host port not on the sidecar");
+  assert(sidecar.includes("60000-60010"), "mosh range not on the sidecar");
+  // Off: no ssh, no mosh, nothing published for either.
+  const off = generate({ ...BASIC, ssh: "off", sshPort: undefined })["compose.yaml"];
+  assert(!off.includes(':22"'), "ssh published with ssh: off");
+  assert(!off.includes("60000-60010"), "mosh published with ssh: off");
 });
