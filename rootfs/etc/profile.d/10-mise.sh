@@ -9,8 +9,10 @@
 # installs in /opt/mise, with their shims on PATH behind the user's.
 export MISE_DATA_DIR="${MISE_DATA_DIR:-${HOME}/.local/share/mise}"
 export MISE_SHARED_INSTALL_DIRS="${MISE_SHARED_INSTALL_DIRS:-/opt/mise/installs}"
-export MISE_STATE_DIR="${MISE_STATE_DIR:-/opt/mise/state}"
-export MISE_CACHE_DIR="${MISE_CACHE_DIR:-/opt/mise/cache}"
+# State and cache are per-user and writable, so they live on the home volume
+# (their XDG defaults), not in the read-only shared /opt/mise install dir.
+export MISE_STATE_DIR="${MISE_STATE_DIR:-${HOME}/.local/state/mise}"
+export MISE_CACHE_DIR="${MISE_CACHE_DIR:-${HOME}/.cache/mise}"
 # The image declares its own toolchain in /etc/mise/config.toml, which mise
 # reads as system config regardless of this. This is where *your* `mise use -g`
 # declarations go, and it is on the persisted home volume.
