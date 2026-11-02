@@ -978,6 +978,18 @@ asked for. A client that forwards some other absent locale still warns; set it
 to `en_US.UTF-8` or `C.UTF-8`, or generate the one you want in your own
 `FROM` image.
 
+A browser terminal (ttyd) or a mosh session is remote, but — unlike SSH —
+nothing sets `SSH_CONNECTION` in it. `/etc/profile.d/50-agent-env-remote.sh`
+sets a placeholder one when a login shell's ancestor process is `ttyd` or
+`mosh-server`, so tools that tell remote from local behave as they would over
+SSH. The case that prompted it: Claude Code's TUI copies drag-selected text with
+the OSC 52 escape — which a browser terminal or mosh relays to your real
+clipboard — only when it sees a remote session; otherwise, because this image
+sets `DISPLAY` so GUI tools work, it copies to the container's own X clipboard,
+which you never see. Real SSH already exports `SSH_CONNECTION`, and a local
+desktop terminal has neither ancestor, so only ttyd and mosh are marked — and
+`DISPLAY` stays set, so GUI tools keep working.
+
 ### Startup scripts
 
 Executables in `/etc/agent-env/provision.d/` — supplied through compose
