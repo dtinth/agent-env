@@ -235,6 +235,7 @@ same code, so they agree. The first question decides the rest:
 | **This machine only** | Ports bound to `127.0.0.1`. Put your own proxy in front if you want it reachable. |
 | **A public domain** | The gateway Caddy terminates TLS itself and gets a certificate from Let's Encrypt, on 443 unless you pick another port — no separate proxy. The certificate is kept on the state volume (`/var/lib/agent-env`), so it survives a recreate. The "domain" can be the host's IPv4 address: Let's Encrypt certifies one only on its six-day `shortlived` profile, which the gateway then asks for. Google sign-in refuses an IP in its redirect URI, so that is refused too; a name like `203-0-113-7.sslip.io` gets round it with an ordinary certificate. |
 | **A tailnet** | A Tailscale sidecar. The tailnet is the boundary, and SSH and mosh work with nothing published. |
+| **A WireGuard tunnel** | A WireGuard sidecar, for a public-IP host that is not on a tailnet. The agent-env container shares the sidecar's network namespace, so a peer reaches the gateway on the server's tunnel address (plain HTTP — the tunnel carries the encryption) and SSH and mosh the same way; only the sidecar's UDP `ListenPort` is published. The server's private key is the one secret (`.env`, `WG_PRIVATE_KEY`, interpolated into the inlined `wg0.conf`); the configurator generates every key and writes a `wireguard/<peer>.conf` for each peer to install on a device. |
 | **None** | For Dokploy, Coolify and other platforms that route to the container themselves. No ports are published; `expose:` lists 8080 and 22 for the platform's benefit, and you give the URL it serves. SSH and mosh are only reachable if the platform forwards them. |
 
 That choice sets `PUBLIC_URL`, the port layout, which sidecars exist, and the
@@ -284,8 +285,10 @@ wrong. It also does the things that are tedious by hand and easy to forget:
   the one from last time, or takes `startupScript` from an `--answers` file,
   since a prompt is no place to type a script.
 
-The output is just those two files: the Tailscale sidecar config and the startup
-script are inlined in `compose.yaml` as `configs:` content (Docker Compose 2.23.1 or newer).
+The output is those two files — the Tailscale or WireGuard sidecar config and the
+startup script are inlined in `compose.yaml` as `configs:` content (Docker Compose 2.23.1 or newer) —
+plus, in WireGuard mode, a `wireguard/<peer>.conf` for each peer to install on a
+device (an output to hand out, not part of the stack).
 So the pair can be pasted into Dockge, Dokploy, or anything else that takes a
 compose stack and an env file. The generation logic is `generate.ts`, a pure,
 dependency-free module (`generate(answers, { existingEnv })` returns the files)
@@ -576,10 +579,11 @@ ttyd, dufs and oauth2-proxy are all bound to loopback.
 The `smb` component runs Samba as `dev`, sharing the workspace as `workspace` on
 port 445 — no capability needed, since Docker lets unprivileged processes bind
 low ports inside a container. Samba cannot sit behind the gateway's sign-in, so
-the configurator never publishes 445. On a tailnet the Tailscale sidecar shares
-the container's network namespace and the tailnet is the boundary; anywhere
-else each Compose project has its own network, and reaching it is yours to
-arrange (forward 445 to the container on a network you trust). Sign in as `dev`, with `SMB_PASSWORD` if it is set, or else a
+the configurator never publishes 445. On a tailnet or WireGuard tunnel the
+sidecar shares the container's network namespace and the tunnel is the boundary,
+so the share is reachable over it; anywhere else each Compose project has its
+own network, and reaching it is yours to arrange (forward 445 to the container
+on a network you trust). Sign in as `dev`, with `SMB_PASSWORD` if it is set, or else a
 password generated on first start and kept in
 `~/.local/state/agent-env/smb-password`, so a device that saved it keeps working.
 The address and the password are on `/~env/` and in `agent-env urls`. Samba's
