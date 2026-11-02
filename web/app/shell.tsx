@@ -70,14 +70,22 @@ export function App() {
                 <ProblemList c={c} onGo={setStep} />
               </div>
             ) : (
-              <div class="card">
-                <h3 class="c-ok">Next steps</h3>
-                <ol class="steps">
-                  {nextSteps(c.answers, c.files?.[".env"] ?? "").map((s) => (
-                    <li>{s}</li>
-                  ))}
-                </ol>
-              </div>
+              <>
+                {c.warnings.length > 0 && (
+                  <div class="card">
+                    <h3 class="c-warn">Heads up</h3>
+                    <ProblemList c={c} items={c.warnings} />
+                  </div>
+                )}
+                <div class="card">
+                  <h3 class="c-ok">Next steps</h3>
+                  <ol class="steps">
+                    {nextSteps(c.answers, c.files?.[".env"] ?? "").map((s) => (
+                      <li>{s}</li>
+                    ))}
+                  </ol>
+                </div>
+              </>
             )}
             <div class="card">
               <h3>Secrets</h3>

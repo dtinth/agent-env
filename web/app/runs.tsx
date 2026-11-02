@@ -301,11 +301,12 @@ function ComponentDetail({ c, id }: { c: Configurator; id: Component }) {
             </li>
           </ul>
           <h3>Reaching the share</h3>
-          {c.fields.mode === "tailscale" || c.fields.mode === "wireguard" ? (
+          {c.fields.boundary === "tailscale" || c.fields.boundary === "wireguard" ? (
             <ul class="r-points">
               <li class="ok">
-                You reach this over {c.fields.mode === "tailscale" ? "a tailnet" : "the WireGuard"}{" "}
-                tunnel, so the share is reachable on it as is.
+                You reach this over{" "}
+                {c.fields.boundary === "tailscale" ? "a tailnet" : "the WireGuard"} tunnel, so the
+                share is reachable on it as is.
               </li>
             </ul>
           ) : (

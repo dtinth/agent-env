@@ -26,7 +26,11 @@ import {
   isIPv4,
   LEGACY_ANSWERS_FILE,
   hostPathFor,
-  type Mode,
+  type Boundary,
+  type Ssh,
+  type Tls,
+  type Publish,
+  gatewayTls,
   type Problem,
   publicUrlFor,
   randomSecret,
@@ -37,8 +41,15 @@ import {
 
 export const DEFAULT_FIELDS = {
   name: DEFAULT_NAME as string,
-  mode: "local",
-  behindProxy: false,
+  // The network boundary (namespace owner): host | tailscale | wireguard.
+  boundary: "host",
+  // The host web-ingress choice: loopback (local, or your own proxy in front),
+  // public (the gateway's own Let's Encrypt cert), or expose (a platform routes
+  // to the container). Ignored off the host, where the boundary decides ingress.
+  webIngress: "loopback",
+  // How SSH (and mosh) are reached — its own choice, independent of the web:
+  // host-port | tunnel | off.
+  ssh: "host-port",
   publicUrl: "",
   domain: "",
   httpsPort: "443",
@@ -95,7 +106,8 @@ export type FieldName = keyof Fields;
 
 /** The screenshots' starting point: a public deployment, half filled in. */
 export const DEMO_FIELDS: Partial<Fields> = {
-  mode: "caddy",
+  boundary: "host",
+  webIngress: "public",
   domain: "agent.example.com",
   authMode: "google",
   googleClientId: "1234-abc.apps.googleusercontent.com",
@@ -169,32 +181,49 @@ export function componentsOf(f: Fields): Component[] {
 }
 
 /**
- * Whether a public TLS domain is in play: always in caddy mode, and in
- * wireguard mode once the optional domain field is filled in.
+ * Whether a public TLS domain is in play: a host with public web ingress
+ * (which always has one), or WireGuard once the optional domain field is filled.
  */
-function wantsPublicDomain(mode: Mode, f: Fields): boolean {
-  return mode === "caddy" || (mode === "wireguard" && f.domain.trim() !== "");
+function wantsPublicDomain(f: Fields): boolean {
+  return (
+    (f.boundary === "host" && f.webIngress === "public") ||
+    (f.boundary === "wireguard" && f.domain.trim() !== "")
+  );
+}
+
+/** The web-ingress axes (tls, publish) the fields describe, gated by boundary. */
+function webAxes(f: Fields): { tls: Tls; publish: Publish } {
+  if (f.boundary === "wireguard") {
+    return { tls: f.domain.trim() ? "gateway" : "upstream", publish: "loopback" };
+  }
+  if (f.boundary === "tailscale") return { tls: "upstream", publish: "loopback" };
+  if (f.webIngress === "public") return { tls: "gateway", publish: "public" };
+  if (f.webIngress === "expose") return { tls: "upstream", publish: "expose" };
+  return { tls: "upstream", publish: "loopback" };
 }
 
 export function toAnswers(f: Fields): Answers {
-  const mode = f.mode as Mode;
+  const boundary = f.boundary as Boundary;
   const authMode = f.authMode as AuthMode;
   const components = componentsOf(f);
   const opencode = components.includes("opencode");
-  const behindProxy = mode === "local" ? f.behindProxy : undefined;
+  const { tls, publish } = webAxes(f);
+  const wantsDomain = wantsPublicDomain(f);
   const a: Answers = {
     version: VERSION,
     name: f.name.trim() || DEFAULT_NAME,
-    mode,
-    behindProxy,
+    boundary,
+    tls,
+    publish,
+    ssh: f.ssh as Ssh,
     publicUrl: "",
-    // caddy always has a domain; wireguard carries one only when filled in,
-    // and then the gateway terminates TLS on a public 443 beside the tunnel.
-    domain: wantsPublicDomain(mode, f) ? f.domain.trim() : undefined,
-    httpsPort: wantsPublicDomain(mode, f) ? num(f.httpsPort) : undefined,
-    acmeEmail: wantsPublicDomain(mode, f) ? f.acmeEmail.trim() : undefined,
-    tsHostname: mode === "tailscale" ? f.tsHostname.trim() : undefined,
-    wireguard: mode === "wireguard" ? wireguardOf(f) : undefined,
+    // A host with public ingress always has a domain; WireGuard carries one only
+    // when filled in, and then the gateway terminates TLS on a public 443.
+    domain: wantsDomain ? f.domain.trim() : undefined,
+    httpsPort: wantsDomain ? num(f.httpsPort) : undefined,
+    acmeEmail: wantsDomain ? f.acmeEmail.trim() : undefined,
+    tsHostname: boundary === "tailscale" ? f.tsHostname.trim() : undefined,
+    wireguard: boundary === "wireguard" ? wireguardOf(f) : undefined,
     authMode,
     components,
     desktopSize:
@@ -212,8 +241,8 @@ export function toAnswers(f: Fields): Answers {
     cpus: num(f.cpus),
     startupScript: startupScriptBody(f) || undefined,
     sshKeys: f.sshKeys.trim(),
-    sshPort:
-      mode === "tailscale" || mode === "wireguard" || mode === "none" ? undefined : num(f.sshPort),
+    // The host SSH port matters only when SSH is published on a host port.
+    sshPort: f.ssh === "host-port" ? num(f.sshPort) : undefined,
     workspace:
       f.workspaceKind === "path"
         ? {
@@ -246,10 +275,11 @@ export function toAnswers(f: Fields): Answers {
     a.allowedEmailDomains = f.allowedEmailDomains.trim();
   }
   if (authMode === "basic") a.gatewayUser = f.gatewayUser.trim() || "dev";
-  a.publicUrl = publicUrlFor({
-    ...a,
-    publicUrl: behindProxy || mode === "none" ? f.publicUrl.trim() : "",
-  });
+  // The public-URL field is meaningful only for a host upstream: a proxy in
+  // front, or a platform. Everywhere else publicUrlFor derives the URL; a blank
+  // field there means a local run on loopback.
+  const usesUrlField = boundary === "host" && tls === "upstream";
+  a.publicUrl = publicUrlFor({ ...a, publicUrl: usesUrlField ? f.publicUrl.trim() : "" });
   return a;
 }
 
@@ -267,13 +297,14 @@ export interface Section {
   summary: (a: Answers) => string;
 }
 
-const MODE_LABEL: Record<Mode, string> = {
-  local: "This machine",
-  caddy: "Public domain",
-  tailscale: "Tailnet",
-  wireguard: "WireGuard",
-  none: "Platform",
-};
+/** A short label for the reachability summary, from the axes. */
+function whereLabel(a: Answers): string {
+  if (a.boundary === "tailscale") return "Tailnet";
+  if (a.boundary === "wireguard") return a.domain ? "WireGuard + domain" : "WireGuard";
+  if (a.publish === "public") return "Public domain";
+  if (a.publish === "expose") return "Platform";
+  return "This machine";
+}
 const AUTH_LABEL: Record<AuthMode, string> = {
   google: "Google",
   github: "GitHub",
@@ -289,7 +320,12 @@ export const SECTIONS: Section[] = [
     title: "Where",
     fields: [
       "name",
-      "mode",
+      "boundary",
+      "tls",
+      "publish",
+      "webIngress",
+      "ssh",
+      "sshPort",
       "publicUrl",
       "domain",
       "httpsPort",
@@ -302,7 +338,7 @@ export const SECTIONS: Section[] = [
       "wireguard",
     ],
     summary: (a) =>
-      `${a.name ?? DEFAULT_NAME} · ${MODE_LABEL[a.mode]} · ${a.publicUrl.replace(/^https?:\/\//, "")}`,
+      `${a.name ?? DEFAULT_NAME} · ${whereLabel(a)} · ${a.publicUrl.replace(/^https?:\/\//, "")}`,
   },
   {
     id: "who",
@@ -364,16 +400,7 @@ export const SECTIONS: Section[] = [
   {
     id: "storage",
     title: "Access & storage",
-    fields: [
-      "sshKeys",
-      "sshPort",
-      "workspacePath",
-      "puid",
-      "pgid",
-      "homePath",
-      "homeUid",
-      "homeGid",
-    ],
+    fields: ["sshKeys", "workspacePath", "puid", "pgid", "homePath", "homeUid", "homeGid"],
     summary: (a) => {
       const keys = a.sshKeys.split("\n").filter((l) => l.trim()).length;
       const vols = [a.workspace, a.home ?? { kind: "volume" }].filter(
@@ -481,9 +508,30 @@ export function fieldsFromAnswers(a: Partial<Answers>): Partial<Fields> {
     if (v !== undefined && v !== null) f[k] = v;
   };
   put("name", a.name);
-  put("mode", a.mode);
-  put("behindProxy", a.behindProxy);
-  if (a.behindProxy || a.mode === "none") put("publicUrl", a.publicUrl);
+  if (a.boundary !== undefined) {
+    put("boundary", a.boundary);
+    put(
+      "webIngress",
+      a.boundary === "host"
+        ? a.publish === "public"
+          ? "public"
+          : a.publish === "expose"
+            ? "expose"
+            : "loopback"
+        : "loopback",
+    );
+  }
+  put("ssh", a.ssh);
+  // Only a host upstream keeps the public-URL field — a proxy's or platform's
+  // address, never the derived localhost of a bare loopback run.
+  if (
+    a.boundary === "host" &&
+    a.tls === "upstream" &&
+    a.publicUrl &&
+    a.publicUrl !== "http://localhost:8080"
+  ) {
+    put("publicUrl", a.publicUrl);
+  }
   put("domain", a.domain);
   put("httpsPort", str(a.httpsPort));
   put("acmeEmail", a.acmeEmail);
@@ -553,7 +601,7 @@ export function readImport(text: string): { answers: Partial<Answers> | null } |
   if (fromCompose) return { answers: fromCompose };
   try {
     const v: unknown = JSON.parse(text);
-    if (v && typeof v === "object" && !Array.isArray(v) && "mode" in v) {
+    if (v && typeof v === "object" && !Array.isArray(v) && ("mode" in v || "boundary" in v)) {
       return { answers: migrateAnswers(v as Partial<Answers>) };
     }
   } catch {
@@ -575,20 +623,24 @@ export function nextSteps(a: Answers, env: string): string[] {
   // The form walks through Google's; GitHub's is still to do.
   if (a.authMode === "github")
     steps.push(`Register the redirect URI ${a.publicUrl}/oauth2/callback.`);
-  if ((a.mode === "caddy" || a.mode === "wireguard") && a.domain && !isIPv4(a.domain))
+  if (gatewayTls(a) && a.domain && !isIPv4(a.domain))
     steps.push(`Point an A record for ${a.domain} at the host.`);
-  if (a.mode === "none")
+  if (a.boundary === "host" && a.publish === "expose")
     steps.push(`Have the platform route ${a.publicUrl} to port 8080 of the agent-env service.`);
-  if (a.mode === "tailscale")
+  if (a.boundary === "tailscale")
     steps.push("Put a tagged, reusable Tailscale auth key in .env (TS_AUTHKEY).");
-  if (a.mode === "wireguard") {
+  if (a.boundary === "wireguard") {
     steps.push(`Open UDP port ${a.wireguard?.listenPort ?? 51820} to the host.`);
     if (a.domain) steps.push("Open TCP 80 and 443 too, for the public domain and its certificate.");
     steps.push("Install each wireguard/<peer>.conf on that device, then bring the tunnel up.");
   }
+  // SSH forwarded on a host port under a tunnel: it is the sidecar that publishes
+  // it, so the host must open that TCP port too.
+  if (a.ssh === "host-port" && a.boundary !== "host")
+    steps.push(`Open TCP port ${a.sshPort ?? 2222} to the host, for SSH beside the tunnel.`);
   // Never published: SMB cannot sit behind the sign-in. On a tunnel (tailnet or
   // WireGuard) the sidecar shares the container's network; else it is up to you.
-  if (a.components.includes("smb") && a.mode !== "tailscale" && a.mode !== "wireguard")
+  if (a.components.includes("smb") && a.boundary === "host")
     steps.push(
       "SMB (port 445) is not published. Forward it to the container yourself, on a network you trust.",
     );
@@ -678,7 +730,7 @@ export function useConfigurator() {
   // keys are left in the store, harmless, in case a peer comes back.
   const wgSupported = wgCryptoAvailable();
   useEffect(() => {
-    if (fields.mode !== "wireguard" || !wgSupported) return;
+    if (fields.boundary !== "wireguard" || !wgSupported) return;
     const needed = [WG_SERVER, ...wgPeerNames(fields.wgPeers)];
     const missing = needed.filter((n) => !wgKeys[n]);
     if (!missing.length) return;
@@ -698,7 +750,7 @@ export function useConfigurator() {
     return () => {
       cancelled = true;
     };
-  }, [fields.mode, fields.wgPeers, wgKeys, wgSupported]);
+  }, [fields.boundary, fields.wgPeers, wgKeys, wgSupported]);
 
   /**
    * Replace the answers with imported ones, if any were given, and keep the
@@ -731,18 +783,17 @@ export function useConfigurator() {
     touched.add(name);
     setFields((f) => {
       const next = { ...f, [name]: value };
-      // As the wizard does: the mode decides the sensible gate until it is
-      // picked. A public domain on wireguard is a public endpoint, so it
-      // defaults to Google like caddy; the bare tunnel defaults to basic.
-      if ((name === "mode" || name === "domain") && !touched.has("authMode")) {
-        next.authMode =
-          next.mode === "tailscale"
-            ? "none"
-            : next.mode === "caddy" || next.mode === "none"
-              ? "google"
-              : next.mode === "wireguard" && next.domain.trim()
-                ? "google"
-                : "basic";
+      // As the wizard does: the reachability decides the sensible gate until it
+      // is picked by hand. A world-reachable endpoint (public host ingress, or a
+      // WireGuard public domain) defaults to Google; everything else to basic.
+      if (
+        (name === "boundary" || name === "webIngress" || name === "domain") &&
+        !touched.has("authMode")
+      ) {
+        const publicEndpoint =
+          (next.boundary === "host" && next.webIngress === "public") ||
+          (next.boundary === "wireguard" && next.domain.trim() !== "");
+        next.authMode = publicEndpoint ? "google" : "basic";
       }
       return next;
     });
@@ -753,7 +804,7 @@ export function useConfigurator() {
     // Fold in the generated public keys. A peer whose key is still being minted
     // has none yet, so it stays out of the answers until the effect lands —
     // which is near-instant — rather than showing as an invalid empty key.
-    if (a.mode === "wireguard" && a.wireguard) {
+    if (a.boundary === "wireguard" && a.wireguard) {
       a.wireguard = {
         ...a.wireguard,
         serverPublicKey: wgKeys[WG_SERVER]?.pub ?? "",
@@ -764,7 +815,12 @@ export function useConfigurator() {
     }
     return a;
   }, [fields, wgKeys]);
-  const problems = useMemo(() => validate(answers), [answers]);
+  // Warnings (a dangerous but deliberate choice) are kept apart from the
+  // blocking problems: they are shown as a caution but do not stop generation,
+  // so the gating below, the step dots and the file panel all read `problems`.
+  const allProblems = useMemo(() => validate(answers), [answers]);
+  const problems = useMemo(() => allProblems.filter((p) => p.severity !== "warn"), [allProblems]);
+  const warnings = useMemo(() => allProblems.filter((p) => p.severity === "warn"), [allProblems]);
   // An invalid form has no files. Keeping the last valid ones would let Copy
   // and Download export a deployment that no longer matches the answers.
   const files = useMemo(
@@ -776,7 +832,7 @@ export function useConfigurator() {
             randomSecret: stableSecret,
             clientSecret: answers.authMode === "google" ? fields.googleClientSecret : undefined,
             wireguard:
-              answers.mode === "wireguard"
+              answers.boundary === "wireguard"
                 ? {
                     serverPrivateKey: wgKeys[WG_SERVER]?.priv,
                     // Every peer in the answers has a key by now (the answers
@@ -800,6 +856,7 @@ export function useConfigurator() {
     }
   }, [files]);
   const errorFor = (field: string) => problems.find((p) => p.field === field)?.message;
+  const warningFor = (field: string) => warnings.find((p) => p.field === field)?.message;
   const problemsIn = (id: SectionId) => problems.filter((p) => sectionOf(p) === id);
 
   return {
@@ -807,8 +864,10 @@ export function useConfigurator() {
     set,
     answers,
     problems,
+    warnings,
     files,
     errorFor,
+    warningFor,
     problemsIn,
     rerollSecrets,
     importDeployment,
