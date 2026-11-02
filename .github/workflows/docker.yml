@@ -59,17 +59,27 @@ jobs:
       - name: The generated compose files are valid
         run: |
           set -euo pipefail
-          for mode in local caddy github tailscale wireguard wireguard-domain; do
+          # Each cell is a point in the three-axis reachability model: the
+          # boundary (host / tailscale / wireguard), the host web ingress
+          # (loopback / public / expose), and the SSH axis (host-port / tunnel /
+          # off). The legs cover the valid combinations the configurator offers.
+          for cell in loopback public github platform tailscale tailscale-ssh wireguard wireguard-domain wireguard-ssh; do
             dir="$(mktemp -d)"
-            case "${mode}" in
-              local) answers='{"mode":"local","behindProxy":false,"authMode":"basic","gatewayUser":"dev"}' ;;
-              caddy) answers='{"mode":"caddy","domain":"agent.example.com","httpsPort":8443,"authMode":"google","googleClientId":"1.apps.googleusercontent.com","allowedEmails":"me@example.com"}' ;;
-              github) answers='{"mode":"caddy","domain":"gh.example.com","httpsPort":8443,"authMode":"github","githubClientId":"Iv1.0123456789abcdef","githubOrg":"acme","githubTeam":"platform"}' ;;
-              tailscale) answers='{"mode":"tailscale","tsHostname":"work.tail1234.ts.net","authMode":"none"}' ;;
-              wireguard) answers='{"mode":"wireguard","wgEndpoint":"203.0.113.7:51820","wgAddress":"10.8.0.1/24","wgPeers":"laptop","authMode":"basic","gatewayUser":"dev"}' ;;
+            case "${cell}" in
+              loopback) answers='{"boundary":"host","webIngress":"loopback","ssh":"host-port","authMode":"basic","gatewayUser":"dev"}' ;;
+              public) answers='{"boundary":"host","webIngress":"public","ssh":"host-port","domain":"agent.example.com","httpsPort":8443,"authMode":"google","googleClientId":"1.apps.googleusercontent.com","allowedEmails":"me@example.com"}' ;;
+              github) answers='{"boundary":"host","webIngress":"public","ssh":"host-port","domain":"gh.example.com","httpsPort":8443,"authMode":"github","githubClientId":"Iv1.0123456789abcdef","githubOrg":"acme","githubTeam":"platform"}' ;;
+              # A platform (Dokploy etc.) routes to the container: expose, not publish.
+              platform) answers='{"boundary":"host","webIngress":"expose","ssh":"tunnel","publicUrl":"https://agent.example.com","authMode":"github","githubClientId":"Iv1.0123456789abcdef","githubUsers":"octocat"}' ;;
+              tailscale) answers='{"boundary":"tailscale","ssh":"tunnel","tsHostname":"work.tail1234.ts.net","authMode":"none"}' ;;
+              # SSH forwarded on a host port alongside the tailnet: published on the sidecar.
+              tailscale-ssh) answers='{"boundary":"tailscale","ssh":"host-port","tsHostname":"work.tail1234.ts.net","authMode":"basic","gatewayUser":"dev"}' ;;
+              wireguard) answers='{"boundary":"wireguard","ssh":"tunnel","wgEndpoint":"203.0.113.7:51820","wgAddress":"10.8.0.1/24","wgPeers":"laptop","authMode":"basic","gatewayUser":"dev"}' ;;
               # The same tunnel, plus a public domain: the sidecar then publishes
               # 80 and 443 for the gateway's TLS beside its UDP port.
-              wireguard-domain) answers='{"mode":"wireguard","wgEndpoint":"203.0.113.7:51820","wgAddress":"10.8.0.1/24","wgPeers":"laptop","domain":"wg.example.com","acmeEmail":"me@example.com","authMode":"google","googleClientId":"1.apps.googleusercontent.com","allowedEmails":"me@example.com"}' ;;
+              wireguard-domain) answers='{"boundary":"wireguard","ssh":"tunnel","wgEndpoint":"203.0.113.7:51820","wgAddress":"10.8.0.1/24","wgPeers":"laptop","domain":"wg.example.com","acmeEmail":"me@example.com","authMode":"google","googleClientId":"1.apps.googleusercontent.com","allowedEmails":"me@example.com"}' ;;
+              # SSH forwarded on a host port beside the WireGuard tunnel's UDP port.
+              wireguard-ssh) answers='{"boundary":"wireguard","ssh":"host-port","wgEndpoint":"203.0.113.7:51820","wgAddress":"10.8.0.1/24","wgPeers":"laptop","authMode":"basic","gatewayUser":"dev"}' ;;
             esac
             common='"components":"desktop,terminal,files,opencode,docker","sshKeys":"ssh-ed25519 AAAA t@h","sshPort":2222,"workspaceKind":"volume","timezone":"UTC"'
             echo "${answers%\}}, ${common}}" > "${dir}/a.json"
@@ -81,7 +91,7 @@ jobs:
             ( cd "${dir}" \
               && GOOGLE_CLIENT_SECRET=x GITHUB_CLIENT_SECRET=x TS_AUTHKEY=x WG_PRIVATE_KEY=x \
                  docker compose config -q )
-            echo "::notice::${mode} compose is valid"
+            echo "::notice::${cell} compose is valid"
 
             # A generated Caddyfile that compose accepts can still be one Caddy
             # refuses, and that failure only shows up at first start in domain
@@ -91,7 +101,7 @@ jobs:
               ( cd "${dir}" && docker compose run --rm --no-deps \
                 --entrypoint caddy caddy \
                 validate --config /etc/caddy/Caddyfile --adapter caddyfile )
-              echo "::notice::${mode} Caddyfile is valid"
+              echo "::notice::${cell} Caddyfile is valid"
             fi
           done
 
