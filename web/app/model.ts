@@ -7,6 +7,7 @@
  */
 
 import { useEffect, useMemo, useState } from "preact/hooks";
+import { type WgKeypair, wgCryptoAvailable, wgKeypair } from "./wgkeys.ts";
 import {
   type Answers,
   answersFromCompose,
@@ -31,6 +32,7 @@ import {
   randomSecret,
   validate,
   VERSION,
+  type Wireguard,
 } from "../../generate.ts";
 
 export const DEFAULT_FIELDS = {
@@ -42,6 +44,13 @@ export const DEFAULT_FIELDS = {
   httpsPort: "443",
   acmeEmail: "",
   tsHostname: "",
+  // WireGuard: what peers dial, the sidecar's UDP port, the server's tunnel
+  // address, and the peer devices — one label per line. Keys are generated for
+  // you; see useConfigurator.
+  wgEndpoint: "",
+  wgListenPort: "51820",
+  wgAddress: "10.8.0.1/24",
+  wgPeers: "",
   authMode: "basic",
   googleClientId: "",
   // Not an answer: it goes to .env only, and is never saved with the answers.
@@ -104,6 +113,46 @@ const num = (v: string): number | undefined => {
   return t === "" ? undefined : /^\d+(\.\d+)?$/.test(t) ? Number(t) : NaN;
 };
 
+/** The map key the server's own generated keypair is held under. */
+export const WG_SERVER = "__server__";
+
+/** Peer labels from the textarea: one per non-blank line, trimmed. */
+export function wgPeerNames(wgPeers: string): string[] {
+  return wgPeers
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+}
+
+/**
+ * The nth peer's tunnel address: the server's address with its last octet
+ * stepped by n. So 10.8.0.1/24 gives peers 10.8.0.2, 10.8.0.3, … — enough for
+ * the common /24, and the operator can edit compose.yaml for anything larger.
+ */
+export function wgPeerAddress(serverAddress: string, n: number): string {
+  const host = serverAddress.split("/")[0];
+  const octets = host.split(".");
+  if (octets.length !== 4) return host;
+  octets[3] = String((Number(octets[3]) || 1) + n + 1);
+  return octets.join(".");
+}
+
+/** The wireguard answers the fields describe, with the public keys left to the
+ *  hook to fill in from its generated keystore. */
+function wireguardOf(f: Fields): Wireguard {
+  return {
+    endpoint: f.wgEndpoint.trim(),
+    listenPort: num(f.wgListenPort) ?? 51820,
+    address: f.wgAddress.trim(),
+    serverPublicKey: "",
+    peers: wgPeerNames(f.wgPeers).map((name, i) => ({
+      name,
+      publicKey: "",
+      address: wgPeerAddress(f.wgAddress.trim(), i),
+    })),
+  };
+}
+
 /** The components the fields choose, in AGENT_ENV_COMPONENTS order. */
 export function componentsOf(f: Fields): Component[] {
   const list: string[] = [];
@@ -132,6 +181,7 @@ export function toAnswers(f: Fields): Answers {
     httpsPort: mode === "caddy" ? num(f.httpsPort) : undefined,
     acmeEmail: mode === "caddy" ? f.acmeEmail.trim() : undefined,
     tsHostname: mode === "tailscale" ? f.tsHostname.trim() : undefined,
+    wireguard: mode === "wireguard" ? wireguardOf(f) : undefined,
     authMode,
     components,
     desktopSize:
@@ -149,7 +199,8 @@ export function toAnswers(f: Fields): Answers {
     cpus: num(f.cpus),
     startupScript: startupScriptBody(f) || undefined,
     sshKeys: f.sshKeys.trim(),
-    sshPort: mode === "tailscale" || mode === "none" ? undefined : num(f.sshPort),
+    sshPort:
+      mode === "tailscale" || mode === "wireguard" || mode === "none" ? undefined : num(f.sshPort),
     workspace:
       f.workspaceKind === "path"
         ? {
@@ -207,6 +258,7 @@ const MODE_LABEL: Record<Mode, string> = {
   local: "This machine",
   caddy: "Public domain",
   tailscale: "Tailnet",
+  wireguard: "WireGuard",
   none: "Platform",
 };
 const AUTH_LABEL: Record<AuthMode, string> = {
@@ -222,7 +274,20 @@ export const SECTIONS: Section[] = [
   {
     id: "where",
     title: "Where",
-    fields: ["name", "mode", "publicUrl", "domain", "httpsPort", "acmeEmail", "tsHostname"],
+    fields: [
+      "name",
+      "mode",
+      "publicUrl",
+      "domain",
+      "httpsPort",
+      "acmeEmail",
+      "tsHostname",
+      "wgEndpoint",
+      "wgListenPort",
+      "wgAddress",
+      "wgPeers",
+      "wireguard",
+    ],
     summary: (a) =>
       `${a.name ?? DEFAULT_NAME} · ${MODE_LABEL[a.mode]} · ${a.publicUrl.replace(/^https?:\/\//, "")}`,
   },
@@ -314,6 +379,11 @@ export const FIELD_LABELS: Record<string, string> = {
   httpsPort: "HTTPS port",
   acmeEmail: "Let's Encrypt email",
   tsHostname: "MagicDNS name",
+  wgEndpoint: "WireGuard endpoint",
+  wgListenPort: "WireGuard port",
+  wgAddress: "Server tunnel address",
+  wgPeers: "Peers",
+  wireguard: "WireGuard",
   googleClientId: "Google client ID",
   githubClientId: "GitHub client ID",
   githubTeam: "Allowed teams",
@@ -351,6 +421,10 @@ export function sectionOf(p: Problem): SectionId | undefined {
  */
 const SECRETS_KEY = "agent-env-configurator:secrets";
 const STORAGE_KEY = "agent-env-configurator:answers";
+// WireGuard keypairs, held the same way and for the same reason as secrets: a
+// peer's key must not change with every keystroke, and the private halves must
+// never reach localStorage, where the answers (and so compose.yaml) are kept.
+const WGKEYS_KEY = "agent-env-configurator:wgkeys";
 
 function loadSecrets(): Map<string, string> {
   try {
@@ -371,6 +445,22 @@ function saveSecrets(minted: Map<string, string>): void {
   }
 }
 
+export type WgKeystore = Record<string, WgKeypair>;
+function loadWgKeys(): WgKeystore {
+  try {
+    return JSON.parse(sessionStorage.getItem(WGKEYS_KEY) ?? "{}") as WgKeystore;
+  } catch {
+    return {};
+  }
+}
+function saveWgKeys(keys: WgKeystore): void {
+  try {
+    sessionStorage.setItem(WGKEYS_KEY, JSON.stringify(keys));
+  } catch {
+    // Blocked storage: the keys still hold for as long as the page is open.
+  }
+}
+
 /** Saved answers, back into the form's fields: the inverse of `toAnswers`. */
 export function fieldsFromAnswers(a: Partial<Answers>): Partial<Fields> {
   const f: Partial<Fields> = {};
@@ -386,6 +476,12 @@ export function fieldsFromAnswers(a: Partial<Answers>): Partial<Fields> {
   put("httpsPort", str(a.httpsPort));
   put("acmeEmail", a.acmeEmail);
   put("tsHostname", a.tsHostname);
+  if (a.wireguard) {
+    put("wgEndpoint", a.wireguard.endpoint);
+    put("wgListenPort", str(a.wireguard.listenPort));
+    put("wgAddress", a.wireguard.address);
+    put("wgPeers", a.wireguard.peers.map((p) => p.name).join("\n"));
+  }
   put("authMode", a.authMode);
   put("googleClientId", a.googleClientId);
   put("githubClientId", a.githubClientId);
@@ -474,9 +570,13 @@ export function nextSteps(a: Answers, env: string): string[] {
     steps.push(`Have the platform route ${a.publicUrl} to port 8080 of the agent-env service.`);
   if (a.mode === "tailscale")
     steps.push("Put a tagged, reusable Tailscale auth key in .env (TS_AUTHKEY).");
-  // Never published: SMB cannot sit behind the sign-in. On a tailnet the
-  // sidecar shares the container's network; anywhere else it is up to you.
-  if (a.components.includes("smb") && a.mode !== "tailscale")
+  if (a.mode === "wireguard") {
+    steps.push(`Open UDP port ${a.wireguard?.listenPort ?? 51820} to the host.`);
+    steps.push("Install each wireguard/<peer>.conf on that device, then bring the tunnel up.");
+  }
+  // Never published: SMB cannot sit behind the sign-in. On a tunnel (tailnet or
+  // WireGuard) the sidecar shares the container's network; else it is up to you.
+  if (a.components.includes("smb") && a.mode !== "tailscale" && a.mode !== "wireguard")
     steps.push(
       "SMB (port 445) is not published. Forward it to the container yourself, on a network you trust.",
     );
@@ -529,6 +629,10 @@ export function useConfigurator() {
   // Answers set on purpose, so the mode's default gate leaves them alone.
   const [touched] = useState(() => new Set<string>(start.chosen ? ["authMode"] : []));
   const [minted, setMinted] = useState(loadSecrets);
+  // WireGuard keypairs, by peer name (WG_SERVER for the server's own). Minted
+  // lazily by the effect below — Web Crypto is async, so keys cannot be made
+  // inside the synchronous generate() the way plain secrets are.
+  const [wgKeys, setWgKeys] = useState<WgKeystore>(loadWgKeys);
   // Answers came back from a previous visit, but the secrets beside them did
   // not. Decided once, before generate() mints any: from then on this tab has
   // secrets of its own, and they are still not the deployment's. It lasts
@@ -548,9 +652,41 @@ export function useConfigurator() {
     const fresh = new Map<string, string>();
     saveSecrets(fresh);
     setMinted(fresh);
+    // New WireGuard keys too: a reroll means a clean slate, and every client
+    // config is reissued from the fresh server key.
+    saveWgKeys({});
+    setWgKeys({});
     setMissingSecrets(false);
   };
   const keepNewSecrets = () => setMissingSecrets(false);
+
+  // Mint any WireGuard keypairs the current peers need but do not have yet: the
+  // server's own, and one per peer label. Existing ones are kept, so a peer's
+  // key — and the config already handed to that device — holds steady. Unused
+  // keys are left in the store, harmless, in case a peer comes back.
+  const wgSupported = wgCryptoAvailable();
+  useEffect(() => {
+    if (fields.mode !== "wireguard" || !wgSupported) return;
+    const needed = [WG_SERVER, ...wgPeerNames(fields.wgPeers)];
+    const missing = needed.filter((n) => !wgKeys[n]);
+    if (!missing.length) return;
+    let cancelled = false;
+    (async () => {
+      const made: WgKeystore = {};
+      for (const name of missing) made[name] = await wgKeypair();
+      if (cancelled) return;
+      setWgKeys((prev) => {
+        const next = { ...prev, ...made };
+        saveWgKeys(next);
+        return next;
+      });
+    })().catch(() => {
+      // A browser without X25519: wgSupported is false and the UI says so.
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [fields.mode, fields.wgPeers, wgKeys, wgSupported]);
 
   /**
    * Replace the answers with imported ones, if any were given, and keep the
@@ -596,7 +732,22 @@ export function useConfigurator() {
     });
   };
 
-  const answers = useMemo(() => toAnswers(fields), [fields]);
+  const answers = useMemo(() => {
+    const a = toAnswers(fields);
+    // Fold in the generated public keys. A peer whose key is still being minted
+    // has none yet, so it stays out of the answers until the effect lands —
+    // which is near-instant — rather than showing as an invalid empty key.
+    if (a.mode === "wireguard" && a.wireguard) {
+      a.wireguard = {
+        ...a.wireguard,
+        serverPublicKey: wgKeys[WG_SERVER]?.pub ?? "",
+        peers: a.wireguard.peers.flatMap((p) =>
+          wgKeys[p.name] ? [{ ...p, publicKey: wgKeys[p.name].pub }] : [],
+        ),
+      };
+    }
+    return a;
+  }, [fields, wgKeys]);
   const problems = useMemo(() => validate(answers), [answers]);
   // An invalid form has no files. Keeping the last valid ones would let Copy
   // and Download export a deployment that no longer matches the answers.
@@ -608,8 +759,21 @@ export function useConfigurator() {
             existingEnv: fields.existingEnv,
             randomSecret: stableSecret,
             clientSecret: answers.authMode === "google" ? fields.googleClientSecret : undefined,
+            wireguard:
+              answers.mode === "wireguard"
+                ? {
+                    serverPrivateKey: wgKeys[WG_SERVER]?.priv,
+                    // Every peer in the answers has a key by now (the answers
+                    // drop any that do not), so each gets a client config.
+                    clientPrivateKeys: Object.fromEntries(
+                      (answers.wireguard?.peers ?? []).flatMap((p) =>
+                        wgKeys[p.name] ? [[p.name, wgKeys[p.name].priv]] : [],
+                      ),
+                    ),
+                  }
+                : undefined,
           }),
-    [answers, problems, fields.existingEnv, fields.googleClientSecret, minted],
+    [answers, problems, fields.existingEnv, fields.googleClientSecret, minted, wgKeys],
   );
   useEffect(() => {
     if (!files || new URLSearchParams(location.search).has("demo")) return;
@@ -634,6 +798,9 @@ export function useConfigurator() {
     importDeployment,
     keepNewSecrets,
     restoredWithoutSecrets: missingSecrets && !fields.existingEnv.trim(),
+    // False only on a browser without Web Crypto X25519, where wireguard mode
+    // cannot mint keys; the UI tells the person to use the setup.ts wizard.
+    wgSupported,
   };
 }
 export type Configurator = ReturnType<typeof useConfigurator>;

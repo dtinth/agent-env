@@ -478,6 +478,99 @@ test("a pasted client secret goes to .env and nowhere else", () => {
   assert(!generate(BASIC, { clientSecret: "GOCSPX-x" })[".env"].includes("GOCSPX"));
 });
 
+// --- WireGuard -------------------------------------------------------------
+
+const WG: Answers = {
+  ...BASIC,
+  mode: "wireguard",
+  publicUrl: "http://10.8.0.1:8080",
+  authMode: "basic",
+  wireguard: {
+    endpoint: "203.0.113.7:51820",
+    listenPort: 51820,
+    address: "10.8.0.1/24",
+    serverPublicKey: "U" + "A".repeat(42) + "=",
+    peers: [
+      { name: "laptop", publicKey: "L" + "A".repeat(42) + "=", address: "10.8.0.2" },
+      { name: "phone", publicKey: "P" + "A".repeat(42) + "=", address: "10.8.0.3" },
+    ],
+  },
+};
+
+test("wireguard mode mirrors tailscale: a sidecar owns the netns, nothing else is published", () => {
+  const out = generate(WG);
+  const compose = out["compose.yaml"];
+  // The agent-env container shares the sidecar's namespace and has no ports.
+  assert(compose.includes("network_mode: service:wireguard"));
+  const agentBlock = compose.slice(compose.indexOf("agent-env:"), compose.indexOf("wireguard:"));
+  assert(!/^\s+ports:/m.test(agentBlock), "agent-env declared ports alongside network_mode");
+  assert(!/^\s+hostname:/m.test(agentBlock), "agent-env took a hostname it cannot have");
+  // Only the sidecar publishes, and only the one UDP port peers dial.
+  assert(compose.includes('- "51820:51820/udp"'));
+  // The gateway is reached over the tunnel on the server's address.
+  assert(compose.includes('- "PUBLIC_URL=http://10.8.0.1:8080"'));
+});
+
+test("the server's private key is the one secret, carried into the inlined wg config", () => {
+  const out = generate(WG);
+  // It is a sidecar key: never handed to the agent-env container.
+  const compose = out["compose.yaml"];
+  const agentBlock = compose.slice(compose.indexOf("agent-env:"), compose.indexOf("wireguard:"));
+  assert(!agentBlock.includes("WG_PRIVATE_KEY"), "the private key leaked into the container");
+  // No placeholder in .env; compose fills it from .env into the wg config and
+  // refuses to start until it is set.
+  assert(!/^WG_PRIVATE_KEY=/m.test(out[".env"]));
+  assert(compose.includes("PrivateKey = ${WG_PRIVATE_KEY:?set WG_PRIVATE_KEY in .env}"));
+  // The peers' public keys are in the server config; no private key is.
+  assert(compose.includes("PublicKey = L" + "A".repeat(42) + "="));
+  assert(compose.includes("AllowedIPs = 10.8.0.2/32"));
+
+  // A supplied server key is written to .env and still only referenced in compose.
+  const withKey = generate(WG, { wireguard: { serverPrivateKey: "s3rv3rpr1v" } });
+  assert(withKey[".env"].includes("WG_PRIVATE_KEY=s3rv3rpr1v"));
+  assert(!withKey["compose.yaml"].includes("s3rv3rpr1v"));
+});
+
+test("a client config is emitted only for a peer whose private key is supplied", () => {
+  // No private keys: only the two deployment files.
+  assertEquals(Object.keys(generate(WG)).sort(), [".env", "compose.yaml"]);
+
+  // One supplied: just that peer's config, holding its own private key and the
+  // server's public key and endpoint — and routing only the gateway.
+  const out = generate(WG, { wireguard: { clientPrivateKeys: { laptop: "l4pt0ppr1v" } } });
+  assertEquals(Object.keys(out).sort(), [".env", "compose.yaml", "wireguard/laptop.conf"]);
+  const conf = out["wireguard/laptop.conf"];
+  assert(conf.includes("PrivateKey = l4pt0ppr1v"));
+  assert(conf.includes("Address = 10.8.0.2/32"));
+  assert(conf.includes("PublicKey = U" + "A".repeat(42) + "="));
+  assert(conf.includes("Endpoint = 203.0.113.7:51820"));
+  assert(conf.includes("AllowedIPs = 10.8.0.1/32"));
+});
+
+test("wireguard answers are validated like every other mode", () => {
+  const bad = (wg: Partial<Answers["wireguard"] & object>) =>
+    validate({ ...WG, wireguard: { ...WG.wireguard!, ...wg } }).length > 0;
+  assert(bad({ endpoint: "no-port" }), "accepted an endpoint without a port");
+  assert(bad({ endpoint: "203.0.113.7:99999" }), "accepted an out-of-range port");
+  assert(bad({ address: "10.8.0.1" }), "accepted a server address with no prefix");
+  assert(bad({ serverPublicKey: "" }), "accepted a missing server key");
+  assert(
+    bad({ peers: [{ name: "a b", publicKey: "x", address: "10.8.0.2" }] }),
+    "accepted a peer label with a space",
+  );
+  assert(
+    bad({
+      peers: [
+        { name: "a", publicKey: "x", address: "10.8.0.2" },
+        { name: "b", publicKey: "y", address: "10.8.0.2" },
+      ],
+    }),
+    "accepted two peers on one address",
+  );
+  // A server with no peers yet is a valid starting point.
+  assertEquals(validate({ ...WG, wireguard: { ...WG.wireguard!, peers: [] } }).length, 0);
+});
+
 // A required secret the operator alone can supply gets no CHANGEME placeholder:
 // compose passes it as ${KEY:?} so `up` fails loudly until it is set, rather
 // than the image booting with a real-looking value that only breaks later.
