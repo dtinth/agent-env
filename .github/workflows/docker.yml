@@ -71,7 +71,12 @@ jobs:
             echo "${answers%\}}, ${common}}" > "${dir}/a.json"
             # Plain node, as a person runs it: the wizard needs nothing installed.
             node setup.ts --answers "${dir}/a.json" --out "${dir}"
-            ( cd "${dir}" && docker compose config -q )
+            # The required secrets have no placeholder: compose passes them as
+            # ${KEY:?} and refuses to render until they are set, which is the
+            # point. Supply throwaway values so `config` can validate the shape.
+            ( cd "${dir}" \
+              && GOOGLE_CLIENT_SECRET=x GITHUB_CLIENT_SECRET=x TS_AUTHKEY=x WG_PRIVATE_KEY=x \
+                 docker compose config -q )
             echo "::notice::${mode} compose is valid"
 
             # A generated Caddyfile that compose accepts can still be one Caddy
