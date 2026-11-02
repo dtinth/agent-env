@@ -168,6 +168,14 @@ export function componentsOf(f: Fields): Component[] {
   return sortComponents(list);
 }
 
+/**
+ * Whether a public TLS domain is in play: always in caddy mode, and in
+ * wireguard mode once the optional domain field is filled in.
+ */
+function wantsPublicDomain(mode: Mode, f: Fields): boolean {
+  return mode === "caddy" || (mode === "wireguard" && f.domain.trim() !== "");
+}
+
 export function toAnswers(f: Fields): Answers {
   const mode = f.mode as Mode;
   const authMode = f.authMode as AuthMode;
@@ -180,9 +188,11 @@ export function toAnswers(f: Fields): Answers {
     mode,
     behindProxy,
     publicUrl: "",
-    domain: mode === "caddy" ? f.domain.trim() : undefined,
-    httpsPort: mode === "caddy" ? num(f.httpsPort) : undefined,
-    acmeEmail: mode === "caddy" ? f.acmeEmail.trim() : undefined,
+    // caddy always has a domain; wireguard carries one only when filled in,
+    // and then the gateway terminates TLS on a public 443 beside the tunnel.
+    domain: wantsPublicDomain(mode, f) ? f.domain.trim() : undefined,
+    httpsPort: wantsPublicDomain(mode, f) ? num(f.httpsPort) : undefined,
+    acmeEmail: wantsPublicDomain(mode, f) ? f.acmeEmail.trim() : undefined,
     tsHostname: mode === "tailscale" ? f.tsHostname.trim() : undefined,
     wireguard: mode === "wireguard" ? wireguardOf(f) : undefined,
     authMode,
@@ -565,7 +575,7 @@ export function nextSteps(a: Answers, env: string): string[] {
   // The form walks through Google's; GitHub's is still to do.
   if (a.authMode === "github")
     steps.push(`Register the redirect URI ${a.publicUrl}/oauth2/callback.`);
-  if (a.mode === "caddy" && !isIPv4(a.domain ?? ""))
+  if ((a.mode === "caddy" || a.mode === "wireguard") && a.domain && !isIPv4(a.domain))
     steps.push(`Point an A record for ${a.domain} at the host.`);
   if (a.mode === "none")
     steps.push(`Have the platform route ${a.publicUrl} to port 8080 of the agent-env service.`);
@@ -573,6 +583,7 @@ export function nextSteps(a: Answers, env: string): string[] {
     steps.push("Put a tagged, reusable Tailscale auth key in .env (TS_AUTHKEY).");
   if (a.mode === "wireguard") {
     steps.push(`Open UDP port ${a.wireguard?.listenPort ?? 51820} to the host.`);
+    if (a.domain) steps.push("Open TCP 80 and 443 too, for the public domain and its certificate.");
     steps.push("Install each wireguard/<peer>.conf on that device, then bring the tunnel up.");
   }
   // Never published: SMB cannot sit behind the sign-in. On a tunnel (tailnet or
@@ -720,14 +731,18 @@ export function useConfigurator() {
     touched.add(name);
     setFields((f) => {
       const next = { ...f, [name]: value };
-      // As the wizard does: the mode decides the sensible gate until it is picked.
-      if (name === "mode" && !touched.has("authMode")) {
+      // As the wizard does: the mode decides the sensible gate until it is
+      // picked. A public domain on wireguard is a public endpoint, so it
+      // defaults to Google like caddy; the bare tunnel defaults to basic.
+      if ((name === "mode" || name === "domain") && !touched.has("authMode")) {
         next.authMode =
-          value === "tailscale"
+          next.mode === "tailscale"
             ? "none"
-            : value === "caddy" || value === "none"
+            : next.mode === "caddy" || next.mode === "none"
               ? "google"
-              : "basic";
+              : next.mode === "wireguard" && next.domain.trim()
+                ? "google"
+                : "basic";
       }
       return next;
     });

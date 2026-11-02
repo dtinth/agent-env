@@ -291,6 +291,29 @@ function Where({ c }: { c: Configurator }) {
             placeholder={"laptop\nphone"}
             multiline
           />
+          <div class="row">
+            <Text
+              c={c}
+              name="domain"
+              label="Public domain for https"
+              hint="(optional — blank keeps the tunnel the only way in)"
+              placeholder="agent.example.com"
+              class="grow"
+            />
+            {f.domain.trim() !== "" && (
+              <>
+                <Text c={c} name="httpsPort" label="HTTPS port" class="narrow" />
+                <Text
+                  c={c}
+                  name="acmeEmail"
+                  label="Let's Encrypt email"
+                  hint="(optional)"
+                  placeholder="you@example.com"
+                  class="grow"
+                />
+              </>
+            )}
+          </div>
         </>
       )}
     </>
