@@ -228,17 +228,44 @@ code: if you change behaviour described here, change it here too.
 ## The configurator
 
 The browser form and `node setup.ts` ask about a dozen things and produce `compose.yaml` and `.env`, using the
-same code, so they agree. The first question decides the rest:
+same code, so they agree. How the environment is reached is **three orthogonal
+axes** — a boundary, a web ingress, and SSH — carried on the answers as
+`boundary`, `tls`/`publish` and `ssh`. The forms ask them one at a time and only
+offer the combinations that make sense; a flat `mode` enum (versions ≤ 2) is
+read back and migrated to these by `migrateAnswers`.
 
-| Where it runs | What you get |
+**Boundary** — who owns the network namespace:
+
+| Boundary | What you get |
 |---|---|
-| **This machine only** | Ports bound to `127.0.0.1`. Put your own proxy in front if you want it reachable. |
-| **A public domain** | The gateway Caddy terminates TLS itself and gets a certificate from Let's Encrypt, on 443 unless you pick another port — no separate proxy. The certificate is kept on the state volume (`/var/lib/agent-env`), so it survives a recreate. The "domain" can be the host's IPv4 address: Let's Encrypt certifies one only on its six-day `shortlived` profile, which the gateway then asks for. Google sign-in refuses an IP in its redirect URI, so that is refused too; a name like `203-0-113-7.sslip.io` gets round it with an ordinary certificate. |
-| **A tailnet** | A Tailscale sidecar. The tailnet is the boundary, and SSH and mosh work with nothing published. |
-| **A WireGuard tunnel** | A WireGuard sidecar, for a public-IP host that is not on a tailnet. The agent-env container shares the sidecar's network namespace, so a peer reaches the gateway on the server's tunnel address (plain HTTP — the tunnel carries the encryption) and SSH and mosh the same way; only the sidecar's UDP `ListenPort` is published. The server's private key is the one secret (`.env`, `WG_PRIVATE_KEY`, interpolated into the inlined `wg0.conf`); the configurator generates every key and writes a `wireguard/<peer>.conf` for each peer to install on a device. Optionally it also takes a **public domain**: the gateway then terminates TLS on a public 443 (like the domain mode — `PUBLIC_URL` becomes `https://<domain>`, `GATEWAY_TLS_DOMAIN`/`ACME_EMAIL` are set, and the sidecar publishes 80 and 443 beside its UDP port), so `https://` works with a real certificate while SSH and mosh stay on the tunnel. A public endpoint needs auth, so `AUTH_MODE=none` is refused as it is for the domain mode. |
-| **None** | For Dokploy, Coolify and other platforms that route to the container themselves. No ports are published; `expose:` lists 8080 and 22 for the platform's benefit, and you give the URL it serves. SSH and mosh are only reachable if the platform forwards them. |
+| **This machine** (`host`) | The agent-env container owns the network; its web ingress and SSH are the two choices below. |
+| **A tailnet** (`tailscale`) | A Tailscale sidecar. The tailnet is the boundary; `tailscale serve` terminates TLS, and SSH and mosh work with nothing published. |
+| **A WireGuard tunnel** (`wireguard`) | A WireGuard sidecar, for a public-IP host that is not on a tailnet. agent-env shares the sidecar's namespace, so a peer reaches the gateway on the server's tunnel address (plain HTTP — the tunnel carries the encryption); only the sidecar's UDP `ListenPort` is published. The server's private key is the one secret (`.env`, `WG_PRIVATE_KEY`, interpolated into the inlined `wg0.conf`); the configurator generates every key and writes a `wireguard/<peer>.conf` for each peer. |
 
-That choice sets `PUBLIC_URL`, the port layout, which sidecars exist, and the
+**Web ingress** (the host boundary; a shared namespace owns its own) — who
+terminates TLS (`tls`), and how the gateway's port is bound (`publish`):
+
+| Web ingress | What you get |
+|---|---|
+| **Loopback** (`tls: upstream`, `publish: loopback`) | Bound to `127.0.0.1:8080`. Reach it locally, or put your own TLS proxy in front and give its URL. |
+| **Public domain** (`tls: gateway`, `publish: public`) | The gateway Caddy terminates TLS itself and gets a Let's Encrypt certificate, on 443 unless you pick another port — no separate proxy, and 80 is published for ACME. The certificate lives on the state volume (`/var/lib/agent-env`), so it survives a recreate. The "domain" can be the host's IPv4 address, certified on Let's Encrypt's six-day `shortlived` profile; Google sign-in refuses an IP in its redirect URI, so a name like `203-0-113-7.sslip.io` is the way round that. |
+| **Behind a platform** (`tls: upstream`, `publish: expose`) | For Dokploy, Coolify and the like. No ports are published; `expose:` lists 8080 for the platform's proxy, and you give the URL it serves. |
+
+A **WireGuard** boundary optionally takes a public domain too (`tls` becomes
+`gateway`): the in-container gateway then terminates TLS on a public 443 —
+`PUBLIC_URL` becomes `https://<domain>`, `GATEWAY_TLS_DOMAIN`/`ACME_EMAIL` are
+set, and the *sidecar* publishes 80 and 443 beside its UDP port — so `https://`
+works with a real certificate while SSH and mosh stay on the tunnel.
+
+**SSH** — independent of the web, and mosh follows it:
+
+| SSH | What you get |
+|---|---|
+| **Host port** (`host-port`) | SSH (and the mosh UDP range) are published on a host port. Under a tunnel boundary that port rides the *sidecar*, beside the tunnel, so SSH can be forwarded alongside it; on the host it is public, or loopback when the web is. |
+| **Over the boundary** (`tunnel`) | Reached only over the boundary — a tailnet, a WireGuard tunnel, or a platform's own routing (`expose: 22`); nothing published on the host. |
+| **Off** (`off`) | No SSH, and no mosh. |
+
+Those choices set `PUBLIC_URL`, the port layout, which sidecars exist, and the
 sensible default for authentication — which is most of what there is to get
 wrong. It also does the things that are tedious by hand and easy to forget:
 
@@ -250,19 +277,27 @@ wrong. It also does the things that are tedious by hand and easy to forget:
   to paste. The secret goes to `.env` only (`generate`'s `clientSecret` option),
   never into the answers `compose.yaml` carries; the wizard asks for it only at
   a terminal, and blank keeps the one `.env` has.
-- **Refuses** to write a public-domain deployment with `AUTH_MODE=none`, or an
-  OAuth one with no allow list. Everything in this container is root-capable.
+- **Strongly discourages** a world-reachable endpoint with `AUTH_MODE=none` — a
+  public host ingress, or a WireGuard public domain — since everything in this
+  container is root-capable. It is a prominent warning rather than a refusal
+  (`Problem` carries a `severity`), so a deliberate choice (your own edge auth,
+  a throwaway box) still generates; `validate` reports it and `generate` writes
+  past it. An OAuth deployment with no allow list is still a hard **refusal**:
+  the image refuses to start without one, so there is nothing to generate.
+- Defaults authentication to Google sign-in for a world-reachable endpoint and
+  to basic auth otherwise.
 - Writes `AGENT_ENV_COMPONENTS` every time, even when it is the default, so a
   later image's default never changes what a deployment runs. It refuses
   `desktop` with `desktop-selkies`, and `desktop-selkies` on plain HTTP to
   anything but localhost. It never publishes `smb`'s port 445 (a file share
-  cannot sit behind the gateway's sign-in); outside the tailnet mode the next
+  cannot sit behind the gateway's sign-in); on a host boundary the next
   steps say to forward it yourself.
 - Emits all five host flags the `docker` component needs together, or none —
   four out of five leaves the daemon down.
 - Reads `PUID`/`PGID` off a host directory you mount, so files stay yours.
-- Publishes `:80` alongside the HTTPS port in domain mode, because ACME only
-  ever validates on 80 or 443, and the HTTPS port may be neither.
+- Publishes `:80` alongside the HTTPS port whenever the gateway owns TLS
+  (`tls: gateway`), because ACME only ever validates on 80 or 443, and the
+  HTTPS port may be neither.
 - Names the deployment (`agent-env` unless you say otherwise). The name is the
   Compose project, so two deployments on one host need different names, or the
   second takes over the first's containers and volumes. It is also the
