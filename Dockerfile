@@ -61,6 +61,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       # rootless docker: subuid mapping, its network and storage helpers.
       # Inert unless the docker component is listed.
       uidmap slirp4netns fuse-overlayfs iptables nftables \
+    # Generate en_US.UTF-8 as well as the default C.UTF-8. mosh-client forwards
+    # the client's locale to the session, and en_US.UTF-8 is what the common
+    # clients send; with it generated a mosh session is quiet and keeps the
+    # locale the client asked for, instead of warning that it does not exist.
+    && sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen \
+    && locale-gen \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------
@@ -237,7 +243,7 @@ USER root
 COPY rootfs/ /
 
 RUN set -eux; \
-    chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/agent-env /usr/local/bin/mosh-server /opt/agent-env/bin/*; \
+    chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/agent-env /opt/agent-env/bin/*; \
     chmod +x /opt/agent-env/components/opencode/run /opt/agent-env/components/smb/run; \
     # Where compose `configs:` put the operator's startup scripts.
     install -d -m 755 /etc/agent-env/provision.d; \

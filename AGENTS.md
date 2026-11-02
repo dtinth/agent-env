@@ -956,19 +956,19 @@ ssh -p 2222 dev@host
 ssh -p 2222 dev@host 'opencode run "summarise this repo"'
 ```
 
-The image carries one locale, `C.UTF-8`, and PAM hands it to every session.
-`sshd` deliberately does not accept `LANG` or `LC_*` from the client: a
-forwarded `en_US.UTF-8` is a locale that does not exist here, and every shell
-started under it warns about `setlocale` before doing anything else. The image
-removes Debian's own `AcceptEnv` line for the same reason. `TERM`, `COLORTERM`
-and `NO_COLOR` still come across.
+The default locale is `C.UTF-8`, and PAM hands it to every session. `sshd`
+deliberately does not accept `LANG` or `LC_*` from the client — the image
+removes Debian's own `AcceptEnv` line and allows only `TERM`, `COLORTERM` and
+`NO_COLOR` — so an SSH session always lands on `C.UTF-8`.
 
-mosh needs the same treatment and does not get it from `sshd`: mosh-client
-forwards the client's locale to mosh-server as `-l NAME=VALUE` pairs over its
-own channel, which never pass through `AcceptEnv`. A small `mosh-server`
-wrapper (`rootfs/usr/local/bin/mosh-server`, ahead of the real one on `PATH`)
-drops those `LANG`/`LC_*` pairs and pins the session to `C.UTF-8`, so a mosh
-session is as quiet as an SSH one.
+mosh can't be gated that way: mosh-client forwards the client's locale to
+mosh-server over its own channel, never through `AcceptEnv`. So the image also
+generates `en_US.UTF-8` (the locale the common clients send) alongside
+`C.UTF-8`. A forwarded `en_US.UTF-8` then resolves instead of making every
+shell warn about `setlocale`, and the session keeps the locale the client
+asked for. A client that forwards some other absent locale still warns; set it
+to `en_US.UTF-8` or `C.UTF-8`, or generate the one you want in your own
+`FROM` image.
 
 ### Startup scripts
 
