@@ -600,6 +600,48 @@ test("wireguard answers are validated like every other mode", () => {
   assertEquals(validate({ ...WG, wireguard: { ...WG.wireguard!, peers: [] } }).length, 0);
 });
 
+// An optional public domain beside the tunnel: the gateway terminates TLS on a
+// public 443, like caddy mode, while the tunnel still carries ssh and mosh.
+const WG_DOMAIN: Answers = {
+  ...WG,
+  publicUrl: "https://box.example.com",
+  authMode: "google",
+  googleClientId: "1234-abc.apps.googleusercontent.com",
+  allowedEmails: "me@example.com",
+  domain: "box.example.com",
+  acmeEmail: "me@example.com",
+};
+
+test("a public domain on wireguard publishes TLS through the sidecar, ssh stays on the tunnel", () => {
+  assertEquals(validate(WG_DOMAIN), []);
+  const compose = generate(WG_DOMAIN)["compose.yaml"];
+  // The web address is the domain over TLS, and the gateway is told to certify it.
+  assert(compose.includes("PUBLIC_URL=https://box.example.com"));
+  assert(compose.includes("GATEWAY_TLS_DOMAIN=box.example.com"));
+  assert(compose.includes("ACME_EMAIL=me@example.com"));
+  // The sidecar — which owns the namespace — publishes 80 and 443 beside the
+  // UDP port; agent-env still declares none, and ssh is never published.
+  const sidecar = compose.slice(compose.indexOf("wireguard:"));
+  assert(sidecar.includes('- "51820:51820/udp"'));
+  assert(sidecar.includes('- "80:80"'));
+  assert(sidecar.includes('- "443:443"'));
+  const agentBlock = compose.slice(compose.indexOf("agent-env:"), compose.indexOf("wireguard:"));
+  assert(!/^\s+ports:/m.test(agentBlock), "agent-env published ports it cannot");
+  assert(!compose.includes(':22"'), "ssh was published; it should stay on the tunnel");
+});
+
+test("a public domain on wireguard refuses AUTH_MODE=none, like caddy", () => {
+  assert(
+    validate({ ...WG_DOMAIN, authMode: "none" }).some((p) => p.field === "authMode"),
+    "a public domain with no auth was allowed",
+  );
+  // Without a domain the tunnel is the boundary, so no auth is fine.
+  assert(
+    !validate({ ...WG, authMode: "none" }).some((p) => p.field === "authMode"),
+    "the tunnel-only deployment was refused for having no auth",
+  );
+});
+
 // A required secret the operator alone can supply gets no CHANGEME placeholder:
 // compose passes it as ${KEY:?} so `up` fails loudly until it is set, rather
 // than the image booting with a real-looking value that only breaks later.
