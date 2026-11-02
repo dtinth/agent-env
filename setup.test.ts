@@ -28,7 +28,7 @@ const writeText = (path: string, body: string, opts: { append?: boolean } = {}) 
  * absent from .env.example. Anything else the wizard emits has to be documented
  * there, or the two drift and .env.example stops being the reference.
  */
-const SIDECAR_KEYS = new Set(["TS_AUTHKEY"]);
+const SIDECAR_KEYS = new Set(["TS_AUTHKEY", "WG_PRIVATE_KEY"]);
 
 interface Run {
   code: number;
@@ -165,6 +165,15 @@ const PLATFORM = {
   githubClientId: "Iv1.0123456789abcdef",
   githubUsers: "octocat",
 };
+const WG = {
+  ...BASE,
+  mode: "wireguard",
+  wgEndpoint: "203.0.113.7:51820",
+  wgAddress: "10.8.0.1/24",
+  wgPeers: "laptop, phone",
+  authMode: "basic",
+  gatewayUser: "dev",
+};
 
 // ---------------------------------------------------------------------------
 
@@ -173,6 +182,7 @@ test("each mode generates a complete, self-consistent set of files", () => {
     ["local", LOCAL, []],
     ["caddy", CADDY, []],
     ["tailscale", TS, []],
+    ["wireguard", WG, ["wireguard/laptop.conf", "wireguard/phone.conf"]],
   ] as const) {
     const dir = tmp();
     const r = run(answers, dir);
@@ -188,7 +198,7 @@ test("every emitted key is documented in .env.example", () => {
     [...readText(ENV_EXAMPLE).matchAll(/^#?\s*([A-Z][A-Z0-9_]*)=/gm)].map((m) => m[1]),
   );
   const undocumented = new Set<string>();
-  for (const answers of [LOCAL, CADDY, GITHUB, TS]) {
+  for (const answers of [LOCAL, CADDY, GITHUB, TS, WG]) {
     const dir = tmp();
     run(answers, dir);
     const keys = [
@@ -804,6 +814,38 @@ test("tailscale mode inlines its serve config in compose.yaml", () => {
   assertStringIncludes(compose, "        target: /config/serve.json");
   const serve = JSON.parse(inlineConfig(compose, "ts-serve"));
   assert(serve.Web["work.tail1234.ts.net:443"], "serve config lost its host");
+});
+
+test("wireguard mode: a sidecar owns the netns and client configs are generated", () => {
+  const dir = tmp();
+  assertEquals(run(WG, dir).code, 0);
+  const compose = readText(`${dir}/compose.yaml`);
+  // Mirrors tailscale: the container shares the sidecar's netns, no ports here.
+  assertStringIncludes(compose, "network_mode: service:wireguard");
+  const agentBlock = compose.slice(compose.indexOf("agent-env:"), compose.indexOf("wireguard:"));
+  assert(!/^\s+ports:/m.test(agentBlock), "agent-env published ports under wireguard");
+  // Only the one UDP port peers dial is published, on the sidecar.
+  assertStringIncludes(compose, '- "51820:51820/udp"');
+  // The server key is a secret: referenced in the inlined config, kept out of
+  // the file, and never in the container's own environment.
+  assert(!agentBlock.includes("WG_PRIVATE_KEY"), "the private key reached the container");
+  assertStringIncludes(compose, "PrivateKey = ${WG_PRIVATE_KEY:?set WG_PRIVATE_KEY in .env}");
+  // The wizard mints the server key, so .env carries it as a real value.
+  assertMatch(envOf(dir).WG_PRIVATE_KEY, /^[A-Za-z0-9+/]{43}=$/);
+  assertEquals(settingsOf(dir).PUBLIC_URL, "http://10.8.0.1:8080");
+
+  // A client config per peer, holding that peer's key and the server endpoint.
+  const laptop = readText(`${dir}/wireguard/laptop.conf`);
+  assertStringIncludes(laptop, "Endpoint = 203.0.113.7:51820");
+  assertStringIncludes(laptop, "Address = 10.8.0.2/32");
+  assertStringIncludes(laptop, "AllowedIPs = 10.8.0.1/32");
+  assertMatch(readText(`${dir}/wireguard/phone.conf`), /PrivateKey = .+/);
+
+  // Re-running with the same answers keeps the server key, so the configs
+  // already handed out stay valid.
+  const before = readText(`${dir}/.env`);
+  assertEquals(run(WG, dir, ["--force"]).code, 0);
+  assertEquals(readText(`${dir}/.env`), before, "the server key changed on a re-run");
 });
 
 test("a malformed domain is rejected", () => {
