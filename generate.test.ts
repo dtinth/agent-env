@@ -478,6 +478,34 @@ test("a pasted client secret goes to .env and nowhere else", () => {
   assert(!generate(BASIC, { clientSecret: "GOCSPX-x" })[".env"].includes("GOCSPX"));
 });
 
+// A required secret the operator alone can supply gets no CHANGEME placeholder:
+// compose passes it as ${KEY:?} so `up` fails loudly until it is set, rather
+// than the image booting with a real-looking value that only breaks later.
+test("a required secret bails compose rather than getting a placeholder", () => {
+  const google: Answers = {
+    ...BASIC,
+    authMode: "google",
+    googleClientId: "1234-abc.apps.googleusercontent.com",
+    allowedEmails: "me@example.com",
+  };
+  const out = generate(google);
+  // No live secret line in .env, only a commented, uncomment-ready reminder.
+  assert(!/^GOOGLE_CLIENT_SECRET=/m.test(out[".env"]));
+  assert(/^# GOOGLE_CLIENT_SECRET=/m.test(out[".env"]));
+  // compose enforces it: `docker compose up` refuses to start until it is set.
+  assert(out["compose.yaml"].includes('- "GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:?'));
+
+  // A supplied secret is written to .env and still guarded in compose.
+  const supplied = generate(google, { clientSecret: "GOCSPX-real" });
+  assert(supplied[".env"].includes("GOOGLE_CLIENT_SECRET=GOCSPX-real"));
+  assert(supplied["compose.yaml"].includes('- "GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:?'));
+
+  // The tailscale sidecar's auth key is required the same way.
+  const ts = generate({ ...BASIC, mode: "tailscale", tsHostname: "work.tail1234.ts.net" });
+  assert(!/^TS_AUTHKEY=/m.test(ts[".env"]));
+  assert(ts["compose.yaml"].includes('- "TS_AUTHKEY=${TS_AUTHKEY:?'));
+});
+
 // The placeholder counts however it is quoted, so the reminder to replace it
 // does not vanish because an editor added quotes.
 test("a quoted placeholder still needs the secret", () => {

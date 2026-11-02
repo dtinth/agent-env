@@ -920,8 +920,13 @@ test("GitHub sign-in writes its own credentials and allow list", () => {
   // Both OAuth modes need the cookie secret persisted, or every restart
   // silently signs everyone out.
   assertMatch(env.OAUTH2_PROXY_COOKIE_SECRET, /^[A-Za-z0-9_-]{20,}$/);
-  // The secret is the one thing the wizard cannot know.
-  assertStringIncludes(env.GITHUB_CLIENT_SECRET, "CHANGEME");
+  // The secret is the one thing the wizard cannot know. No placeholder is
+  // written for it; compose passes it as ${KEY:?} so `docker compose up`
+  // refuses to start until it is set, instead of booting with a CHANGEME value
+  // that only fails later and less clearly.
+  const compose = readText(`${dir}/compose.yaml`);
+  assertStringIncludes(compose, '- "GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:?');
+  assert(!/^GITHUB_CLIENT_SECRET=/m.test(readText(`${dir}/.env`)), "a live secret was written");
   assertStringIncludes(r.stdout, "GITHUB_CLIENT_SECRET");
 });
 

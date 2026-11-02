@@ -760,6 +760,13 @@ export interface RenderedEnv {
   keys: string[];
   /** Everything else, hardcoded into compose.yaml as KEY=value. */
   settings: [string, string][];
+  /**
+   * Secrets the operator must supply: the deployment cannot work without them,
+   * and no placeholder is written for them. compose.yaml passes each as
+   * `${KEY:?}` so `docker compose up` refuses to start until it is set, rather
+   * than booting with a CHANGEME value that only fails later and less clearly.
+   */
+  required: string[];
 }
 
 /**
@@ -794,6 +801,8 @@ export function renderEnv(
    * dragged back in by the carry-through pass either.
    */
   const decided = new Set<string>();
+  /** Required secrets this config needs; see RenderedEnv.required. */
+  const required: string[] = [];
   const set = (k: string, v: string) => {
     decided.add(k);
     settings.push([k, v]);
@@ -817,6 +826,20 @@ export function renderEnv(
   /** Reuse the existing line, or generate one when there is nothing. */
   const secret = (k: string, gen: () => string) => {
     if (!carry(k)) put(k, gen());
+  };
+  /**
+   * A secret only the operator can supply. Its existing value is kept; when
+   * there is none, no placeholder is written — compose enforces it with
+   * `${KEY:?}` so `up` fails loudly rather than the image booting with a
+   * CHANGEME value that looks real. A commented, uncomment-ready line is left as
+   * a reminder of where it goes.
+   */
+  const requireSecret = (k: string) => {
+    decided.add(k);
+    required.push(k);
+    if (!carry(k)) {
+      L.push(`# ${k}=  # required — docker compose up refuses to start until you set this`);
+    }
   };
   /**
    * An allow list, written the way the entrypoint will read it. Emitting the
@@ -871,9 +894,7 @@ export function renderEnv(
   set("AUTH_MODE", a.authMode);
   if (a.authMode === "google") {
     set("GOOGLE_CLIENT_ID", a.googleClientId ?? "");
-    if (!carry("GOOGLE_CLIENT_SECRET")) {
-      put("GOOGLE_CLIENT_SECRET", "CHANGEME-google-client-secret");
-    }
+    requireSecret("GOOGLE_CLIENT_SECRET");
     setList("ALLOWED_EMAILS", a.allowedEmails);
     setList("ALLOWED_EMAIL_DOMAINS", a.allowedEmailDomains);
     L.push("# Persisted so sessions survive a restart instead of silently rotating.");
@@ -881,9 +902,7 @@ export function renderEnv(
   }
   if (a.authMode === "github") {
     set("GITHUB_CLIENT_ID", a.githubClientId ?? "");
-    if (!carry("GITHUB_CLIENT_SECRET")) {
-      put("GITHUB_CLIENT_SECRET", "CHANGEME-github-client-secret");
-    }
+    requireSecret("GITHUB_CLIENT_SECRET");
     setList("GITHUB_USERS", a.githubUsers);
     setList("GITHUB_ORG", a.githubOrg);
     setList("GITHUB_TEAM", a.githubTeam);
@@ -932,7 +951,7 @@ export function renderEnv(
   if (a.mode === "tailscale") {
     L.push("# Tag the key and make it reusable, or an unattended restart after it");
     L.push("# expires (90 days at most) will fail to come back.");
-    if (!carry("TS_AUTHKEY")) put("TS_AUTHKEY", "tskey-auth-CHANGEME");
+    requireSecret("TS_AUTHKEY");
   }
   L.push("");
 
@@ -961,6 +980,7 @@ export function renderEnv(
         .trimEnd() + "\n",
     keys: [...emitted],
     settings,
+    required,
   };
 }
 
@@ -1017,8 +1037,22 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
   for (const [k, v] of env.settings) {
     L.push(`      - ${yamlString(`${k}=${v}`.replace(/\$/g, "$$$$"))}`);
   }
-  L.push("      # Secrets, from .env.");
-  for (const k of envPassthroughKeys(env.keys)) L.push(`      - ${k}`);
+  // A required secret is passed even when .env has no line for it, so compose's
+  // ${KEY:?} can refuse `up` until it is set rather than the image booting
+  // without it. Everything else is read from .env by name.
+  const requiredSet = new Set(env.required);
+  const passthrough = envPassthroughKeys(env.keys);
+  for (const k of env.required) {
+    if (!SIDECAR_KEYS.has(k) && !passthrough.includes(k)) passthrough.push(k);
+  }
+  if (passthrough.length) {
+    L.push("      # Secrets, from .env.");
+    for (const k of passthrough) {
+      // A $ must survive Compose's own interpolation of this list, except in the
+      // ${KEY:?} guard, which is exactly the interpolation we want.
+      L.push(requiredSet.has(k) ? `      - "${k}=\${${k}:?set ${k} in .env}"` : `      - ${k}`);
+    }
+  }
   L.push("");
 
   if (a.mode === "tailscale") {
@@ -1151,7 +1185,7 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
     L.push('        max-size: "10m"');
     L.push('        max-file: "3"');
     L.push("    environment:");
-    L.push("      - TS_AUTHKEY");
+    L.push('      - "TS_AUTHKEY=${TS_AUTHKEY:?set TS_AUTHKEY in .env}"');
     L.push("      - TS_STATE_DIR=/var/lib/tailscale");
     L.push("      - TS_SERVE_CONFIG=/config/serve.json");
     L.push("      - TS_USERSPACE=false");
