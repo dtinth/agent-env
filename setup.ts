@@ -50,7 +50,11 @@ import {
   needsClientSecret,
   LEGACY_ANSWERS_FILE,
   parseEnvFile,
-  type Mode,
+  type Boundary,
+  type Tls,
+  type Publish,
+  type Ssh,
+  gatewayTls,
   type Component,
   COMPONENTS,
   DEFAULT_COMPONENTS,
@@ -303,86 +307,54 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
   // 1. Where it runs. This is the top-level branch: it decides the ports, the
   //    sidecars, the PUBLIC_URL and the sensible auth mode. Everything else
   //    follows from it.
-  const mode = await select<Mode>(
-    "mode",
+  const boundary = await select<Boundary>(
+    "boundary",
     "Where will this run?",
     [
       {
-        value: "local",
-        label: "This machine only",
-        hint: "Ports bound to 127.0.0.1. Nothing is exposed; put your own proxy in front if you want it reachable.",
-      },
-      {
-        value: "caddy",
-        label: "A public domain, with TLS handled here",
-        hint: "The gateway gets a Let's Encrypt certificate and serves HTTPS itself — no extra container.",
+        value: "host",
+        label: "This machine",
+        hint: "The container owns the network. You choose how the web and SSH are exposed.",
       },
       {
         value: "tailscale",
         label: "A tailnet, via Tailscale",
-        hint: "Adds a Tailscale sidecar. The tailnet is the boundary; SSH and mosh just work.",
+        hint: "A Tailscale sidecar is the boundary; tailscale serve terminates TLS. SSH and mosh just work.",
       },
       {
         value: "wireguard",
         label: "A WireGuard tunnel, dialed into this host",
-        hint: "Adds a WireGuard sidecar for a public-IP host that is not on a tailnet. The tunnel is the boundary; client configs are generated for you.",
-      },
-      {
-        value: "none",
-        label: "None: a platform routes to it",
-        hint: "For Dokploy, Coolify and the like. Publishes no ports; the platform's proxy reaches port 8080.",
+        hint: "A WireGuard sidecar, for a public-IP host that is not on a tailnet. Client configs are generated for you.",
       },
     ],
-    prev.mode ?? "local",
+    prev.boundary ?? "host",
   );
 
   let publicUrl = "";
-  let behindProxy: boolean | undefined;
+  let tls: Tls = "upstream";
+  let publish: Publish = "loopback";
   let domain: string | undefined;
   let httpsPort: number | undefined;
   let acmeEmail: string | undefined;
   let tsHostname: string | undefined;
   let wireguard: Wireguard | undefined;
 
-  if (mode === "local") {
-    behindProxy = await yesNo(
-      "behindProxy",
-      "Will something else terminate TLS in front of this (nginx, an ingress, a tunnel)?",
-      prev.behindProxy ?? false,
-    );
-    publicUrl = behindProxy
-      ? await ask(
-          "publicUrl",
-          "The URL people will actually type",
-          prev.publicUrl ?? "https://agent.example.com",
-          {
-            validate: CHECKS.publicUrl,
-          },
-        )
-      : "http://localhost:8080";
-  }
-
-  if (mode === "none") {
-    publicUrl = await ask(
-      "publicUrl",
-      "The URL the platform serves this at",
-      prev.publicUrl ?? "https://agent.example.com",
-      { validate: CHECKS.publicUrl },
-    );
-  }
-
-  if (mode === "caddy") {
-    // An IPv4 address works too: Caddy asks Let's Encrypt for a six-day
-    // certificate, the only kind it issues for an address.
+  // The gateway's own public domain: the host public-ingress cell, and the
+  // optional WireGuard public domain, ask for exactly this and set tls=gateway.
+  const askPublicDomain = async (optional: boolean) => {
     domain = await ask(
       "domain",
-      "Domain name, or this host's public IPv4 address",
-      prev.domain ?? "agent.example.com",
-      { validate: CHECKS.domain },
+      optional
+        ? "Public domain for https (optional) — blank keeps the tunnel the only way in"
+        : "Domain name, or this host's public IPv4 address",
+      prev.domain ?? (optional ? "" : "agent.example.com"),
+      { optional, validate: CHECKS.domain },
     );
+    if (!domain) return;
+    tls = "gateway";
     // A non-standard HTTPS port is fine — Google allows ports in redirect URIs,
-    // and one hostname across several ports shares the session cookie, which is
-    // host-scoped. 80 is published for ACME either way.
+    // and one hostname across several ports shares the host-scoped session
+    // cookie. 80 is published for ACME either way.
     httpsPort = Number(
       await ask("httpsPort", "HTTPS port to serve on", String(prev.httpsPort ?? 443), {
         validate: CHECKS.port,
@@ -394,10 +366,60 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
       prev.acmeEmail ?? "",
       { optional: true, validate: CHECKS.acmeEmail },
     );
-    publicUrl = publicUrlFor({ mode, domain, httpsPort, publicUrl });
+  };
+
+  if (boundary === "host") {
+    const ingress = await select<"loopback" | "public" | "expose">(
+      "webIngress",
+      "How is the web served?",
+      [
+        {
+          value: "loopback",
+          label: "Bound to localhost (127.0.0.1)",
+          hint: "Reach it locally, or put your own TLS proxy in front.",
+        },
+        {
+          value: "public",
+          label: "A public domain, with TLS handled here",
+          hint: "The gateway gets a Let's Encrypt certificate and serves HTTPS itself — no extra container.",
+        },
+        {
+          value: "expose",
+          label: "Behind a platform (Dokploy, Coolify)",
+          hint: "The platform's proxy routes to the container; no ports are published.",
+        },
+      ],
+      prev.boundary === "host" && prev.publish === "public"
+        ? "public"
+        : prev.boundary === "host" && prev.publish === "expose"
+          ? "expose"
+          : "loopback",
+    );
+    if (ingress === "public") {
+      publish = "public";
+      await askPublicDomain(false);
+      publicUrl = publicUrlFor({ boundary, tls, domain, httpsPort, publicUrl });
+    } else if (ingress === "expose") {
+      publish = "expose";
+      publicUrl = await ask(
+        "publicUrl",
+        "The URL the platform serves this at",
+        prev.publicUrl ?? "https://agent.example.com",
+        { validate: CHECKS.publicUrl },
+      );
+    } else {
+      publish = "loopback";
+      publicUrl = await ask(
+        "publicUrl",
+        "The URL of a proxy in front (optional) — blank for a local-only run",
+        prev.publicUrl && prev.publicUrl !== "http://localhost:8080" ? prev.publicUrl : "",
+        { optional: true, validate: CHECKS.publicUrl },
+      );
+      publicUrl = publicUrlFor({ boundary, tls, publicUrl });
+    }
   }
 
-  if (mode === "tailscale") {
+  if (boundary === "tailscale") {
     // Google forbids raw IPs in redirect URIs, so the MagicDNS name is the only
     // address that works for the OAuth modes — and it is nicer anyway.
     tsHostname = await ask(
@@ -406,10 +428,10 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
       prev.tsHostname ?? `${name}.example.ts.net`,
       { validate: CHECKS.tsHostname },
     );
-    publicUrl = publicUrlFor({ mode, tsHostname, publicUrl });
+    publicUrl = publicUrlFor({ boundary, tls, tsHostname, publicUrl });
   }
 
-  if (mode === "wireguard") {
+  if (boundary === "wireguard") {
     const endpoint = await ask(
       "wgEndpoint",
       "What peers dial — this host's public address and the WireGuard port",
@@ -481,44 +503,48 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
     // certificate and the secure context Selkies and the clipboard need —
     // while ssh and mosh stay on the tunnel. Blank keeps the tunnel the only
     // way in, the gateway plain HTTP over it.
-    domain = await ask(
-      "domain",
-      "Public domain for https (optional) — blank keeps the tunnel the only way in",
-      prev.domain ?? "",
-      { optional: true, validate: CHECKS.domain },
+    await askPublicDomain(true);
+    publicUrl = publicUrlFor({ boundary, tls, domain, httpsPort, wireguard, publicUrl });
+  }
+
+  // SSH is its own axis, independent of the web. Under a tunnel boundary it can
+  // still be forwarded on a host port (published on the sidecar), reached only
+  // over the tunnel, or turned off; mosh follows it.
+  const ssh = await select<Ssh>(
+    "ssh",
+    "How is SSH (and mosh) reached?",
+    [
+      {
+        value: "host-port",
+        label: "On a host port",
+        hint:
+          boundary === "host"
+            ? "Published on the host — public, or loopback when the web is."
+            : "Published on the sidecar's host port, beside the tunnel.",
+      },
+      {
+        value: "tunnel",
+        label: boundary === "host" ? "Exposed only, for a platform to route" : "Over the tunnel",
+        hint: "Nothing is published on the host.",
+      },
+      { value: "off", label: "Off", hint: "No SSH, and no mosh." },
+    ],
+    prev.ssh ?? (boundary === "host" ? "host-port" : "tunnel"),
+  );
+  let sshPort: number | undefined;
+  if (ssh === "host-port") {
+    sshPort = Number(
+      await ask("sshPort", "Host port for SSH", String(prev.sshPort ?? 2222), {
+        validate: CHECKS.port,
+      }),
     );
-    if (domain) {
-      httpsPort = Number(
-        await ask("httpsPort", "HTTPS port to serve on", String(prev.httpsPort ?? 443), {
-          validate: CHECKS.port,
-        }),
-      );
-      acmeEmail = await ask(
-        "acmeEmail",
-        "Email for Let's Encrypt (expiry notices)",
-        prev.acmeEmail ?? "",
-        { optional: true, validate: CHECKS.acmeEmail },
-      );
-    }
-    publicUrl = publicUrlFor({ mode, domain, httpsPort, wireguard, publicUrl });
   }
 
   // 2. Who gets in. The mode decides what is reasonable here, which is the
   //    single best reason for this script to exist.
-  const authDefault: AuthMode =
-    prev.authMode ??
-    (mode === "tailscale"
-      ? "none"
-      : mode === "caddy" || mode === "none" || (mode === "wireguard" && domain)
-        ? "google"
-        : "basic");
-
-  if (mode === "tailscale" && authDefault === "none") {
-    note();
-    warn("On a tailnet the usual answer is no extra auth: the tailnet is the boundary.");
-    warn("Anyone on your tailnet then gets a root-capable shell in this container.");
-    warn("If that is not what you want, pick one of the sign-ins below.");
-  }
+  const publicEndpoint =
+    (boundary === "host" && publish === "public") || (boundary === "wireguard" && !!domain);
+  const authDefault: AuthMode = prev.authMode ?? (publicEndpoint ? "google" : "basic");
 
   const authMode = await select<AuthMode>(
     "authMode",
@@ -548,9 +574,19 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
     authDefault,
   );
 
-  const refused = refusal({ mode, authMode });
-  if (refused) fail(refused);
-  if (authMode === "none" && ((mode === "local" && behindProxy) || mode === "none")) {
+  // A public endpoint with no sign-in is strongly discouraged, not refused: a
+  // deliberate choice (your own edge auth, a throwaway box) is still allowed.
+  const caution = refusal({ boundary, tls, publish, authMode });
+  if (caution) {
+    note();
+    warn(caution.message);
+    caution.detail?.forEach((d) => warn(d));
+  }
+  if (
+    authMode === "none" &&
+    boundary === "host" &&
+    (publish === "loopback" || publish === "expose")
+  ) {
     warn("AUTH_MODE=none with a proxy in front: make sure the proxy is the one authenticating.");
   }
 
@@ -666,7 +702,7 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
 
   // 3. What runs. One list, AGENT_ENV_COMPONENTS, asked about a piece at a
   //    time; each piece defaults to what was running before.
-  const components = await chooseComponents(prev.components, mode);
+  const components = await chooseComponents(prev.components, boundary);
   const desktop = desktopOf(components);
 
   const knownSize = (v: string | undefined) => DESKTOP_SIZES.some((s) => s.value === v);
@@ -812,18 +848,6 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
     warn("No SSH keys: you will only be able to get in through the browser.");
   }
 
-  // On a tailnet SSH is reached on the tailnet address with nothing published,
-  // and a platform publishes nothing at all, so neither needs asking. Everywhere
-  // else it is a host port, and 2222 is often already taken.
-  let sshPort: number | undefined;
-  if (mode !== "tailscale" && mode !== "wireguard" && mode !== "none") {
-    sshPort = Number(
-      await ask("sshPort", "Host port for SSH", String(prev.sshPort ?? 2222), {
-        validate: CHECKS.port,
-      }),
-    );
-  }
-
   // 5. Where the code lives. A host path needs PUID/PGID to match, which is
   //    the classic thing to get wrong by hand.
   const wsKind = await select<"volume" | "path">(
@@ -926,19 +950,22 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
   // Checked where the numbers are still attached to the questions that
   // produced them.
   const clash = portClashProblem({
-    mode,
-    behindProxy,
-    publicUrl,
+    boundary,
+    tls,
+    publish,
     sshPort,
-    domain,
+    ssh,
+    httpsPort,
   });
   if (clash) fail(clash);
 
   return {
     version: VERSION,
     name,
-    mode,
-    behindProxy,
+    boundary,
+    tls,
+    publish,
+    ssh,
     publicUrl,
     domain,
     httpsPort,
@@ -978,7 +1005,7 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
  */
 async function chooseComponents(
   previous: Component[] | undefined,
-  mode: Mode,
+  boundary: Boundary,
 ): Promise<Component[]> {
   let start = previous ?? [...DEFAULT_COMPONENTS];
   const old = ["preset", "desktopBackend", "rootlessDocker"].filter((k) => k in preset);
@@ -1072,8 +1099,8 @@ async function chooseComponents(
     note(
       C.dim("  Adds five host flags that widen the sandbox. See AGENTS.md before shipping this."),
     );
-    if (mode === "tailscale" || mode === "wireguard") {
-      const net = mode === "tailscale" ? "Tailscale" : "WireGuard";
+    if (boundary !== "host") {
+      const net = boundary === "tailscale" ? "Tailscale" : "WireGuard";
       warn(`Rootless Docker inside the ${net} network namespace is UNTESTED.`);
       warn("Inner published ports land in the tunnel namespace and need extra config.");
     }
@@ -1081,7 +1108,7 @@ async function chooseComponents(
   await choose("smb", "Share the workspace over SMB, for the Files app or Finder?");
   if (on.has("smb")) {
     note(C.dim("  Sign in as dev; the password is on the /~env/ page."));
-    if (mode !== "tailscale" && mode !== "wireguard") {
+    if (boundary === "host") {
       note(C.dim("  Port 445 is not published: forward it yourself, on a network you trust."));
     }
   }
@@ -1133,12 +1160,16 @@ async function main() {
   );
   const answers = await collect(prev);
   // collect() has already asked about everything validate() checks, one
-  // question at a time; this is the backstop, not the first line.
-  for (const problem of validate(answers)) fail(problem);
+  // question at a time; this is the backstop, not the first line. Warnings (a
+  // dangerous but deliberate choice) were cautioned about during collect() and
+  // do not stop generation.
+  for (const problem of validate(answers)) {
+    if (problem.severity !== "warn") fail(problem);
+  }
   const files = generate(answers, {
     existingEnv: readIfExists(p(".env")) ?? "",
     clientSecret,
-    wireguard: answers.mode === "wireguard" ? wgKeyOptions : undefined,
+    wireguard: answers.boundary === "wireguard" ? wgKeyOptions : undefined,
   });
 
   note();
@@ -1223,17 +1254,16 @@ async function main() {
     step(`Register this redirect URI: ${answers.publicUrl}/oauth2/callback`);
   }
   // An address needs no record; it is already where it points.
-  if (
-    (answers.mode === "caddy" || answers.mode === "wireguard") &&
-    answers.domain &&
-    !isIPv4(answers.domain)
-  ) {
+  if (gatewayTls(answers) && answers.domain && !isIPv4(answers.domain)) {
     step(`Point an A record for ${answers.domain} at this host, before first start.`);
   }
-  if (answers.mode === "tailscale") {
+  if (answers.boundary === "host" && answers.publish === "expose") {
+    step(`Have the platform route ${answers.publicUrl} to port 8080 of the agent-env service.`);
+  }
+  if (answers.boundary === "tailscale") {
     step("Put a tagged, reusable auth key in .env (TS_AUTHKEY).");
   }
-  if (answers.mode === "wireguard") {
+  if (answers.boundary === "wireguard") {
     step(`Open UDP port ${answers.wireguard?.listenPort} to this host.`);
     if (answers.domain) {
       step("Open TCP 80 and 443 too, for the public domain and its certificate.");
@@ -1245,8 +1275,10 @@ async function main() {
       step("Re-run to add peer devices; a client config is written for each new one.");
     }
   }
-  if (answers.mode === "none") {
-    step(`Have the platform route ${answers.publicUrl} to port 8080 of the agent-env service.`);
+  // SSH forwarded on a host port under a tunnel is published on the sidecar, so
+  // the host needs that TCP port open too.
+  if (answers.ssh === "host-port" && answers.boundary !== "host") {
+    step(`Open TCP port ${answers.sshPort ?? 2222} to this host, for SSH beside the tunnel.`);
   }
   note(`  ${"docker compose up -d"}`);
   note(`  ${"docker compose exec agent-env agent-env urls"}`);

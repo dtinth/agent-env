@@ -124,14 +124,17 @@ const BASE = {
 
 const LOCAL = {
   ...BASE,
-  mode: "local",
-  behindProxy: false,
+  boundary: "host",
+  webIngress: "loopback",
+  ssh: "host-port",
   authMode: "basic",
   gatewayUser: "dev",
 };
 const CADDY = {
   ...BASE,
-  mode: "caddy",
+  boundary: "host",
+  webIngress: "public",
+  ssh: "host-port",
   domain: "agent.example.com",
   httpsPort: 8443,
   acmeEmail: "me@example.com",
@@ -141,7 +144,9 @@ const CADDY = {
 };
 const GITHUB = {
   ...BASE,
-  mode: "caddy",
+  boundary: "host",
+  webIngress: "public",
+  ssh: "host-port",
   domain: "agent.example.com",
   httpsPort: 8443,
   acmeEmail: "me@example.com",
@@ -152,14 +157,17 @@ const GITHUB = {
 };
 const TS = {
   ...BASE,
-  mode: "tailscale",
+  boundary: "tailscale",
+  ssh: "tunnel",
   tsHostname: "work.tail1234.ts.net",
   authMode: "none",
 };
 const PLATFORM = {
   ...BASE,
   sshPort: undefined,
-  mode: "none",
+  boundary: "host",
+  webIngress: "expose",
+  ssh: "tunnel",
   publicUrl: "https://agent.example.com",
   authMode: "github",
   githubClientId: "Iv1.0123456789abcdef",
@@ -167,7 +175,8 @@ const PLATFORM = {
 };
 const WG = {
   ...BASE,
-  mode: "wireguard",
+  boundary: "wireguard",
+  ssh: "tunnel",
   wgEndpoint: "203.0.113.7:51820",
   wgAddress: "10.8.0.1/24",
   wgPeers: "laptop, phone",
@@ -253,9 +262,9 @@ test("the SMB share works in every mode, and is never published", () => {
   for (const answers of [LOCAL, CADDY, PLATFORM]) {
     const dir = tmp();
     const r = run({ ...answers, components: ["files", "smb"] }, dir);
-    assertEquals(r.code, 0, `${answers.mode} refused smb: ${r.stdout}`);
+    assertEquals(r.code, 0, `${answers.boundary} refused smb: ${r.stdout}`);
     assertEquals(envOf(dir).AGENT_ENV_COMPONENTS, "files,smb");
-    assert(!readText(`${dir}/compose.yaml`).includes("445"), `${answers.mode} published SMB`);
+    assert(!readText(`${dir}/compose.yaml`).includes("445"), `${answers.boundary} published SMB`);
   }
   const dir = tmp();
   assertEquals(run({ ...TS, components: ["files", "smb"] }, dir).code, 0);
@@ -344,14 +353,14 @@ test("OpenCode is at /, so a command for / is refused", () => {
   assert(!existsSync(`${dir}/compose.yaml`));
 });
 
-test("a public domain with no authentication is refused", () => {
+test("a public domain with no authentication is a strong warning, not a refusal", () => {
   const dir = tmp();
   const r = run({ ...CADDY, authMode: "none" }, dir);
-  assertEquals(r.code, 1);
-  assertStringIncludes(r.stdout, "Refusing");
-  // Nothing half-written: a refusal must not leave a deployable-looking file.
-  assert(!existsSync(`${dir}/compose.yaml`), "compose.yaml written despite refusing");
-  assert(!existsSync(`${dir}/.env`), ".env written despite refusing");
+  // Discouraged, not refused: the files are still written, with a caution.
+  assertEquals(r.code, 0);
+  assertStringIncludes(r.stdout, "risky");
+  assert(existsSync(`${dir}/compose.yaml`), "compose.yaml not written");
+  assertEquals(envOf(dir).AUTH_MODE, "none");
 });
 
 test("google sign-in without an allow list is refused", () => {
@@ -545,7 +554,7 @@ test("behind a TLS proxy, the container does not bind the proxy's port", () => {
   // PUBLIC_URL is the proxy's address. Binding its port made the container
   // fight whatever is already terminating TLS on 443.
   const dir = tmp();
-  run({ ...LOCAL, behindProxy: true, publicUrl: "https://agent.example.com" }, dir);
+  run({ ...LOCAL, publicUrl: "https://agent.example.com" }, dir);
   const compose = readText(`${dir}/compose.yaml`);
   assert(!compose.includes("127.0.0.1:443:"), "bound the proxy's own port");
   assertStringIncludes(compose, "127.0.0.1:8080:8080");
@@ -584,7 +593,7 @@ test("answers from a file face the same validators as typed ones", () => {
   // --answers is automation input, and automation is where a silently-wrong
   // value becomes a deployment nobody typed.
   for (const broken of [
-    { ...LOCAL, mode: "nonsense" },
+    { ...LOCAL, boundary: "nonsense" },
     { ...CADDY, httpsPort: "not-a-port" },
     { ...CADDY, domain: "https://not-a-bare-hostname" },
   ]) {
@@ -917,7 +926,7 @@ test("a URL with a query or fragment is rejected", () => {
     "ftp://a.example.com",
   ]) {
     const dir = tmp();
-    assertEquals(run({ ...LOCAL, behindProxy: true, publicUrl: u }, dir).code, 2, `accepted ${u}`);
+    assertEquals(run({ ...LOCAL, publicUrl: u }, dir).code, 2, `accepted ${u}`);
   }
 });
 
@@ -970,7 +979,7 @@ test("an answer wrapped in whitespace is not taken literally", () => {
   // new URL() trims for its own parsing, so validation passed and the padded
   // string went on to be written as PUBLIC_URL.
   const dir = tmp();
-  run({ ...LOCAL, behindProxy: true, publicUrl: " https://a.example.com " }, dir);
+  run({ ...LOCAL, publicUrl: " https://a.example.com " }, dir);
   assertEquals(envOf(dir).PUBLIC_URL, "https://a.example.com");
 });
 
