@@ -237,7 +237,7 @@ USER root
 COPY rootfs/ /
 
 RUN set -eux; \
-    chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/agent-env /opt/agent-env/bin/*; \
+    chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/agent-env /usr/local/bin/mosh-server /opt/agent-env/bin/*; \
     chmod +x /opt/agent-env/components/opencode/run /opt/agent-env/components/smb/run; \
     # Where compose `configs:` put the operator's startup scripts.
     install -d -m 755 /etc/agent-env/provision.d; \
