@@ -541,10 +541,18 @@ export function publicUrlFor(
     return `https://${a.domain}${port === 443 ? "" : `:${port}`}`;
   }
   if (a.mode === "tailscale") return `https://${a.tsHostname}`;
-  // The tunnel is the boundary and carries the encryption, so the gateway is
-  // plain HTTP on its own port, reached at the server's address inside the
-  // tunnel. No TLS, no published web port — only the WireGuard UDP port is open.
-  if (a.mode === "wireguard") return `http://${wgServerHost(a.wireguard)}:8080`;
+  // Without a public domain the tunnel is the boundary and carries the
+  // encryption, so the gateway is plain HTTP on its own port, reached at the
+  // server's address inside the tunnel — only the WireGuard UDP port is open.
+  // With one, the gateway terminates TLS on a public 443 (as in caddy mode)
+  // and that is the web address, while the tunnel still carries SSH and mosh.
+  if (a.mode === "wireguard") {
+    if (a.domain) {
+      const port = a.httpsPort ?? 443;
+      return `https://${a.domain}${port === 443 ? "" : `:${port}`}`;
+    }
+    return `http://${wgServerHost(a.wireguard)}:8080`;
+  }
   if (a.mode === "none") return a.publicUrl;
   return a.behindProxy ? a.publicUrl : "http://localhost:8080";
 }
@@ -558,14 +566,17 @@ export function wgServerHost(wg: Wireguard | undefined): string {
  * The one thing worth refusing outright. Everything in the container is
  * root-capable, and a public domain with no auth hands that to the internet.
  */
-export function refusal(a: Pick<Answers, "mode" | "authMode">): Problem | null {
-  if (a.authMode !== "none" || a.mode !== "caddy") return null;
+export function refusal(a: Pick<Answers, "mode" | "authMode" | "domain">): Problem | null {
+  // A public 443 reaches the gateway directly: caddy mode, or wireguard mode
+  // once a public domain is added alongside the tunnel.
+  const publicTls = a.mode === "caddy" || (a.mode === "wireguard" && !!a.domain);
+  if (a.authMode !== "none" || !publicTls) return null;
   return {
     field: "authMode",
     message: "Refusing to generate that.",
     detail: [
       "A public domain with AUTH_MODE=none puts a root-capable shell on the internet.",
-      "Pick Google or GitHub sign-in, or basic auth, or a tunnel mode (tailnet or WireGuard).",
+      "Pick Google or GitHub sign-in, or basic auth — the gateway is all that stands in front.",
     ],
   };
 }
@@ -619,7 +630,7 @@ export function allowListProblem(
  * bind at `up`. Nothing downstream catches it, so check it here.
  */
 export function portClashProblem(
-  a: Pick<Answers, "mode" | "behindProxy" | "publicUrl" | "sshPort">,
+  a: Pick<Answers, "mode" | "behindProxy" | "publicUrl" | "sshPort" | "domain">,
 ): Problem | null {
   const claims: [number, string][] = [];
   const claim = (port: number | undefined, what: string) => {
@@ -630,7 +641,7 @@ export function portClashProblem(
   if (a.mode === "local") {
     claim(a.behindProxy ? 8080 : extPort, "the gateway");
   }
-  if (a.mode === "caddy") {
+  if (a.mode === "caddy" || (a.mode === "wireguard" && a.domain)) {
     claim(80, "ACME validation");
     claim(extPort, "the gateway over TLS");
   }
@@ -734,10 +745,18 @@ export function validate(a: Answers): Problem[] {
         seenAddrs.add(p.address);
       }
     }
+    // The public domain is optional here, unlike caddy mode: with one, the
+    // gateway terminates TLS on a public 443 beside the tunnel, so it takes
+    // the same checks; without, the tunnel is the only way in.
+    if (a.domain) {
+      field("domain", CHECKS.domain(a.domain));
+      port("httpsPort", a.httpsPort);
+      if (a.acmeEmail) field("acmeEmail", CHECKS.acmeEmail(a.acmeEmail));
+    }
   }
   if (a.authMode === "google") {
     // Google's redirect URI rules: "Hosts cannot be raw IP addresses."
-    if (a.mode === "caddy" && a.domain && isIPv4(a.domain)) {
+    if ((a.mode === "caddy" || a.mode === "wireguard") && a.domain && isIPv4(a.domain)) {
       field(
         "domain",
         `Google sign-in refuses an IP address in its redirect URI. Use a name for it, like ${a.domain.replace(/\./g, "-")}.sslip.io, or GitHub or password sign-in`,
@@ -1051,9 +1070,11 @@ export function renderEnv(
     set("PGID", String(owner.pgid ?? 1000));
   }
 
-  if (a.mode === "caddy") {
+  if (a.mode === "caddy" || (a.mode === "wireguard" && a.domain)) {
     // The gateway Caddy owns TLS now; these tell it which name to certify and
-    // which ACME account to use. No sidecar, so nothing else reads them.
+    // which ACME account to use. In caddy mode the container publishes 80 and
+    // 443; in wireguard mode they are set only when a public domain was asked
+    // for, and the sidecar publishes 80 and 443 for it.
     set("GATEWAY_TLS_DOMAIN", a.domain ?? "");
     if (a.acmeEmail) set("ACME_EMAIL", a.acmeEmail);
   }
@@ -1339,10 +1360,19 @@ export function renderCompose(a: Answers, env: RenderedEnv): string {
     L.push("      options:");
     L.push('        max-size: "10m"');
     L.push('        max-file: "3"');
-    L.push("    # The one port peers dial. Everything the agent-env container serves");
-    L.push("    # is reached over the tunnel, so nothing else is published.");
+    L.push("    # The UDP port peers dial. SSH and mosh are reached over the tunnel,");
+    L.push("    # so they are never published here.");
+    if (a.domain) {
+      L.push("    # A public domain was asked for, so the gateway also terminates TLS:");
+      L.push("    # 80 (the ACME challenge and the http->https redirect) and 443 are");
+      L.push("    # published through this sidecar, which owns the network namespace.");
+    }
     L.push("    ports:");
     L.push(`      - "${port}:${port}/udp"`);
+    if (a.domain) {
+      L.push('      - "80:80"');
+      L.push(`      - "${a.httpsPort ?? 443}:443"`);
+    }
     L.push("    cap_add:");
     L.push("      - NET_ADMIN");
     L.push("      # Only needed where the host kernel has no built-in wireguard module");
