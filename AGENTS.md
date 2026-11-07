@@ -1293,6 +1293,17 @@ display's daemons are yours, so restarting it needs no sudo:
 `agent-env-desktop-selkies/`, and `selkies`). Set `VNC_PASSWORD` for a second factor in front of the desktop specifically, and
 `VNC_VIEW_ONLY=true` for a read-only session.
 
+The VNC server binds loopback only, so a direct VNC client reaches it through
+the gateway or an SSH tunnel (`ssh -p 2222 -L 5900:localhost:5900 dev@host`,
+then connect to `localhost:5900`). `VNC_LISTEN_ALL=true` drops that and binds
+every interface (`0.0.0.0:5900`) instead — for a client that can't tunnel, such
+as an iPad VNC app over Tailscale: the container shares the tailscale netns, so
+the desktop is then reachable straight at `<tailnet-ip>:5900` with no serve
+entry. Set `VNC_PASSWORD` when you do, because the default is no VNC auth at all
+— otherwise anyone who can reach the host on 5900 has the desktop. Startup warns
+loudly if `VNC_LISTEN_ALL` is on without a password. This only applies to the
+noVNC backend; Selkies ignores the `VNC_*` settings.
+
 ### Selkies backend
 
 The `desktop-selkies` component, in place of `desktop`, swaps x11vnc + websockify for [Selkies](https://selkies.io),

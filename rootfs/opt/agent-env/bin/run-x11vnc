@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
-# VNC server for the virtual display, loopback only.
+# VNC server for the virtual display.
+#
+# By default it binds loopback only (-localhost), so the gateway or an SSH
+# tunnel is the only way in. VNC_LISTEN_ALL=true drops -localhost and binds
+# every interface, which is what a direct VNC client needs over Tailscale (the
+# iPad clients that can't do SSH tunnels) — the container shares the tailscale
+# netns, so 0.0.0.0:5900 is reachable straight at the tailnet IP.
 #
 # -shared/-forever are what let several viewers attach to the same desktop at
 # once, instead of each new one disconnecting the last.
@@ -17,7 +23,6 @@ done
 args=(
   -display "${DISPLAY}"
   -rfbport 5900
-  -localhost
   -forever
   -shared
   -repeat
@@ -27,6 +32,10 @@ args=(
   -quiet
 )
 
+if [[ "${VNC_LISTEN_ALL:-false}" != "true" ]]; then
+  args+=(-localhost)
+fi
+
 if [[ -n "${VNC_PASSWORD:-}" ]]; then
   pwfile="${HOME}/.vnc/passwd"
   mkdir -p "$(dirname "${pwfile}")"
@@ -34,6 +43,12 @@ if [[ -n "${VNC_PASSWORD:-}" ]]; then
   args+=(-rfbauth "${pwfile}")
 else
   args+=(-nopw)
+  if [[ "${VNC_LISTEN_ALL:-false}" == "true" ]]; then
+    echo "[agent-env] WARN VNC_LISTEN_ALL is set, so the desktop is served on" \
+      "every interface (0.0.0.0:5900) with no VNC password. Anyone who can" \
+      "reach this host on 5900 gets full control of the desktop. Set" \
+      "VNC_PASSWORD to gate it, or VNC_VIEW_ONLY=true for a read-only session." >&2
+  fi
 fi
 
 [[ "${VNC_VIEW_ONLY:-false}" == "true" ]] && args+=(-viewonly)
