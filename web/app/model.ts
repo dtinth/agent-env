@@ -84,6 +84,7 @@ export const DEFAULT_FIELDS = {
   desktopSizePick: "1920x1080",
   desktopSizeCustom: "",
   desktopScale: "100",
+  vncListenAll: false,
   memoryGiB: "",
   swapGiB: "",
   cpus: "",
@@ -234,6 +235,7 @@ export function toAnswers(f: Fields): Answers {
             .replace(/\s*[x×]\s*/, "x")
         : f.desktopSizePick,
     desktopScale: Number(f.desktopScale),
+    vncListenAll: f.vncListenAll || undefined,
     primaryPort: opencode ? undefined : num(f.primaryPort),
     primaryCommand: opencode ? undefined : f.primaryCommand.trim() || undefined,
     memoryGiB: num(f.memoryGiB),
@@ -567,6 +569,7 @@ export function fieldsFromAnswers(a: Partial<Answers>): Partial<Fields> {
     if (!known) put("desktopSizeCustom", a.desktopSize);
   }
   put("desktopScale", str(a.desktopScale));
+  put("vncListenAll", a.vncListenAll);
   put("memoryGiB", str(a.memoryGiB));
   put("swapGiB", str(a.swapGiB));
   put("cpus", str(a.cpus));

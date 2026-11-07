@@ -8,7 +8,7 @@ import { useState } from "preact/hooks";
 import "./runs.css";
 import { type Component, STARTUP_SCRIPT_TARGET } from "../../generate.ts";
 import { type Configurator, componentsOf } from "./model.ts";
-import { Choices, DesktopGeometry, LimitFields, type Option } from "./ui.tsx";
+import { Check, Choices, DesktopGeometry, LimitFields, type Option } from "./ui.tsx";
 
 type Badge = "at /" | "https or localhost";
 
@@ -338,6 +338,21 @@ function DesktopDetail({ c }: { c: Configurator }) {
           <Choices c={c} name="desktop" cols={2} options={DESKTOP_OPTIONS} />
           <h3>Display</h3>
           <DesktopGeometry c={c} />
+          {f.desktop === "desktop" && (
+            <>
+              <h3>VNC access</h3>
+              <Check c={c} name="vncListenAll">
+                Let VNC clients connect directly — bind <code>0.0.0.0:5900</code>
+              </Check>
+              <p class="hint">
+                Off, the desktop is reached through the gateway or an SSH tunnel. On, a VNC client
+                connects straight to the host — handy over Tailscale, where an iPad app can't
+                tunnel. There is no VNC password by default, so set <code>VNC_PASSWORD</code> when
+                you turn this on, or anyone who can reach the host on <code>5900</code> has the
+                desktop.
+              </p>
+            </>
+          )}
         </>
       )}
     </>

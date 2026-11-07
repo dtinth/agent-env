@@ -759,6 +759,16 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
       ),
     );
   }
+  // VNC_LISTEN_ALL only affects the noVNC backend (x11vnc); Selkies ignores it.
+  // Kept across a switch away from the desktop, like the size and scale above.
+  let vncListenAll = prev.vncListenAll;
+  if (desktop === "desktop") {
+    vncListenAll = await yesNo(
+      "vncListenAll",
+      "Let VNC clients connect directly (bind 0.0.0.0)? For a direct client over Tailscale; set VNC_PASSWORD too",
+      prev.vncListenAll ?? false,
+    );
+  }
   let primaryPort: number | undefined;
   let primaryCommand: string | undefined;
   const opencode = components.includes("opencode");
@@ -984,6 +994,7 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
     components,
     desktopSize,
     desktopScale,
+    vncListenAll,
     primaryPort,
     primaryCommand,
     memoryGiB,
