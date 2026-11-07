@@ -356,6 +356,8 @@ export interface Answers {
   desktopSize?: string;
   /** Text and UI size in percent (100 = 96 DPI); absent means 100. */
   desktopScale?: number;
+  /** Bind the VNC server on every interface (0.0.0.0) instead of loopback. */
+  vncListenAll?: boolean;
   /** Memory limit in GiB for the agent-env container; absent means none. */
   memoryGiB?: number;
   /**
@@ -1200,6 +1202,11 @@ export function renderEnv(
     }
     if (a.desktopScale && a.desktopScale !== 100) {
       set("DESKTOP_DPI", String(dpiFor(a.desktopScale)));
+    }
+    // VNC_LISTEN_ALL only affects x11vnc, which is the noVNC backend; Selkies
+    // ignores the VNC_* settings, so there is no point writing it there.
+    if (a.vncListenAll && desktopOf(a.components) === "desktop") {
+      set("VNC_LISTEN_ALL", "true");
     }
   }
   if (!a.components.includes("opencode")) {

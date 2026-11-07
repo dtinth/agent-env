@@ -431,6 +431,28 @@ test("screen size and text scale become DESKTOP_RESOLUTION and DESKTOP_DPI", () 
   assert(!none["compose.yaml"].includes("DESKTOP_"));
 });
 
+test("vncListenAll emits VNC_LISTEN_ALL only with the noVNC desktop", () => {
+  const on = generate({ ...BASIC, vncListenAll: true }, { randomSecret: fixed });
+  assert(on["compose.yaml"].includes("VNC_LISTEN_ALL=true"));
+  // Off (the default) writes nothing, like the other desktop settings.
+  const off = generate({ ...BASIC, vncListenAll: false }, { randomSecret: fixed });
+  assert(!off["compose.yaml"].includes("VNC_LISTEN_ALL"));
+  const unset = generate({ ...BASIC }, { randomSecret: fixed });
+  assert(!unset["compose.yaml"].includes("VNC_LISTEN_ALL"));
+  // Selkies ignores the VNC_* settings, so there is nothing to write there.
+  const selkies = generate(
+    { ...BASIC, components: ["desktop-selkies", "terminal", "files"], vncListenAll: true },
+    { randomSecret: fixed },
+  );
+  assert(!selkies["compose.yaml"].includes("VNC_LISTEN_ALL"));
+  // No desktop at all, likewise nothing.
+  const none = generate(
+    { ...BASIC, components: ["terminal"], vncListenAll: true },
+    { randomSecret: fixed },
+  );
+  assert(!none["compose.yaml"].includes("VNC_LISTEN_ALL"));
+});
+
 test("a screen size or scale the display cannot use is refused", () => {
   const fields = (a: object) => validate({ ...BASIC, ...a }).map((p) => p.field);
   assertEquals(fields({ desktopSize: "big" }), ["desktopSize"]);

@@ -1179,6 +1179,16 @@ test("the wizard takes a desktop size, scale and backend from an answers file", 
   assertStringIncludes(compose, "AGENT_ENV_COMPONENTS=desktop-selkies,terminal");
 });
 
+test("the wizard takes VNC_LISTEN_ALL from an answers file, for the noVNC desktop", () => {
+  const dir = tmp();
+  run({ ...LOCAL, vncListenAll: true, components: ["desktop", "terminal"] }, dir);
+  assertStringIncludes(readText(`${dir}/compose.yaml`), "VNC_LISTEN_ALL=true");
+  // Selkies ignores the VNC_* settings, so nothing is written for it.
+  const selkies = tmp();
+  run({ ...LOCAL, vncListenAll: true, components: ["desktop-selkies", "terminal"] }, selkies);
+  assert(!readText(`${selkies}/compose.yaml`).includes("VNC_LISTEN_ALL"));
+});
+
 test("answers from before they moved into compose.yaml are still offered", () => {
   // A deployment made by an older version has agent-env.setup.json beside it
   // and no x-agent-env key. Its answers must still come back as defaults.
