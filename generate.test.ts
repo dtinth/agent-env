@@ -453,6 +453,32 @@ test("vncListenAll emits VNC_LISTEN_ALL only with the noVNC desktop", () => {
   assert(!none["compose.yaml"].includes("VNC_LISTEN_ALL"));
 });
 
+test("vncListenAll generates a VNC_PASSWORD the container passes through", () => {
+  // On: the password is minted into .env and passed through by name, so there
+  // is nothing to hand-edit in compose.yaml.
+  const on = generate({ ...BASIC, vncListenAll: true }, { randomSecret: fixed });
+  assert(on[".env"].includes(`VNC_PASSWORD=${fixed(18)}`));
+  assert(on["compose.yaml"].includes("- VNC_PASSWORD"));
+  // Off: no password, and no passthrough line.
+  const off = generate({ ...BASIC }, { randomSecret: fixed });
+  assert(!off[".env"].includes("VNC_PASSWORD="));
+  assert(!off["compose.yaml"].includes("- VNC_PASSWORD"));
+  // A password already in .env is kept, not regenerated — the user's override
+  // survives a re-run.
+  const kept = generate(
+    { ...BASIC, vncListenAll: true },
+    {
+      existingEnv: "VNC_PASSWORD=mine\n",
+      randomSecret: (n, key) => {
+        if (key === "VNC_PASSWORD") throw new Error("minted a VNC_PASSWORD that already existed");
+        return fixed(n);
+      },
+    },
+  );
+  assert(kept[".env"].includes("VNC_PASSWORD=mine\n"));
+  assert(kept["compose.yaml"].includes("- VNC_PASSWORD"));
+});
+
 test("a screen size or scale the display cannot use is refused", () => {
   const fields = (a: object) => validate({ ...BASIC, ...a }).map((p) => p.field);
   assertEquals(fields({ desktopSize: "big" }), ["desktopSize"]);

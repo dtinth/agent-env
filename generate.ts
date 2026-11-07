@@ -1207,6 +1207,12 @@ export function renderEnv(
     // ignores the VNC_* settings, so there is no point writing it there.
     if (a.vncListenAll && desktopOf(a.components) === "desktop") {
       set("VNC_LISTEN_ALL", "true");
+      // Binding every interface with no VNC auth would expose the desktop, so
+      // mint a password. It goes in .env (kept on re-run, overridable there),
+      // and the container passes VNC_PASSWORD through by name like the other
+      // secrets — so turning the toggle on is enough, no hand-editing compose.
+      L.push("# The VNC server listens on every interface; this password gates it.");
+      secret("VNC_PASSWORD", () => rand(18, "VNC_PASSWORD"));
     }
   }
   if (!a.components.includes("opencode")) {

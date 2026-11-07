@@ -347,9 +347,9 @@ function DesktopDetail({ c }: { c: Configurator }) {
               <p class="hint">
                 Off, the desktop is reached through the gateway or an SSH tunnel. On, a VNC client
                 connects straight to the host — handy over Tailscale, where an iPad app can't
-                tunnel. There is no VNC password by default, so set <code>VNC_PASSWORD</code> when
-                you turn this on, or anyone who can reach the host on <code>5900</code> has the
-                desktop.
+                tunnel. Turning this on also generates a <code>VNC_PASSWORD</code> into your{" "}
+                <code>.env</code> to gate it, since the desktop is otherwise open to anyone who can
+                reach the host on <code>5900</code>. Edit that line to pick your own.
               </p>
             </>
           )}

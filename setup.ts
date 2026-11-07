@@ -765,7 +765,7 @@ async function collect(prev: Partial<Answers>): Promise<Answers> {
   if (desktop === "desktop") {
     vncListenAll = await yesNo(
       "vncListenAll",
-      "Let VNC clients connect directly (bind 0.0.0.0)? For a direct client over Tailscale; set VNC_PASSWORD too",
+      "Let VNC clients connect directly (bind 0.0.0.0)? For a direct client over Tailscale; a VNC_PASSWORD is generated to gate it",
       prev.vncListenAll ?? false,
     );
   }
